@@ -147,12 +147,15 @@ def test_directory_and_discovery_never_restore_disabled_revoked_or_external_tool
 
 
 @pytest.mark.parametrize('mode', ['business', 'minimal', 'empty', 'protocol'])
-def test_actual_wire_guidance_is_conditional_and_minimal_keeps_search_route(mode):
+def test_actual_wire_guidance_is_conditional_and_minimal_keeps_only_reply_protocol(mode, tmp_path):
     from backend.app.agent_runtime.memory_tool import MemoryRecallTool
     from backend.app.agent_runtime.memory_write_tools import MemorizeTool, ForgetMemoryTool
     from backend.app.agent_runtime.spawn_tool import SpawnTool
     from backend.app.agent_runtime.discovery import ToolSearchTool
-    memory = SimpleNamespace(enabled=lambda: True)
+    from backend.app.memory_engine import DefaultMemoryEngine
+    from backend.app.memory_store import MemoryStore
+    from memory_fakes import configured_service
+    memory = SimpleNamespace(enabled=lambda: True, engine=DefaultMemoryEngine(configured_service(MemoryStore(tmp_path / 'memory.db')), lambda _: True))
     definitions = [MemoryRecallTool.definition, MemorizeTool(memory).definition, ForgetMemoryTool(memory).definition,
         SpawnTool.definition, ToolSearchTool.definition,
         ToolDefinition('fetch_messages', '读取获准原文', {'type': 'object'}),
@@ -161,12 +164,14 @@ def test_actual_wire_guidance_is_conditional_and_minimal_keeps_search_route(mode
         definitions = []
     if mode == 'protocol':
         definitions = [ToolDefinition('finish_reply', '自然回复输出协议', {'type': 'object'})]
+    if mode == 'minimal':
+        definitions = [ToolDefinition('finish_reply', '自然回复输出协议', {'type': 'object'})]
     caps = CapabilityRegistry(fixtures([])).resolve(role_id='r', session_key='role:r', run_id='guidance',
         discovery_enabled=True, deferred_tool_names=main._deferred_discovery_tools())
     def respond(payload, index):
         prompt = payload['messages'][0]['content']
         assert '仅以上名称可在本次运行调用' not in prompt
-        if mode in {'empty', 'protocol'}:
+        if mode in {'empty', 'protocol', 'minimal'}:
             assert '没有业务工具' in prompt
             assert '[独立任务判断]' not in prompt and '[记忆纠错]' not in prompt
             assert 'tool_search' not in prompt and '尚未加载的工具' not in prompt

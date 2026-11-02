@@ -12,6 +12,7 @@ import logging
 import sqlite3
 import json
 import time
+import re
 from contextlib import aclosing, nullcontext
 from dataclasses import asdict, replace
 
@@ -32,8 +33,15 @@ MINIMAL_PROMPT = (
     "本次上下文过长且工作摘要未能完成，较早原文暂未放入本次请求，原始记录仍保留。"
     "本次依据当前用户输入、已有合法摘要、附件和已执行工具结果继续处理。"
     "工具能力以本次提供的列表为准；不要重做已执行操作、声称取得没有的结果或编造缺失历史。"
-    "如证据不足请明确说明；需要其他能力时，可通过本次提供的 tool_search 发现并加载。"
+    "本次业务工具已禁用；如证据不足请明确说明。"
 )
+
+
+class CompactionBudgetError(ValueError):
+    """A valid compaction candidate cannot fit; staged failures never use this."""
+    def __init__(self, message, summary=None):
+        super().__init__(message)
+        self.summary = summary
 
 def budget(configuration, settings, output):
     capacity = configuration.contextWindowTokens
@@ -81,6 +89,7 @@ class ContextWindowProvider:
 
     async def inspect(self, messages, signal, *, protocol_tools=()):
         """Measure a saved window; never publish tools, reserve or compact it."""
+        self.provider.current_input = None
         state = await self._io(signal, self.windows.load, self.role_id, self.session_key, self.scope, self.authority)
         await self._prepare_inputs(signal)
         removed = set(state['removed'])
@@ -100,7 +109,23 @@ class ContextWindowProvider:
             'configurationId': configuration.id, 'model': configuration.model,
             'capacity': configuration.contextWindowTokens, 'inputLimit': available,
             'outputReserve': output, 'safetyMargin': self.settings.contextSafetyMarginTokens,
-            'compactTrigger': trigger, 'compactTarget': target, 'reason': reason}, state
+            'compactTrigger': trigger, 'compactTarget': target, 'reason': reason,
+            'canCompact': len(self._completed_turns(raw)) > self.settings.compactionRetainedTurns}, state
+
+    async def compact(self, messages, signal, *, protocol_tools=()):
+        value, state = await self.inspect(messages, signal, protocol_tools=protocol_tools)
+        if value['capacity'] is None:
+            raise ValueError(value['reason'])
+        if not value['canCompact']:
+            return {**value, 'compacted': False, 'reason': '当前没有需要压缩的历史'}
+        removed = set(state['removed'])
+        raw = [message for message in messages if not (set(message.source_message_ids) & removed)]
+        tools = self._window_tools(raw, (), protocol_tools=protocol_tools)
+        self.last_input_estimate = value['inputTokens']
+        await self._compact('', raw, tools, state, signal, value['inputLimit'], value['compactTarget'],
+                            protocol_tools=protocol_tools, manual=True)
+        result, _ = await self.inspect(messages, signal, protocol_tools=protocol_tools)
+        return {**result, 'compacted': True, 'reason': ''}
 
     async def _io(self, signal, operation, *args, drain_on_cancel=False, **kwargs):
         worker = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
@@ -329,8 +354,7 @@ class ContextWindowProvider:
             attempt['elapsedMs'] = int((time.monotonic() - started) * 1000)
             self._diagnose()
 
-    async def _compact(self, system, raw, tools, state, signal, available, target, *, protocol_tools=(), restore=True):
-        self.compaction_diagnostic['step'] = 'select_prefix'
+    def _completed_turns(self, raw):
         # Shiori session/turns.py: consecutive inputs and pending calls form one
         # lifecycle; only an assistant completion closes it. The current input
         # and all its exchanges remain outside the compactable prefix.
@@ -350,8 +374,17 @@ class ContextWindowProvider:
                 complete = not message.tool_calls and not pending and message.stop_reason not in {'aborted', 'error'}
             elif isinstance(message, ToolResultMessage):
                 pending.discard(message.tool_call_id)
+        else:
+            if start is not None and complete:
+                completed.append((start, len(raw)))
+        return completed
+
+    async def _compact(self, system, raw, tools, state, signal, available, target, *, protocol_tools=(), restore=True, manual=False, keep_zero=False):
+        self.compaction_diagnostic['step'] = 'select_prefix'
+        completed = self._completed_turns(raw)
+        retention = 0 if keep_zero else min(self.settings.compactionRetainedTurns, len(completed))
         choices = list(dict.fromkeys(completed[-keep][0] if keep else completed[-1][1]
-            for keep in range(min(self.settings.compactionRetainedTurns, len(completed)), -1, -1))) if completed else []
+            for keep in range(retention, -1, -1))) if completed else []
         selected = None
         hard_fit = None
         for cut in choices:
@@ -366,18 +399,24 @@ class ContextWindowProvider:
             projected = estimate.tokens + self.settings.summaryTokenLimit
             if hard_fit is None and projected < available:
                 hard_fit = cut
-            if projected <= target:
+            if projected < (available if manual else target):
                 break
         else:
             selected = hard_fit if hard_fit is not None else selected
-        if selected is None or self._prepare_request(system, raw[selected:], self._window_tools(raw[selected:], tools, protocol_tools=protocol_tools, restore=restore))[1].tokens >= available:
-            raise ValueError('完整保留轮或当前工具链超出输入预算，无法安全压缩')
+        if selected is None:
+            raise CompactionBudgetError('当前没有可安全压缩的完整历史轮次')
         prefix, retained = raw[:selected], raw[selected:]
         ids = list(dict.fromkeys([*state['removed'], *(identifier for message in prefix for identifier in message.source_message_ids)]))
         prepared = await self._io(signal, self.windows.prepare, self.role_id, self.session_key, self.scope, self.authority, ids,
                                   drain_on_cancel=True)
         if prepared['version'] != state['version']:
             raise ValueError('工作窗口已变化，请重新开始回复')
+        self.compaction_diagnostic['step'] = 'memory'
+        from .memory_io import run_memory_read
+        covered = await run_memory_read(lambda: self.ensure_coverage(ids), signal=signal)
+        signal.raise_if_cancelled()
+        if not covered:
+            raise ValueError('待逐出消息尚未完成记忆维护')
         records = [summary_source(message) for message in prefix]
         allowed = set(identifier for message in prefix for identifier in message.source_message_ids)
         if state['summary']:
@@ -405,11 +444,12 @@ class ContextWindowProvider:
         visible = [self._summary_message(summary), *retained]
         await self._prepare_inputs(signal)
         _, estimate = self._prepare_request(system, visible, self._window_tools(retained, tools, protocol_tools=protocol_tools, restore=restore))
-        if estimate.tokens >= available or estimate.tokens >= self.last_input_estimate:
-            raise ValueError('压缩后仍超出输入容量或未减少输入，原文已保留')
+        if estimate.tokens >= available:
+            if not keep_zero and selected != choices[-1]:
+                return await self._compact(system, raw, tools, state, signal, available, target,
+                    protocol_tools=protocol_tools, restore=restore, manual=manual, keep_zero=True)
+            raise CompactionBudgetError('压缩后仍超出输入容量，原文已保留', summary)
         self.compaction_diagnostic['step'] = 'commit_summary'
-        covered = await self.ensure_coverage(ids)
-        signal.raise_if_cancelled()
         # Coverage may await memory work while the current tool registry changes.
         # Capture the complete candidate and its issued visibility before the
         # durable cut. Commit may await I/O, but success sends this exact input.
@@ -419,8 +459,8 @@ class ContextWindowProvider:
         request, estimate = self._prepare_request(system, visible, request_tools)
         if request is not None and request.configuration is not None and request.configuration.contextWindowTokens is not None:
             available, _, _ = budget(request.configuration, self.settings, request.max_tokens or self.settings.maxTokens)
-        if estimate.tokens >= available or estimate.tokens >= self.last_input_estimate:
-            raise ValueError('压缩后仍超出输入容量或未减少输入，原文已保留')
+        if estimate.tokens >= available:
+            raise CompactionBudgetError('压缩后仍超出输入容量，原文已保留', summary)
         await self._io(signal, self.windows.commit, prepared, summary,
             authorized=lambda: not signal.is_cancelled() and self.authorized(), covered=covered, drain_on_cancel=True)
         self._publish_window(view)
@@ -457,33 +497,37 @@ class ContextWindowProvider:
 
     async def stream_response(self, *, model, system, messages, tools, signal, session_id=None, provider_timeout=None,
                               protocol_tools=(), only_protocol_tools=False):
+        from .provider import ProviderErrorEvent, AssistantDoneEvent, ToolCallEndEvent, TextDeltaEvent
         if self.on_phase is not None:
             self.on_phase('preparing')
         configuration = self.provider.configuration
-        self.tool_count = len(tools)
         signal.raise_if_cancelled()
         if not await self._io(signal, self.authorized):
             raise PermissionError('对话来源许可已变化')
         if self.current_input is None:
             self.current_input = next((message for message in reversed(messages) if isinstance(message, UserMessage)), None)
-        # Loading can invalidate an old summary by writing a version tombstone.
-        state = await self._io(signal, self.windows.load, self.role_id, self.session_key, self.scope, self.authority,
-                               drain_on_cancel=True)
-        await self._prepare_inputs(signal)
+        self.provider.current_input = self.current_input
+        state = await self._io(signal, self.windows.load, self.role_id, self.session_key, self.scope, self.authority, drain_on_cancel=True)
         removed = set(state['removed'])
         raw = [message for message in messages if not (set(message.source_message_ids) & removed)]
         window_options = {'protocol_tools': protocol_tools, 'restore': not only_protocol_tools}
+        await self._prepare_inputs(signal)
         tools = self._window_tools(raw, tools, commit=True, **window_options)
         visible = ([self._summary_message(state['summary'])] if state['summary'] else []) + raw
         request, estimate = self._prepare_request(system, visible, tools)
         self.last_input_estimate, self.last_input_source = estimate.tokens, estimate.source
-        request_provider = self.provider
-        request_tools = tools
-        committed = False
+        available = trigger = target = None
         if configuration is not None and configuration.contextWindowTokens is not None:
             output = getattr(self.provider, 'max_response_tokens', None) or self.settings.maxTokens
             available, trigger, target = budget(configuration, self.settings, output)
-            if self.last_input_estimate >= trigger and not (self.compaction_failed or self.degraded):
+        request_provider, request_tools = self.provider, tools
+        force = False
+        for attempt in range(3):
+            minimal = self.degraded or (force and attempt == 2)
+            sendable = available is None or (not force and self.last_input_estimate < available)
+            needs_compact = (available is not None and not minimal and
+                (force or self.last_input_estimate >= trigger and not (sendable and self.compaction_failed)))
+            if needs_compact:
                 if self.on_phase is not None:
                     self.on_phase('summarizing')
                 self.compaction_diagnostic = {'stage': 'summary', 'beforeTokens': self.last_input_estimate,
@@ -492,58 +536,73 @@ class ContextWindowProvider:
                     visible, request_tools, request, estimate = await self._compact(
                         system, raw, tools, state, signal, available, target, **window_options)
                     self.last_input_estimate, self.last_input_source = estimate.tokens, estimate.source
-                    committed = True
                     self.compaction_diagnostic.update(stage='committed', afterTokens=self.last_input_estimate)
+                    state = await self._io(signal, self.windows.load, self.role_id, self.session_key, self.scope, self.authority)
+                    removed = set(state['removed'])
+                    raw = [message for message in messages if not (set(message.source_message_ids) & removed)]
                 except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
-                    # A failed optional summary is never a new historical fact.
-                    # Recheck source authority before either degradation path.
                     signal.raise_if_cancelled()
                     if not await self._io(signal, self.authorized):
                         raise
-                    self.compaction_failed = True
                     self.compaction_diagnostic.update(stage='failed', errorType=type(error).__name__)
-                    logger.warning('Context compaction failed role=%s run-scope=%s type=%s',
-                                   self.role_id, self.scope, type(error).__name__)
-                    # Failure follows model/coverage/commit waits. Reprepare
-                    # against the unchanged raw window before choosing fallback.
-                    await self._prepare_inputs(signal)
-                    request_tools = self._window_tools(raw, tools, commit=True, **window_options)
-                    request, estimate = self._prepare_request(system, visible, request_tools)
-                    self.last_input_estimate, self.last_input_source = estimate.tokens, estimate.source
-                    configuration = self.provider.configuration
-                    if configuration is not None and configuration.contextWindowTokens is not None:
-                        output = getattr(self.provider, 'max_response_tokens', None) or self.settings.maxTokens
-                        available, _, _ = budget(configuration, self.settings, output)
-                    if self.last_input_estimate < available:
+                    if not sendable:
+                        if not isinstance(error, CompactionBudgetError):
+                            raise
+                        minimal = True
+                        if error.summary:
+                            state = {**state, 'summary': error.summary}
+                    else:
+                        self.compaction_failed = True
                         self.compaction_diagnostic['fallback'] = 'original'
+                        await self._prepare_inputs(signal)
+                        request_tools = self._window_tools(raw, tools, commit=True, **window_options)
+                        visible = ([self._summary_message(state['summary'])] if state['summary'] else []) + raw
+                        request, estimate = self._prepare_request(system, visible, request_tools)
+                        self.last_input_estimate, self.last_input_source = estimate.tokens, estimate.source
+                        if estimate.tokens >= available:
+                            raise
                 finally:
                     self._diagnose()
-            if not committed and (self.degraded or self.last_input_estimate >= available):
-                # Hard overflow has one transient minimal rendering; never cut SQLite
-                # history or publish the failed summary. Preserve current receipts.
+            if minimal:
+                if self.degraded and force:
+                    raise ValueError('最小请求已超出输入预算')
                 request_provider = self.provider.minimal_provider()
+                request_provider.current_input = self.current_input
                 visible = self._minimal_messages(raw, state)
-                # Shorten context, not authorization: discovery and actual work
-                # must still be possible when the supplied schemas fit. If they
-                # do not fit, fail explicitly instead of silently claiming no tools.
-                request_tools = self._window_tools(raw, tools, commit=True, **window_options)
+                request_tools = tuple(protocol_tools)
                 request, estimate = self._prepare_request(system, visible, request_tools, provider=request_provider)
                 self.last_input_estimate, self.last_input_source = estimate.tokens, estimate.source
                 self.degraded = True
-                self.compaction_diagnostic.update(fallback='minimal', toolsDisabled=False,
-                                                  afterTokens=self.last_input_estimate)
-                self._diagnose()
-                if self.last_input_estimate >= available:
+                self.compaction_diagnostic.update(fallback='minimal', toolsDisabled=True, afterTokens=estimate.tokens)
+                if available is not None and estimate.tokens >= available:
                     raise ValueError('当前输入、必要约束或已执行工具结果仍超出输入容量；原历史已保留')
-        self.tool_count = len(request_tools)
-        await self._reserve(signal)
-        if self.on_phase is not None:
-            self.on_phase('model')
-        timeout = asyncio.timeout(provider_timeout) if provider_timeout is not None else nullcontext()
-        source = (request_provider.stream_prepared(request, system=system, messages=visible, signal=signal)
-                  if callable(getattr(request_provider, 'stream_prepared', None)) else
-                  request_provider.stream_response(model=model, system=system, messages=visible, tools=request_tools,
-                                                   signal=signal, session_id=session_id))
-        async with timeout, aclosing(source) as stream:
-            async for event in stream:
-                yield event
+            self.tool_count = len(request_tools)
+            await self._reserve(signal)
+            if self.on_phase is not None:
+                self.on_phase('model')
+            timeout = asyncio.timeout(provider_timeout) if provider_timeout is not None else nullcontext()
+            source = (request_provider.stream_prepared(request, system=system, messages=visible, signal=signal)
+                if callable(getattr(request_provider, 'stream_prepared', None)) else
+                request_provider.stream_response(model=model, system=system, messages=visible, tools=request_tools,
+                                                signal=signal, session_id=session_id))
+            retry = False
+            emitted = False
+            async with timeout, aclosing(source) as stream:
+                async for event in stream:
+                    if isinstance(event, ProviderErrorEvent) and re.search(
+                        r'context_length_exceeded|maximum context length|context window.*exceed|input.*too (?:long|large)|prompt.*too long',
+                        event.error, re.I):
+                        if not emitted and not self.degraded and attempt < 2 and available is not None:
+                            retry = True
+                            break
+                    if self.degraded:
+                        names = {tool['function']['name'] for tool in protocol_tools}
+                        if (isinstance(event, ToolCallEndEvent) and event.tool_call.name not in names or
+                            isinstance(event, AssistantDoneEvent) and any(call.name not in names for call in event.message.tool_calls)):
+                            raise ValueError('本次工具已禁用，但模型仍返回业务工具调用')
+                    emitted |= isinstance(event, (TextDeltaEvent, ToolCallEndEvent, AssistantDoneEvent))
+                    yield event
+            if not retry:
+                return
+            force = True
+        raise AssertionError('bounded context retry exhausted')

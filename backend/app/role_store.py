@@ -667,7 +667,8 @@ class RoleStore:
         }
 
     def _ensure_role_dirs(self, role_id: str) -> None:
-        (self.root / role_id / "memory").mkdir(parents=True, exist_ok=True)
+        from .memory_schema import ensure_memory_documents
+        ensure_memory_documents(self.root / role_id / "memory")
         (self.root / role_id / "state").mkdir(parents=True, exist_ok=True)
         (self.root / role_id / "workspace").mkdir(parents=True, exist_ok=True)
 

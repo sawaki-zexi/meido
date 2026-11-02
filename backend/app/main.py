@@ -51,11 +51,11 @@ from .desktop_pet.tools import PetActionTool, register_desktop_pet_plugin
 from .model_config import ModelConfigurationStore, PROVIDER_PRESETS, public_configuration, validate_model_configuration
 from .memory_service import MemoryService, MemoryWorker
 from .memory_engine import DefaultMemoryEngine, MemoryMutation, MemoryQuery, MemoryQueryFilters, MemoryScope
-from .embeddings import SharedEmbeddingProvider
+from .embeddings import SharedEmbeddingProvider, MemoryEmbeddingProvider
 from .embedding_config import EmbeddingConfigurationStore, public_embedding_configuration, validate_embedding_configuration
 from .memory_config import MemorySettings, MemorySettingsStore
 from .memory_maintenance import MemoryMaintenance
-from .memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop, MemoryOptimizerWorker, MemoryOptimizationResult, MemoryRecord
+from .memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop, MemoryOptimizerWorker
 from .memory_store import MemoryStore
 from .memory_events import ConsolidationCommitted, TurnCommitted, MemoryEventBus, MemoryWritten
 from .memory_documents import MemoryDocuments
@@ -124,6 +124,7 @@ from .channels.tools import ChannelDirectoryAccess
 from .channels.consolidation import ChannelMemoryMaintenance, finish_io
 from .agent_runtime.skills import SkillRegistry
 from .agent_runtime.memory_write_tools import MemorizeTool, ForgetMemoryTool, RoleMemoryAccess
+from .agent_runtime.memory_io import run_memory_io
 from .todo import TodoPlugin, TodoStore
 from .todo.agent import register_todo_agent_plugin
 from .todo.agent import TodoSearchTool, TodoWriteTool, TodoReminderControlTool
@@ -189,6 +190,8 @@ logger = logging.getLogger(__name__)
 roles_root = Path(os.getenv("MEIDO_ROLES_DIR", "roles"))
 project_root = Path(os.getenv("MEIDO_PROJECT_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
 data_root = Path(os.getenv("MEIDO_DATA_DIR", ".data"))
+from .context_memory_migration import migrate_context_memory
+migrate_context_memory(data_root, roles_root)
 mcp_host = McpHost(McpConfigStore(data_root / "mcp.db", SystemCredentialStore("meido.mcp", strict_cleanup=True)))
 managed_napcat = ManagedNapCat(data_root)
 _managed_qq_pending: dict[str, str] = {}
@@ -256,10 +259,13 @@ def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_
                 if message.id in ids:
                     sources.setdefault(message.sessionKey, []).append(message.id)
         for source_session, source_ids in sources.items():
+            if source_session.startswith('thread:') and (not owner or source is not None and source.chat_type == 'group'):
+                if not await channel_memory_maintenance.ensure_coverage(role_id, source_session, source_ids):
+                    return False
+                continue
             request = MemoryCoverageRequest(MemoryScope(role_id, f'role:{role_id}'), source_session, tuple(source_ids),
-                                           required=memory_required and memory_settings_store.get().enabled)
-            proof = await _current_memory_engine().ensure_coverage(request)
-            if proof.request != request or proof.status not in {'covered', 'not_required'}:
+                                           required=memory_required)
+            if request.required and not await _cover_markdown_window(request):
                 return False
         return await asyncio.to_thread(authorized)
 
@@ -269,7 +275,7 @@ def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_
             session_store.update_run(run_id, status=run.status, model_snapshot={**run.modelSnapshot, 'budgetDiagnostic': values})
 
     window = ContextWindowProvider(provider, settings, history.windows(readonly=readonly) if history is not None else _context_window_store(), role_id=role_id,
-        session_key=session_key, scope='shared_owner' if history is not None else 'owner' if owner else 'external', authority=authority,
+        session_key=session_key, scope='shared_owner' if history is not None and history.shared else 'owner' if owner else 'external', authority=authority,
         authorized=authorized, ensure_coverage=covered, on_diagnostic=None if readonly else diagnostic)
     # Calibration is an optional provider capability. Legacy ModelProviders
     # keep the window's local estimate without acquiring anchor state.
@@ -359,8 +365,11 @@ embedding_configuration_store = EmbeddingConfigurationStore(data_root / "embeddi
 memory_settings_store = MemorySettingsStore(data_root / "memory-settings.json")
 embedding_provider = SharedEmbeddingProvider(
     embedding_configuration_store.get,
-    enabled=lambda: memory_settings_store.get().embeddingEnabled,
+    enabled=lambda: memory_settings_store.get().ownerEmbeddingEnabled,
 )
+memory_embedding_configuration_store = EmbeddingConfigurationStore(data_root / 'memory-embedding-config.json')
+memory_embedding_provider = MemoryEmbeddingProvider(memory_embedding_configuration_store.get,
+    enabled=lambda: memory_settings_store.get().embeddingEnabled)
 plugin_registry = PluginRegistry()
 network_tools_config = NetworkToolsConfig.from_environment()
 owner_knowledge_store = OwnerKnowledgeStore(resolve_owner_knowledge_database(project_root, data_root))
@@ -534,6 +543,13 @@ def _role_model_configuration(role_id: str):
     return model_configuration_store.get(role.modelConfigurationId) if role and role.modelConfigurationId else model_configuration_store.get()
 
 
+def _memory_configuration_generation(role_id: str) -> str:
+    configuration = _role_model_configuration(role_id)
+    payload = configuration.model_dump_json() if configuration is not None else ''
+    # Include credential edits without retaining credentials in failure state.
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 def _env_bool(name: str, default: bool = True) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -541,25 +557,18 @@ def _env_bool(name: str, default: bool = True) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
-def _complete_model_json(messages: list[dict[str, str]], configuration, *, max_tokens: int) -> object:
+def _complete_model_json(messages: list[dict[str, str]], configuration, *, max_tokens: int, timeout: float = 90, commit_guard=None) -> object:
     if configuration is None:
         raise RuntimeError("memory model is not configured")
 
-    async def collect() -> str:
-        complete = getattr(model_adapter, "complete_messages", None)
-        if complete is not None:
-            return await complete(messages, configuration, max_tokens=max_tokens)
-        parts: list[str] = []
-        async for delta in model_adapter.stream_messages(messages, configuration, max_tokens=max_tokens):
-            parts.append(delta)
-        return "".join(parts)
-
-    text = asyncio.run(asyncio.wait_for(collect(), timeout=8.0)).strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-        if text.endswith("```"):
-            text = text[:-3].rstrip()
-    return json.loads(text)
+    from .memory_model import complete_auxiliary
+    from .memory_json import load_json_object_loose
+    work = complete_auxiliary(model_adapter, messages, configuration, max_tokens=max_tokens, timeout=timeout)
+    text = asyncio.run(commit_guard.run(work) if commit_guard is not None else work).strip()
+    result = load_json_object_loose(text)
+    if result is None:
+        raise ValueError('记忆模型没有返回 JSON 对象')
+    return result
 
 
 def _generate_todo_reminder(role_id: str, event_id: str, kind: str, payload: list[dict[str, object]]) -> str:
@@ -607,228 +616,139 @@ def _generate_todo_reminder(role_id: str, event_id: str, kind: str, payload: lis
 
 
 def _post_response_provider(role_id, session_key, user_message, assistant_message, active):
-    result = _complete_model_json([
-        {"role": "system", "content": (
-            "从本轮用户和助手消息中提取值得长期保存的隐式记忆。只返回 JSON："
-            "{\"memories\":[{\"memoryType\":\"fact|preference|profile|procedure|event\","
-            "\"summary\":string,\"supersedeKey\":string|null}]}。"
-            "不要记录一次性闲聊、助手推测或执行结果。"
-        )},
-        {"role": "user", "content": json.dumps({"user": user_message.content, "assistant": assistant_message.content, "activeMemories": active}, ensure_ascii=False)},
-    ], _role_model_configuration(role_id), max_tokens=700)
-    if not isinstance(result, dict) or not isinstance(result.get("memories"), list):
+    from .memory_prompts import _build_long_term_prompt
+    conversation = f'USER: {user_message.content}\nASSISTANT: {assistant_message.content}'
+    existing = '\n'.join(item['summary'] for item in active if item.get('memoryType') == 'profile')[:6000]
+    result = _complete_model_json([{'role': 'user', 'content': _build_long_term_prompt(
+        conversation=conversation, existing_profile=existing)}], _role_model_configuration(role_id), max_tokens=600)
+    if not isinstance(result, dict):
         raise ValueError("post-response JSON schema invalid")
-    return result["memories"]
+    return result
 
 
-def _consolidation_provider(source_key: str, window: list) -> object:
-    parts = source_key.split(":", 2)
-    role_id = parts[1] if len(parts) > 1 else ""
+def _memory_auxiliary_provider(role_id, messages, max_tokens, *, commit_guard=None):
+    from .memory_model import complete_auxiliary
+    work = complete_auxiliary(model_adapter, messages, _role_model_configuration(role_id), max_tokens=max_tokens)
+    return asyncio.run(commit_guard.run(work) if commit_guard is not None else work)
+
+
+def _consolidation_provider(source_key: str, window: list, *, commit_guard=None) -> object:
+    from .memory_markdown_prompts import (build_user_layer_prompt, _format_pending_items,
+        _normalize_history_entries, _build_recent_context_prompt, _render_recent_context)
+    role_id = source_key.split(":", 2)[1]
+    documents = MemoryDocuments(roles_root)
+    conversation = "\n".join(f"[{message.createdAt.isoformat()}] {message.role.upper()}: {message.content}" for message in window)
+    recent_history = "\n".join(line for line in documents.read_document(role_id, 'HISTORY.md').splitlines()
+                               if line.strip() and not line.startswith('#') and not line.startswith('<!--'))
     result = _complete_model_json([
-        {"role": "system", "content": (
-            "用 LLM 整理对话窗口。只返回 JSON："
-            "{\"history\":string,\"recentContext\":string,\"pendingItems\":[{\"memoryType\":string,\"summary\":string,\"sourceKey\":string}]}。"
-            "history 和 recentContext 必须是可直接写入 Markdown 的简洁内容；sourceKey 必须以前缀 consolidation: 开头，禁止虚构事实。"
-        )},
-        {"role": "user", "content": json.dumps({"sourceKey": source_key, "messages": [{"role": m.role, "content": m.content, "sequence": m.sequence} for m in window]}, ensure_ascii=False)},
-    ], _role_model_configuration(role_id), max_tokens=900)
-    if not isinstance(result, dict) or not isinstance(result.get("pendingItems", result.get("memories")), list):
-        raise ValueError("consolidation JSON schema invalid")
-    normalized: list[dict[str, str]] = []
-    raw_items = result.get("pendingItems", result.get("memories"))
-    for item in raw_items:
-        if not isinstance(item, dict):
-            continue
-        memory_type, summary, item_source = item.get("memoryType"), item.get("summary"), item.get("sourceKey")
-        if isinstance(memory_type, str) and memory_type.strip() in {"fact", "preference", "profile", "procedure", "event"} and isinstance(summary, str) and isinstance(item_source, str) and summary.strip() and item_source.startswith(source_key):
-            normalized.append({"memoryType": memory_type.strip(), "summary": summary.strip(), "sourceKey": item_source.strip()})
-    return {
-        "pendingItems": normalized,
-        "history": result.get("history", "") if isinstance(result.get("history", ""), str) else "",
-        "recentContext": result.get("recentContext", "") if isinstance(result.get("recentContext", ""), str) else "",
-    }
+        {'role': 'system', 'content': '你是中性的 Markdown 记忆提取器，不扮演角色，也不生成用户可见回复。USER 是当前角色交流对象“你”，ASSISTANT 是当前角色“我”。自然语言输出必须使用“我 / 你 / 我们”。'},
+        {'role': 'user', 'content': build_user_layer_prompt(documents.read_document(role_id, 'MEMORY.md'),
+             "\n".join(recent_history.splitlines()[-3:]), conversation)},
+    ], _role_model_configuration(role_id), max_tokens=1024, timeout=300, commit_guard=commit_guard)
+    if not isinstance(result, dict):
+        raise ValueError('用户层记忆提取返回无效 JSON')
+    entries = _normalize_history_entries(result.get('history_entries'), result.get('history_entry'))
+    compression = _complete_model_json([{'role': 'user', 'content': _build_recent_context_prompt(
+        old_recent_context=_role_recent_context(role_id), conversation=conversation, recent_turns='')}],
+        _role_model_configuration(role_id), max_tokens=512, timeout=180, commit_guard=commit_guard)
+    if not isinstance(compression, dict):
+        raise ValueError('近期语境提取返回无效 JSON')
+    recent = _render_recent_context(compression=compression,
+        compression_until=window[-1].createdAt.isoformat(), recent_turns='')
+    return {'pendingItems': [], 'pending': _format_pending_items(result.get('pending_items', [])),
+        'history': "\n".join(summary for summary, _ in entries), 'recentContext': recent,
+        'history_entries': entries, 'conversation': conversation}
 
 
-def _hyde_provider(role_id: str, query: str) -> list[str]:
-    result = _complete_model_json([
-        {"role": "system", "content": "为记忆检索生成最多两个简短假设查询，分别关注事件和一般事实。只返回 JSON：{\"queries\":[string,string]}。"},
-        {"role": "user", "content": query},
-    ], _role_model_configuration(role_id), max_tokens=120)
-    if not isinstance(result, dict) or not isinstance(result.get("queries"), list):
-        raise ValueError("HyDE JSON schema invalid")
-    return [value.strip() for value in result["queries"] if isinstance(value, str) and value.strip()][:2]
-
-
-def _consolidate_role_memories(
-    role_id: str,
-    existing: list[MemoryRecord],
-    pending: list[MemoryRecord],
-    history: str,
-    current_self: str,
-) -> MemoryOptimizationResult:
-    if not memory_settings_store.get().enabled or not advanced_settings.values().memoryOptimizerEnabled:
-        raise RuntimeError('后台记忆整理已暂停')
-    role = store.get(role_id)
-    if role is None:
-        raise ValueError("角色不存在")
-    configuration = model_configuration_store.get(role.modelConfigurationId) if role.modelConfigurationId else model_configuration_store.get()
-    if configuration is None:
-        raise RuntimeError("长期记忆归并需要可用的模型连接")
-    payload = {
-        "existingMemories": [
-            {"memoryType": item.memory_type, "summary": item.summary, "sourceKeys": item.sources}
-            for item in existing
-        ],
-        "pendingCandidates": [
-            {"memoryType": item.memory_type, "summary": item.summary, "sourceKeys": item.sources}
-            for item in pending
-        ],
-        "recentHistory": history[-6000:],
-        "currentSelfUnderstanding": current_self,
-    }
-    request = [
-        {
-            "role": "system",
-            "content": (
-                "你负责归并一个角色的长期记忆。只根据输入内容总结，不得推测或添加事实。"
-                "合并重复或相近事实，保留不同事实；保留每条记忆原有的 sourceKeys，禁止新造来源。"
-                "selfUnderstanding 只描述关系认识和共同经历，不写入或建议修改角色性格、行为规则或回复限制。"
-                "只返回 JSON：{\"memories\":[{\"memoryType\":string,\"summary\":string,\"sourceKeys\":string[]}],"
-                "\"selfUnderstanding\":string}。"
-            ),
-        },
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-    ]
-
-    async def collect() -> str:
-        parts: list[str] = []
-        async for delta in model_adapter.stream_messages(request, configuration, max_tokens=1200):
-            parts.append(delta)
-        return "".join(parts)
-
-    text = asyncio.run(collect())
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3].rstrip()
-    try:
-        result = json.loads(cleaned)
-    except json.JSONDecodeError as error:
-        raise ValueError("Optimizer 返回内容不是有效 JSON") from error
-    if not isinstance(result, dict) or not isinstance(result.get("memories"), list):
-        raise ValueError("Optimizer 返回的记忆格式无效")
-    allowed_sources = {source for item in [*existing, *pending] for source in item.sources}
-    records: list[MemoryRecord] = []
-    for item in result["memories"]:
-        if not isinstance(item, dict):
-            raise ValueError("Optimizer 返回的记忆条目格式无效")
-        memory_type = item.get("memoryType")
-        summary = item.get("summary")
-        sources = item.get("sourceKeys")
-        if not isinstance(memory_type, str) or not memory_type.strip() or not isinstance(summary, str) or not summary.strip() or not isinstance(sources, list):
-            raise ValueError("Optimizer 返回的记忆条目缺少必要字段")
-        if any(not isinstance(source, str) or source not in allowed_sources for source in sources):
-            raise ValueError("Optimizer 返回了无效的记忆来源")
-        records.append(MemoryRecord(memory_type.strip(), summary.strip(), list(dict.fromkeys(sources))))
-    self_understanding = result.get("selfUnderstanding")
-    if not isinstance(self_understanding, str):
-        raise ValueError("Optimizer 返回的自我认识格式无效")
-    return MemoryOptimizationResult(MemoryOptimizer._merge_records([], records), self_understanding[:2000])
-
-
-def _persist_consolidated_memories(role_id: str, records: list[MemoryRecord]) -> None:
-    """Mirror optimizer output into the role-scoped structured memory store."""
-    writes = [
-        (record.memory_type, record.summary, _consolidation_source_ref(role_id, source_key))
-        for record in records
-        for source_key in dict.fromkeys(record.sources)
-    ]
-    for item in memory_store.consolidate_batch(role_id, writes):
-        memory_service.index_embedding(role_id, item)
-
-
-def _consolidation_source_ref(role_id: str, source_key: str) -> MemorySourceRef:
-    """Decode the maintenance source key into a navigable consolidation origin."""
-    parts = source_key.split(":")
-    message_ids: list[str] = []
-    message_range: tuple[int, int] | None = None
-    if len(parts) >= 6 and parts[0] == "consolidation" and parts[1] == role_id:
-        try:
-            start, end = (int(value) for value in parts[2].split("-", 1))
-            message_range = (start, end)
-            message_ids = [parts[4]]
-        except (TypeError, ValueError):
-            message_ids = []
-            message_range = None
-    return MemorySourceRef(
-        kind="consolidation",
-        sessionKey=f"role:{role_id}",
-        messageIds=message_ids,
-        messageRange=message_range,
-        stableSourceKey=source_key,
-    )
+def _hyde_provider(role_id: str, query: str, style: str) -> str:
+    from .memory_prompts import _explicit_hypothesis_prompt
+    return _memory_auxiliary_provider(role_id,
+        [{'role': 'user', 'content': _explicit_hypothesis_prompt(query, style)}], 80)
 
 
 def _consume_consolidation_event(event: ConsolidationCommitted) -> None:
-    records = [
-        (
-            candidate.memory_type,
-            candidate.summary,
-            MemorySourceRef(
-                kind="consolidation",
-                sessionKey=event.session_key,
-                messageIds=list(event.message_ids),
-                messageRange=event.message_range,
-                stableSourceKey=candidate.source_key,
-            ),
-            None,
-        )
-        for candidate in event.candidates
-    ]
-    items = memory_store.consume_consolidation_event(event.role_id, event.source_key, records)
-    for item in items:
-        memory_service.index_embedding(event.role_id, item)
-    memory_event_bus.publish(MemoryWritten(
-        event.role_id,
-        event.session_key,
-        event.source_key,
-        tuple(item.id for item in items),
-        "consolidation",
-    ))
+    from .memory_writes import save_implicit
+    from .memory_retrieval import RetrievalStore
+    from .memory_prompts import _build_long_term_prompt
+    if not memory_service.availability(event.role_id)[0]:
+        return  # An unavailable/disabled optional engine has no subscriber.
+    if memory_store.has_consolidation_source(event.role_id, event.source_key):
+        return
+    ids = []
+    for text, weight in event.history_entries:
+        entry_key = event.source_key + '#h:' + hashlib.sha1(text.strip().encode()).hexdigest()[:12]
+        if memory_store.has_consolidation_source(event.role_id, entry_key):
+            continue
+        vector, model = memory_service.embed_for_write(event.role_id, text)
+        snapshot = memory_store.retrieval_snapshot(event.role_id)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        recent = [(item, vec) for item, vec in snapshot if item.updatedAt >= cutoff]
+        similar = RetrievalStore(memory_service, recent, None).vector_search(vector,
+            memory_types=['event'], score_threshold=.92, top_k=1, hotness_alpha=0)
+        if similar:
+            memory_store.reinforce_items_batch(event.role_id, [similar[0]['id']])
+            memory_store.consume_consolidation_event(event.role_id, entry_key, [])
+            continue
+        match = re.match(r'^\[(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?\]', text.strip())
+        happened = datetime.fromisoformat(f'{match[1]}T{match[2] or "00"}:{match[3] or "00"}:{match[4] or "00"}').replace(tzinfo=timezone.utc) if match else None
+        source = MemorySourceRef(kind='consolidation', sessionKey=f'role:{event.role_id}',
+            messageIds=list(event.message_ids), messageRange=event.message_range, stableSourceKey=entry_key)
+        for item in memory_store.consume_consolidation_event(event.role_id, entry_key, [('event', text, source, happened)]):
+            memory_store.set_embedding(event.role_id, item.id, vector, model)
+            memory_store.update_metadata(event.role_id, item.id, emotional_weight=weight)
+            ids.append(item.id)
+    if event.conversation:
+        existing = '\n'.join(f'- [{item.memoryType}] {item.summary}' for item in memory_store.list_active(event.role_id)[:100]
+                             if item.memoryType in {'profile', 'preference', 'procedure'})[:6000]
+        implicit = _complete_model_json([
+            {'role': 'system', 'content': '你是中性的长期记忆提取器，不扮演角色，也不生成用户可见回复。'},
+            {'role': 'user', 'content': _build_long_term_prompt(conversation=event.conversation, existing_profile=existing)}],
+            _role_model_configuration(event.role_id), max_tokens=600)
+        source = MemorySourceRef(kind='consolidation', sessionKey=f'role:{event.role_id}',
+            messageIds=list(event.message_ids), messageRange=event.message_range, stableSourceKey=event.source_key)
+        ids.extend(item.id for item in save_implicit(memory_service, event.role_id, source, implicit))
+    # Older pending events contain candidates instead of a conversation. Import
+    # their original source keys; do not rewrite their facts into new evidence.
+    else:
+        for candidate in event.candidates:
+            source = MemorySourceRef(kind='consolidation', sessionKey=f'role:{event.role_id}',
+                messageIds=list(event.message_ids), messageRange=event.message_range, stableSourceKey=candidate.source_key)
+            from .memory_writes import save
+            item, _ = save(memory_service, event.role_id, candidate.memory_type, candidate.summary, source, explicit=False)
+            ids.append(item.id)
+    memory_store.consume_consolidation_event(event.role_id, event.source_key, [])
+    memory_event_bus.publish(MemoryWritten(event.role_id, event.session_key, event.source_key, tuple(ids), 'consolidation'))
 
 
-def _observe_consolidation_event(event: ConsolidationCommitted) -> None:
-    """Publish the commit boundary before consumers run, then consume it."""
+def _publish_consolidation_event(event):
+    _consume_consolidation_event(event)
     memory_event_bus.publish(event)
-    try:
-        _consume_consolidation_event(event)
-    except Exception as error:
-        memory_event_bus.publish(MemoryWritten(
-            event.role_id,
-            event.session_key,
-            event.source_key,
-            operation="consolidation",
-            error=str(error),
-        ))
-        raise
 
 
 memory_service = MemoryService(
     memory_store,
-    embedding_provider,
+    memory_embedding_provider,
     _post_response_provider,
     memory_event_bus,
     implicit_extraction_enabled=_env_bool("MEIDO_MEMORY_IMPLICIT_EXTRACTION_ENABLED", True),
     memory_enabled=lambda: memory_settings_store.get().enabled,
+    auxiliary_provider=_memory_auxiliary_provider,
 )
 async def _cover_markdown_window(request):
     role_id = request.scope.role_id
     if memory_worker.role_deletion_blocked(role_id):
         return False
-    async with memory_worker.role_lock_for(role_id):
-        return await finish_io(asyncio.to_thread(memory_maintenance.ensure_coverage,
-            role_id, request.source_session_key, list(request.source_message_ids)))
+    from .memory_document_lock import MarkdownCommitGuard
+    guard = MarkdownCommitGuard()
+    try:
+        async with memory_worker.role_lock_for(role_id):
+            result = await asyncio.to_thread(memory_maintenance.ensure_coverage,
+                role_id, request.source_session_key, list(request.source_message_ids), commit_guard=guard)
+    except asyncio.CancelledError:
+        await finish_io(asyncio.to_thread(guard.cancel))
+        raise
+    memory_worker.retry_consumers(role_id)
+    return result
 
 
 memory_engine = DefaultMemoryEngine(memory_service, role_exists=lambda role_id: store.get(role_id) is not None,
@@ -839,18 +759,14 @@ try:
 except ValueError:
     memory_optimizer_interval = MemoryOptimizer.DEFAULT_INTERVAL_SECONDS
 
+from .host_memory_optimizer import HostMemoryOptimizer
+
 memory_optimizer_worker = MemoryOptimizerWorker(
-    MemoryOptimizer(
-        roles_root,
-        lambda role_id, existing, pending, history, current_self: _consolidate_role_memories(
-            role_id,
-            existing,
-            pending,
-            history,
-            current_self,
-        ),
-    ),
-    enabled=lambda: memory_settings_store.get().enabled and advanced_settings.values().memoryOptimizerEnabled,
+    HostMemoryOptimizer(roles_root,
+        lambda role_id, system, prompt, tokens, commit_guard=None: _memory_auxiliary_provider(role_id,
+            [{'role': 'system', 'content': system}, {'role': 'user', 'content': prompt}], tokens, commit_guard=commit_guard),
+        enabled=lambda: advanced_settings.values().memoryOptimizerEnabled),
+    enabled=lambda: advanced_settings.values().memoryOptimizerEnabled,
 )
 memory_optimizer_loop = MemoryOptimizerLoop(
     memory_optimizer_worker,
@@ -866,15 +782,18 @@ memory_optimizer_loop = MemoryOptimizerLoop(
             else model_configuration_store.get()
         ) is not None
     ),
-    enabled_provider=lambda: memory_settings_store.get().enabled and advanced_settings.values().memoryOptimizerEnabled,
+    enabled_provider=lambda: advanced_settings.values().memoryOptimizerEnabled,
 )
 memory_maintenance = MemoryMaintenance(
     roles_root,
     session_store,
-    _observe_consolidation_event,
+    _publish_consolidation_event,
     _consolidation_provider,
     role_exists=lambda role_id: store.get(role_id) is not None,
     recent_limit_provider=lambda: advanced_settings.values().recent_memory_count,
+    ownership_provider=lambda role_id: _memory_ownership(role_id),
+    configuration_generation=_memory_configuration_generation,
+    defer_consumers=True,
     messages_provider=lambda role_id, session_key: (
         multichannel_store.owner_context_messages(role_id)
         if multichannel_store.sessions is session_store
@@ -933,81 +852,77 @@ def _todo_application() -> TodoApplicationService:
 async def _mutate_and_sync_memory(role_id: str, operation):
     if memory_worker.role_deletion_blocked(role_id):
         raise HTTPException(status_code=409, detail="角色正在删除，请稍后再试")
-    async with memory_worker.role_lock_for(role_id):
+    async with memory_worker.semantic_lock_for(role_id):
         if memory_worker.role_deletion_blocked(role_id):
             raise HTTPException(status_code=409, detail="角色正在删除，请稍后再试")
         return await _mutate_and_sync_memory_locked(role_id, operation)
 
 
 async def _mutate_and_sync_memory_locked(role_id: str, operation):
-    snapshot = memory_store.snapshot_role(role_id)
-    documents = MemoryDocuments(roles_root)
-    memory_dir = documents.memory_dir(role_id)
-    document_paths = (memory_dir / "MEMORY.md", memory_dir / "PENDING.md")
-    previous_documents = {
-        path: path.read_text(encoding="utf-8") if path.exists() else None
-        for path in document_paths
-    }
-    def restore(error: BaseException) -> None:
-        try:
-            memory_store.restore_role(role_id, snapshot)
-            writes = {path: content for path, content in previous_documents.items() if content is not None}
-            for path, content in previous_documents.items():
-                if content is None:
-                    path.unlink(missing_ok=True)
-            if writes:
-                MemoryOptimizer.commit_documents(writes)
-        except Exception as restore_error:
-            raise HTTPException(status_code=500, detail=f"记忆同步失败，且回滚失败：{restore_error}") from error
-
+    """Structured engine mutations do not rewrite host Markdown documents."""
+    snapshot = await run_memory_io(lambda: memory_store.snapshot_role(role_id))
     try:
         result = operation()
-        if inspect.isawaitable(result):
-            result = await result
-    except BaseException as error:
-        restore(error)
+        return await result if inspect.isawaitable(result) else result
+    except BaseException:
+        # The mutation's worker has retired before releasing this semantic
+        # lock. A cancelled tool cannot leave a write racing its terminal.
+        await run_memory_io(lambda: memory_store.restore_role(role_id, snapshot))
         raise
-    try:
-        documents.sync_structured_memory(role_id, memory_store.list_all(role_id))
-    except Exception as error:
-        restore(error)
-        raise HTTPException(status_code=500, detail=f"记忆同步失败，原记忆已恢复：{error}") from error
-    return result
 
 
-def _role_memory_context(role_id: str, *, include_recent=True, readonly=False) -> str:
-    if not memory_settings_store.get().enabled:
-        return ""
-    recent_current = True
-    if not readonly and multichannel_store.sessions is session_store and not memory_worker.role_deletion_blocked(role_id):
-        try:
-            recent_current = memory_maintenance.refresh_recent_context(role_id, f"role:{role_id}")
-        except (OSError, RuntimeError, sqlite3.Error, ValueError):
-            recent_current = False
-            logger.warning("主人近期上下文刷新失败 role=%s", role_id, exc_info=True)
+def _role_memory_context(role_id: str, *, include_recent=True, readonly=False, external=False) -> str:
+    """Read host documents without repair, maintenance or semantic-engine gating."""
+    from .memory_schema import select_memory_sections, SELF_PERSONA_SECTION, SELF_RELATIONSHIP_SECTION
     documents = MemoryDocuments(roles_root)
-    try:
-        documents.memory_dir(role_id)
-    except ValueError:
-        return ""
     sections = []
-    for filename in ("SELF.md", "MEMORY.md", "RECENT_CONTEXT.md"):
-        if filename == "RECENT_CONTEXT.md" and (not recent_current or not include_recent):
+    for filename in ("SELF.md", "MEMORY.md"):
+        if external and filename == "MEMORY.md":
             continue
         try:
             content = documents.read_document(role_id, filename).strip()
+            if external:
+                content = select_memory_sections(filename, content, (SELF_PERSONA_SECTION, SELF_RELATIONSHIP_SECTION))
         except (OSError, RuntimeError, ValueError):
             continue
         if content:
             sections.append(f"[{filename}]\n{content}")
+    if include_recent and not external:
+        recent = _role_recent_context(role_id)
+        if recent:
+            sections.append(recent)
     return "\n\n".join(sections)
 
 
-def _role_owner_understanding_memory(role_id: str) -> str:
-    if not memory_settings_store.get().enabled:
+def _role_recent_context(role_id: str) -> str:
+    documents = MemoryDocuments(roles_root)
+    try:
+        text = documents.read_document(role_id, "RECENT_CONTEXT.md")
+        marker, _, body = text.partition("\n")
+        prefix = "<!-- recent-context-sources: "
+        if not marker.startswith(prefix) or not marker.endswith(" -->"):
+            return ""  # Legacy text stays on disk; reading cannot invent provenance.
+        sources = json.loads(marker[len(prefix):-4])
+        current = _memory_ownership(role_id)
+        if not isinstance(sources, dict) or any(current.get(key) != value for key, value in sources.items()):
+            return ""
+        abstract = body.split("<!-- recent-raw -->", 1)[0].strip()
+        return "[RECENT_CONTEXT.md]\n" + abstract if abstract else ""
+    except (OSError, RuntimeError, ValueError, TypeError, IndexError):
         return ""
+
+
+def _memory_ownership(role_id):
+    if multichannel_store.sessions is not session_store:
+        return {}
+    from .conversation_history import _grant_authority
+    history = _owner_history(role_id, readonly=True)
+    return {key: _grant_authority(grant) for key, grant in history.grants.items()}
+
+
+def _role_owner_understanding_memory(role_id: str) -> str:
     sections = [_role_memory_context(role_id)]
-    records = memory_store.list_all(role_id)
+    records = memory_store.list_all(role_id) if memory_service.availability(role_id)[0] else []
     if records:
         summaries = [
             f"- [{item.memoryType}] {item.summary}"
@@ -1137,10 +1052,8 @@ async def _start_memory_workers() -> None:
             if recovered:
                 _channel_roles_deleting.discard(role_id)
     await asyncio.to_thread(task_runtime.reconcile_roles, {role.id for role in store.list()})
-    if memory_settings_store.get().enabled:
-        await asyncio.to_thread(memory_maintenance.resume_pending)
-    if memory_settings_store.get().enabled:
-        memory_optimizer_loop.start()
+    await memory_worker.resume_pending()
+    memory_optimizer_loop.start()
     owner_startup_report = await owner_knowledge_plugin.startup()
     if owner_startup_report and (owner_startup_report.created or owner_startup_report.updated or owner_startup_report.deleted):
         _queue_owner_understanding_refresh(owner_startup_report)
@@ -1638,7 +1551,10 @@ def _public_memory_settings(settings: MemorySettings | None = None) -> dict[str,
     return {
         "enabled": current.enabled,
         "embeddingEnabled": current.embeddingEnabled,
-        "embedding": get_embedding_configuration(),
+        "ownerEmbeddingEnabled": current.ownerEmbeddingEnabled,
+        "embedding": get_memory_embedding_configuration(),
+        "documentsEnabled": True,
+        "engineStatus": {role.id: memory_service.availability(role.id)[1] for role in store.list()},
     }
 
 
@@ -1657,7 +1573,7 @@ async def update_memory_settings(data: MemorySettings) -> dict[str, object]:
     if current.enabled and not previous.enabled:
         memory_worker.start()
         memory_optimizer_loop.start()
-        await asyncio.to_thread(memory_maintenance.resume_pending)
+        await memory_worker.resume_pending()
     return _public_memory_settings(current)
 
 
@@ -1668,6 +1584,45 @@ def _embedding_configuration_with_saved_key(data: EmbeddingConfigurationInput) -
     return data.model_copy(update={"apiKey": current.apiKey})
 
 
+@app.get('/api/memory/embedding/configuration')
+def get_memory_embedding_configuration():
+    configuration = memory_embedding_configuration_store.get()
+    errors = [reason for role in store.list() if (reason := memory_service.availability(role.id)[1])]
+    return {'configuration': public_embedding_configuration(configuration), 'status': {
+        'configured': bool(configuration.apiKey), 'ready': memory_embedding_provider.ready and not errors,
+        'enabled': memory_settings_store.get().embeddingEnabled, 'model': configuration.model,
+        'dimensions': configuration.dimensions, 'lastError': '; '.join(dict.fromkeys(errors)) or memory_embedding_provider.last_error}}
+
+
+@app.put('/api/memory/embedding/configuration')
+def save_memory_embedding_configuration(data: EmbeddingConfigurationInput):
+    try:
+        memory_embedding_configuration_store.save(data)
+        memory_embedding_provider.last_error = None
+        return get_memory_embedding_configuration()
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.post('/api/memory/embedding/configuration/reveal-key')
+def reveal_memory_embedding_configuration(response: Response):
+    response.headers['Cache-Control'] = 'no-store'
+    return {'apiKey': memory_embedding_configuration_store.get().apiKey}
+
+
+@app.post('/api/memory/embedding/configuration/test')
+def test_memory_embedding_configuration(data: EmbeddingConfigurationInput):
+    candidate = data.model_copy(update={'apiKey': data.apiKey or memory_embedding_configuration_store.get().apiKey})
+    validate_embedding_configuration(candidate)
+    tester = SharedEmbeddingProvider(lambda: EmbeddingConfiguration.model_validate(candidate.model_dump()), timeout=8)
+    started = monotonic()
+    try:
+        tester.embed_query('ping')
+        return {'ok': True, 'message': '连接成功', 'latencyMs': round((monotonic() - started) * 1000)}
+    except Exception as error:
+        return {'ok': False, 'message': _safe_model_error(error, candidate.apiKey)}
+
+
 @app.get("/api/embedding/configuration")
 def get_embedding_configuration() -> dict[str, object]:
     configuration = embedding_configuration_store.get()
@@ -1676,7 +1631,7 @@ def get_embedding_configuration() -> dict[str, object]:
         "status": {
             "configured": bool(configuration.apiKey),
             "ready": embedding_provider.ready,
-            "enabled": memory_settings_store.get().embeddingEnabled,
+            "enabled": memory_settings_store.get().ownerEmbeddingEnabled,
             "model": configuration.model,
             "dimensions": configuration.dimensions,
             "lastError": embedding_provider.last_error,
@@ -1698,7 +1653,7 @@ def save_embedding_configuration(data: EmbeddingConfigurationInput) -> dict[str,
         "status": {
             "configured": bool(configuration.apiKey),
             "ready": embedding_provider.ready,
-            "enabled": memory_settings_store.get().embeddingEnabled,
+            "enabled": memory_settings_store.get().ownerEmbeddingEnabled,
             "model": configuration.model,
             "dimensions": configuration.dimensions,
             "lastError": embedding_provider.last_error,
@@ -2008,7 +1963,7 @@ def get_role_tools(role_id: str) -> dict[str, object]:
             reasons[name] = coding_status['reason']
     for names, available, reason in (
         (("web_search", "web_fetch"), network_tools_config.enabled, "宿主联网已关闭"),
-        (("memorize", "forget_memory"), memory_settings_store.get().enabled, "全局记忆已关闭"),
+        (("recall_memory", "memorize", "forget_memory"), *memory_service.availability(role.id)),
     ):
         if not available:
             for name in names:
@@ -2900,6 +2855,10 @@ def _save_channel_attachment(role_id: str, name: str, mime_type: str, data: byte
 async def _channel_command_reply(thread, command: str, sender_id: str) -> str:
     from .channels.commands import identifier_reply
 
+    if command == 'compact':
+        from .context_inspection import inspect_context
+        result = await inspect_context(sys.modules[__name__], thread.role_id, compact=True, thread=thread, sender_id=sender_id)
+        return result.get('reason') or '当前上下文无需压缩'
     if command != "stop":
         return identifier_reply(
             command, channel=thread.channel, account_id=thread.account_id,
@@ -4879,7 +4838,7 @@ def _memory_runtime_access(role, *, is_channel_owner=True, source_thread_id=None
     private_owner = bool(is_channel_owner and (desktop or (thread is not None and thread.chat_type == "private")))
 
     def enabled():
-        return bool(private_owner and memory_settings_store.get().enabled and store.get(role.id) is not None)
+        return bool(private_owner and memory_service.availability(role.id)[0] and store.get(role.id) is not None)
 
     def authorize(context):
         if desktop:
@@ -5274,8 +5233,10 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
         enabled.update(CODING_TOOL_NAMES)
     if plugin_configuration.enabled('herdr'):
         enabled.update(HERDR_AGENT_TOOL_NAMES)
-    if memory_settings_store.get().enabled:
-        enabled.add("recall_memory")
+    if memory_service.availability(role.id)[0]:
+        enabled.update({'recall_memory', 'memorize', 'forget_memory'})
+    else:
+        enabled.difference_update({'recall_memory', 'memorize', 'forget_memory'})
     if owner_knowledge_plugin.status().enabled:
         enabled.add("search_owner_knowledge")
     if mail_service.store.connection().auto_draft_ready and mail_service.preferences()["roleAccess"]:
@@ -5321,7 +5282,7 @@ def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabil
     enabled_tools = _enabled_runtime_tool_names(role, include_channel=include_channel)
     host_enabled = set(enabled_tools)
     enabled_tools.update(agent_config.enabledTools)
-    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | COMPUTER_USE_TOOL_NAMES | CODING_TOOL_NAMES | HERDR_AGENT_TOOL_NAMES | {"recall_memory", "search_owner_knowledge", "mail.manage", "observe_screen", "generate_image", "pet_action", "set_role_mood", "inspect_role_image"}) - host_enabled)
+    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | COMPUTER_USE_TOOL_NAMES | CODING_TOOL_NAMES | HERDR_AGENT_TOOL_NAMES | {"recall_memory", "memorize", "forget_memory", "search_owner_knowledge", "mail.manage", "observe_screen", "generate_image", "pet_action", "set_role_mood", "inspect_role_image"}) - host_enabled)
     if not include_channel:
         enabled_tools.difference_update({
             "account_list", "account_targets", "account_send", "set_group_listening", "read_attachment",
@@ -6032,6 +5993,7 @@ def _proactive_application():
             adapter_factory=lambda configuration: model_adapter,
             recall_memory=_proactive_memory, web_tools=_proactive_web, fetch_body=_proactive_body,
             context_reader=_proactive_context,
+            memory_context_reader=lambda role_id: _role_memory_context(role_id, readonly=True),
             history_factory=_owner_history,
             activity_reader=_external_activity_blocks,
             workspace_getter=lambda role_id: store.root / role_id / 'workspace', channel_host=channel_host)
@@ -6435,60 +6397,81 @@ async def _summarize_channel_memory(thread, messages, context, profiles):
             "memberFactsMessages": [message for message in messages if message["role"] == "user"
                 and message["metadata"].get("senderIsOwner") is not True
                 and str(message["metadata"].get("senderId") or "") in profiles]}, ensure_ascii=False)},
-    ], configuration, max_tokens=1500)
+    ], configuration, max_tokens=1500, timeout=300)
 
 
-def _ingest_owner_channel_memory(thread, user_message, assistant_message):
+async def _ingest_owner_channel_memory(thread, user_message, assistant_message):
     if store.get(thread.role_id) is None or memory_worker.role_deletion_blocked(thread.role_id):
         return
-    memory_worker.service.process_turn(thread.role_id, thread.session_key, user_message, assistant_message)
-    if memory_worker.maintenance is not None:
-        memory_worker.maintenance.maintain(thread.role_id, f"role:{thread.role_id}")
-        memory_worker.maintenance.sync_structured_memory(thread.role_id, memory_worker.service.store.list_all(thread.role_id))
+    memory_worker.submit_owner_channel(thread.role_id, thread.session_key, user_message, assistant_message,
+        private=thread.chat_type == 'private')
 
 
 async def _ingest_owner_listening_memory(thread, messages):
     if memory_worker.role_deletion_blocked(thread.role_id):
         return
-    role = store.get(thread.role_id)
-    if role is None:
-        return
-    source_key = f"listening:{thread.thread_id}:{messages[0]['sequence']}-{messages[-1]['sequence']}"
-    configuration = model_configuration_store.get(role.modelConfigurationId)
-    candidates = await asyncio.to_thread(_complete_model_json, [
-        {"role": "system", "content": "以下都是已经识别的主人在群中的发言。只提取主人明确表达的稳定事实、偏好或共同经历，不推测群友信息。返回JSON {memories:[{memoryType:fact|preference|profile|procedure|event,summary:string,messageIds:[string]}]}，messageIds必须来自输入。"},
-        {"role": "user", "content": json.dumps({"group": thread.title, "messages": messages}, ensure_ascii=False)},
-    ], configuration, max_tokens=900)
-    if not isinstance(candidates, dict) or not isinstance(candidates.get("memories"), list):
-        raise ValueError("主人旁听记忆提取结果无效")
-    allowed_ids = {str(message["id"]) for message in messages}
-    async with memory_worker.role_lock_for(thread.role_id):
-        if memory_worker.role_deletion_blocked(thread.role_id):
-            return
-        def commit():
-            for index, candidate in enumerate(candidates["memories"][:8]):
-                if not isinstance(candidate, dict) or candidate.get("memoryType") not in {"fact", "preference", "profile", "procedure", "event"} or not isinstance(candidate.get("summary"), str) or not candidate["summary"].strip():
-                    continue
-                ids = candidate.get("messageIds")
-                if not isinstance(ids, list) or not ids or any(not isinstance(item, str) or item not in allowed_ids for item in ids):
-                    continue
-                item = memory_worker.service.store.add_or_reinforce(
-                    thread.role_id, candidate["memoryType"], candidate["summary"].strip(),
-                    MemorySourceRef(kind="listening", sessionKey=thread.session_key, messageIds=ids, stableSourceKey=f"{source_key}:{index}"),
-                    extra={"memory_visibility": "owner_private"},
-                )
-                memory_worker.service.index_embedding(thread.role_id, item)
-            if memory_worker.maintenance is not None:
-                memory_worker.maintenance.sync_structured_memory(thread.role_id, memory_worker.service.store.list_all(thread.role_id))
-        await finish_io(asyncio.to_thread(commit))
+    await owner_channel_memory.commit(thread, messages, listening=True)
+
+
+def _owner_channel_layer(role_id, messages):
+    from .memory_markdown_prompts import build_user_layer_prompt, _format_pending_items, _normalize_history_entries
+    documents = MemoryDocuments(roles_root)
+    conversation = '\n'.join(f"[{item['createdAt']}] USER: {item['content']}" for item in messages)
+    recent = [line for line in documents.read_document(role_id, 'HISTORY.md').splitlines()
+        if line.strip() and not line.startswith(('#', '<!--'))][-3:]
+    result = _complete_model_json([
+        {'role': 'system', 'content': '你是中性的 Markdown 记忆提取器，不扮演角色，也不生成用户可见回复。USER 是已核验主人“你”，当前角色是“我”。只提取这些主人发言，不推测群友事实。'},
+        {'role': 'user', 'content': build_user_layer_prompt(documents.read_document(role_id, 'MEMORY.md'),
+            '\n'.join(recent), conversation)}], _role_model_configuration(role_id), max_tokens=1024, timeout=300)
+    if not isinstance(result, dict):
+        raise ValueError('主人发言记忆提取返回无效 JSON')
+    entries = _normalize_history_entries(result.get('history_entries'), result.get('history_entry'))
+    return {'history_entries': entries, 'history': '\n'.join(summary for summary, _ in entries),
+        'pending': _format_pending_items(result.get('pending_items', [])), 'conversation': conversation}
+
+
+def _verify_owner_channel_memory(role_id, key, ids):
+    from .channels.source_authority import channel_owner_binding, source_messages
+    if store.get(role_id) is None or memory_worker.role_deletion_blocked(role_id):
+        return None
+    thread = multichannel_store.get_thread(role_id, key.split(':', 1)[1])
+    account = multichannel_store.get_account(thread.account_id) if thread else None
+    if thread is None or account is None:
+        return None
+    if key.startswith('listening:'):
+        with multichannel_store._connect() as db:
+            rows = db.execute('SELECT * FROM channel_listening_records WHERE thread_id=? ORDER BY sequence', (thread.thread_id,)).fetchall()
+        messages = [multichannel_store.listening._message(row) for row in rows if row['id'] in ids]
+    else:
+        messages = [item.model_dump(mode='json') for item in session_store.list_messages(thread.session_key) if item.id in ids]
+    if {str(item['id']) for item in messages} != set(ids):
+        return None
+    owners = {}
+    for item in messages:
+        metadata = item['metadata']
+        binding = channel_owner_binding(multichannel_store, thread.channel, thread.account_id, str(metadata.get('senderId') or ''))
+        if (not binding or metadata.get('senderIsOwner') is not True
+                or metadata.get('channelTurnState') == 'invalidated'
+                or datetime.fromisoformat(str(binding['pairedAt'])) > datetime.fromisoformat(item['createdAt'])):
+            return None
+        owners[str(metadata['senderId'])] = (binding['identityId'], binding['pairedAt'])
+    return hashlib.sha256(json.dumps([source_messages(messages), owners, account.created_at], ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+from .owner_channel_memory import OwnerChannelMemory
+
+owner_channel_memory = OwnerChannelMemory(session_store, roles_root, _owner_channel_layer,
+    _publish_consolidation_event, _verify_owner_channel_memory,
+    semantic_lock=lambda role_id: memory_worker.semantic_lock_for(role_id))
 
 
 channel_memory_maintenance = ChannelMemoryMaintenance(
     lambda: multichannel_store, lambda: group_repository,
     _summarize_channel_memory, _ingest_owner_channel_memory,
     owner_statements=_ingest_owner_listening_memory,
-    enabled=lambda: bool(memory_settings_store.get().enabled),
+    enabled=lambda: True,
 )
+channel_memory_maintenance.owner_documents = owner_channel_memory
 
 
 app.router.on_startup.append(_start_channel_workers)
@@ -6832,7 +6815,15 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
         )
         model_snapshot["capabilities"] = capabilities.run_metadata()
         session_store.update_run(run_id, status="created", model_snapshot=model_snapshot)
-        memory_context = _role_memory_context(thread.role_id, include_recent=False) if owner and thread.chat_type == "private" else ""
+        owner_memory = owner and thread.chat_type == "private"
+        memory_context = await asyncio.to_thread(_role_recent_context, thread.role_id) if owner_memory else ""
+        if owner_memory:
+            await memory_worker.before_turn(thread.role_id, f"role:{thread.role_id}")
+            try:
+                recalled = await _current_memory_engine().query(MemoryQuery(text=content, intent="context", scope=MemoryScope(thread.role_id, f"role:{thread.role_id}")))
+                memory_context = "\n\n".join(filter(None, (memory_context, recalled.text_block)))
+            except Exception as error:
+                memory_worker.errors.append(f"{thread.role_id}: channel recall failed: {error}")
         identity_context = "\n".join((
             "[当前渠道身份（宿主核验）]",
             f"当前聊天类型：{'群聊' if thread.chat_type == 'group' else '私聊'}",
@@ -6870,6 +6861,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                                  max_response_tokens=ordinary_settings.maxTokens,
                                  context_blocks=lambda: _channel_memory_blocks(thread.role_id, thread.thread_id, str(metadata.get("senderId") or ""), trigger_metadata=metadata),
                                  context_safety_margin=ordinary_settings.contextSafetyMarginTokens,
+                                 stable_memory=_role_memory_context(thread.role_id, include_recent=False, external=not owner_memory),
                                  )
         _bind_spawn_runtime(capabilities, provider, max_iterations=ordinary_settings.maxIterations)
         provider = _ordinary_context_provider(provider, ordinary_settings, role_id=thread.role_id,
@@ -7145,7 +7137,8 @@ def _desktop_provider(role, configuration, settings, capabilities, memory_contex
         max_response_tokens=settings.maxTokens,
         context_blocks=lambda: _external_activity_blocks(role.id),
         context_safety_margin=settings.contextSafetyMarginTokens,
-        readonly_usage=readonly)
+        readonly_usage=readonly,
+        stable_memory=_role_memory_context(role.id, include_recent=False, readonly=True))
 
 
 @app.get('/api/roles/{role_id}/context-status')
@@ -7153,6 +7146,13 @@ async def role_context_status(role_id: str, response: Response):
     from .context_inspection import inspect_context
     response.headers['Cache-Control'] = 'no-store'
     return await inspect_context(sys.modules[__name__], role_id)
+
+
+@app.post('/api/roles/{role_id}/context-compact')
+async def role_context_compact(role_id: str, response: Response):
+    from .context_inspection import inspect_context
+    response.headers['Cache-Control'] = 'no-store'
+    return await inspect_context(sys.modules[__name__], role_id, compact=True)
 
 
 async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun:
@@ -7360,24 +7360,14 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                             and store.get(role_id) is not None and role_id not in _channel_roles_deleting)
                 turn.set_phase('preparing')
                 # The service owns preparation independently of subscribers.
-                context_messages = session_store.context_messages(session.sessionKey)
-                try:
-                    if memory_settings_store.get().enabled and len(context_messages) > context_limit:
-                        await asyncio.to_thread(
-                            memory_maintenance.ensure_memory_for_window,
-                            role_id,
-                            session.sessionKey,
-                            max_messages=context_limit,
-                        )
-                except Exception as error:
-                    memory_worker.errors.append(f"{role_id}: input-window maintenance failed: {error}")
+                await memory_worker.before_turn(role_id, session.sessionKey)
                 try:
                     query_result = await _current_memory_engine().query(MemoryQuery(
                         text=data.content,
                         intent="context",
                         scope=MemoryScope(role_id, session.sessionKey),
                     )) if memory_settings_store.get().enabled else None
-                    memory_context = memory_service.context_block([], _role_memory_context(role_id, include_recent=False))
+                    memory_context = await asyncio.to_thread(_role_recent_context, role_id)
                     if query_result is not None and query_result.text_block:
                         memory_context = "\n".join(part for part in (memory_context, query_result.text_block) if part)
                 except Exception as error:

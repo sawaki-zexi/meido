@@ -1,5 +1,7 @@
 # ADR-0032：按当前注册表执行，从当前原文窗口恢复工具
 
+2026-11-02：上下文/记忆的后续变更由 [ADR-0036](0036-shiori-context-memory-ownership.md) 替代；本文保留原决策历史，其余适用边界继续有效。
+
 状态：已采纳；2026-10-30 维护者明确批准“工具执行绑定 / 已加载工具恢复 / 按 Shiori 的来”。
 
 事实来源：[Issue #280](https://github.com/sawaki-zexi/meido/issues/280)、[规格 #279](https://github.com/sawaki-zexi/meido/issues/279)、[当前工具回归](../../tests/python/test_current_tool_registry.py)、[窗口回归](../../tests/python/test_context_windows.py)。上游基线为 Shiori `71c8b0e460530683cd28aad6bb62e873c7167c89` 的 `agent/tools/registry.py`、`tools/execution.py`、`core/passive_turn/helpers.py` 和 `reasoning_loop.py`。

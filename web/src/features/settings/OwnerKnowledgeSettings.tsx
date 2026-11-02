@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, errorMessage } from "../../api/client";
 import { Icon } from "../../ui/Icon";
 import { Notice, Placeholder } from "../../ui/Status";
+import { MemorySettings } from "./MemorySettings";
 
 type SyncReport = {
   trigger: string;
@@ -52,6 +53,7 @@ export function OwnerKnowledgeSettings() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [editingEmbedding, setEditingEmbedding] = useState(false);
 
   const refresh = async () => {
     const [result, roleData, documentData] = await Promise.all([
@@ -182,6 +184,9 @@ export function OwnerKnowledgeSettings() {
       {lastSync && <div><span>最近同步</span><strong>{syncFinishedAt ? new Date(syncFinishedAt).toLocaleString() : lastSync.complete ? "已完成" : "未完成"}</strong></div>}
     </div>
 
+    <button type="button" onClick={() => setEditingEmbedding(value => !value)} aria-expanded={editingEmbedding}>配置主人资料向量模型</button>
+    {editingEmbedding && <MemorySettings scope="owner" embeddingOnly onSaved={() => void refresh()} />}
+
     <section className="owner-plugin-section" aria-labelledby="feishu-connection-title">
       <div className="owner-section-heading"><div><h3 id="feishu-connection-title">飞书连接</h3><p className="muted">只读授权 · 整个知识库</p></div><span className={`owner-connection-badge${status?.connected ? " is-connected" : ""}`}><span aria-hidden="true" />{status?.connected ? "已授权" : "未授权"}</span></div>
       {isConfigured ? <>
@@ -202,7 +207,7 @@ export function OwnerKnowledgeSettings() {
       <div className="owner-section-heading"><div><h3 id="understanding-title">角色对主人的想法</h3><p className="muted">按角色分别保存</p></div>{roles.length > 0 && <select aria-label="选择角色" value={selectedRoleId} onChange={(event) => setSelectedRoleId(event.target.value)}>{roles.map((role) => <option value={role.id} key={role.id}>{role.name}</option>)}</select>}</div>
       {roles.length === 0 ? <p className="owner-empty-line">尚无角色</p> : loadingUnderstanding ? <Placeholder loading>正在读取…</Placeholder> : understanding ? <div className="owner-understanding" aria-label="角色想法"><p>{understanding.body}</p><small className="muted">更新于 {new Date(understanding.updatedAt).toLocaleString()}</small></div> : <p className="owner-empty-line">该角色还没有生成想法</p>}
       {!status?.enabled && <p className="muted">先启用主人资料并完成同步，才能生成角色想法</p>}
-      {status?.enabled && status.embeddingEnabled !== false && !status.embeddingReady && <p className="muted">请在模型设置中配置向量模型；暂停向量模型后仍可生成角色想法</p>}
+      {status?.enabled && status.embeddingEnabled !== false && !status.embeddingReady && <p className="muted">请在本页配置主人资料向量模型；暂停向量模型后仍可生成角色想法</p>}
       {understandingJob?.status === "pending" && status?.enabled && <p className="muted" role="status">正在准备或生成角色想法…</p>}
       {understandingJob?.status === "failed" && <Notice>上次角色想法生成失败，已保留上一版本：{understandingJob.lastError || "请检查模型连接后重试"}</Notice>}
       <div className="owner-actions"><button type="button" disabled={busy || !status?.enabled || !selectedRoleId} onClick={() => void run("regenerate")}>{busy ? "处理中…" : "重新生成想法"}</button></div>

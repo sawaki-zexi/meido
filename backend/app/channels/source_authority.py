@@ -12,6 +12,17 @@ if TYPE_CHECKING:
     from ..session_store import SessionStore
 
 
+def source_messages(messages):
+    """Execution progress is not a source edit; invalidation is."""
+    result = []
+    for message in messages:
+        metadata = dict(message.get('metadata') or {})
+        if metadata.get('channelTurnState') != 'invalidated':
+            metadata.pop('channelTurnState', None)
+        result.append({**message, 'metadata': metadata})
+    return result
+
+
 def channel_owner_binding(
     channels: MultichannelStore, channel: str, account_id: str, sender_id: str
 ) -> dict[str, object] | None:

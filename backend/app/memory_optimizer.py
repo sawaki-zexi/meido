@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -630,7 +631,10 @@ class MemoryOptimizerWorker:
     async def run(self, role_id: str) -> None:
         """Run inside MemoryWorker's per-role lane after Markdown maintenance."""
         if self.enabled():
-            await asyncio.to_thread(self.optimizer.optimize, role_id)
+            if inspect.iscoroutinefunction(self.optimizer.optimize):
+                await self.optimizer.optimize(role_id)
+            else:
+                await asyncio.to_thread(self.optimizer.optimize, role_id)
 
     async def _run(self, role_id: str) -> None:
         try:
@@ -646,7 +650,14 @@ class MemoryOptimizerWorker:
 
     async def close(self) -> None:
         self.closed = True
-        await self.drain()
+        await self.cancel_generation()
+
+    async def cancel_generation(self) -> None:
+        tasks = tuple(self._tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 class MemoryOptimizerLoop:
@@ -702,6 +713,7 @@ class MemoryOptimizerLoop:
             if self._task is not None:
                 self._task.cancel()
                 await asyncio.gather(self._task, return_exceptions=True)
+            await self.worker.cancel_generation()
             # A newer committed write may have arrived while the old owner was closing.
             if current_policy:
                 desired_enabled, desired_interval = current_policy()
@@ -732,7 +744,7 @@ class MemoryOptimizerLoop:
                 continue
             if not self.model_available(role_root.name):
                 continue
-            if startup and not MemoryOptimizer.should_run(
+            if startup and not self.worker.optimizer.should_run(
                 self.roles_root,
                 role_root.name,
                 now=self.now(),

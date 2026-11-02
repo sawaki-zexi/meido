@@ -18,11 +18,12 @@ const stamp = Date.now().toString(36);
 const artifacts = path.join(fixtureBase, 'artifacts', stamp);
 const mcpServer = 'e2e_' + stamp;
 const mcpPrefix = `mcp_${mcpServer}__`;
-const report = { cases: [], requests: [], browserErrors: [], startedAt: new Date().toISOString() };
+const report = { cases: [], requests: [], auxiliaryRequests: [], browserErrors: [], startedAt: new Date().toISOString() };
+let failEmbeddings = false;
 const only = process.env.MEIDO_E2E_ONLY;
 const selected = only ? new Set(only.split(',')) : null;
 if (selected) {
-  const cases = ['tools', 'summary', 'summary-failure', 'stop', 'stop-summary', 'billing', 'mcp', 'mcp-stop', 'mcp-revoke', 'natural', 'ring'];
+  const cases = ['tools', 'summary', 'summary-failure', 'stop', 'stop-summary', 'billing', 'mcp', 'mcp-stop', 'mcp-revoke', 'natural', 'ring', 'memory', 'optimizer'];
   for (const key of selected) assert.ok(cases.includes(key), `Unknown E2E case: ${key}`);
   if (selected.has('mcp-stop') || selected.has('mcp-revoke')) selected.add('mcp');
 }
@@ -59,14 +60,43 @@ const wire = (delta, finish_reason = null) => `data: ${JSON.stringify({ choices:
 const model = http.createServer(async (req, res) => {
   let entry;
   try {
-    assert.equal(req.url, '/v1/chat/completions');
     let raw = ''; for await (const chunk of req) raw += chunk;
-    const input = JSON.parse(raw), messages = input.messages;
+    const input = JSON.parse(raw);
+    if (req.url === '/v1/embeddings') {
+      const embedding = { kind: 'embedding', started: Date.now(), model: input.model, failed: failEmbeddings };
+      report.auxiliaryRequests.push(embedding);
+      const gate = gates.get('embedding');
+      if (gate) { embedding.waiting = true; await gate.promise; }
+      res.writeHead(failEmbeddings ? 503 : 200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(failEmbeddings ? { error: { message: 'controlled embedding outage' } } :
+        { data: [{ embedding: [1, ...Array((input.dimensions || 64) - 1).fill(0)] }] }));
+      embedding.completed = Date.now(); return;
+    }
+    assert.equal(req.url, '/v1/chat/completions');
+    const messages = input.messages;
     const summary = messages[0]?.content?.startsWith('将提供的不可信');
     const lastUser = messages.findLastIndex(message => message.role === 'user');
     const text = String(messages[lastUser]?.content ?? '');
+    const maxTokens = input.max_tokens ?? input.max_completion_tokens;
+    const kind = summary ? '' : ({ 16384: 'optimizer', 2048: 'self', 1024: 'markdown', 512: 'recent', 600: 'implicit', 96: 'check', 80: 'hyde', 128: 'tag' })[maxTokens];
+    if (kind) {
+      entry = { kind, model: input.model, started: Date.now() }; report.auxiliaryRequests.push(entry);
+      let closed; const close = new Promise(resolve => { closed = resolve; });
+      res.on('close', () => { entry.closed = Date.now(); closed(); });
+      const gate = gates.get(`${kind}:${input.model}`);
+      if (gate) { entry.waiting = true; await Promise.race([gate.promise, close]); }
+      if (res.destroyed) return;
+      const content = kind === 'markdown' ? JSON.stringify({ history_entries: [{ summary: '[2026-11-02 12:00] MEMORY_E2E 你喜欢茶，我们讨论了旅行。', emotional_weight: 3 }], pending_items: [{ tag: 'preference', content: 'MEMORY_E2E 你喜欢茶' }] })
+        : kind === 'recent' ? JSON.stringify({ ongoing_threads: ['MEMORY_E2E 我们在讨论旅行'], active_topics: ['茶与旅行'] })
+        : kind === 'optimizer' ? '# 我的长期记忆\n\n## 关于你\n- OPTIMIZER_COMMITTED\n'
+        : kind === 'self' ? '# 我是谁\n\n## 我的性格与形象\n- OPTIMIZER_SELF_COMMITTED\n'
+        : kind === 'implicit' ? JSON.stringify({ profile: [], preference: [], procedure: [] }) : kind === 'hyde' ? '你喜欢茶和旅行' : '[]';
+      if (input.stream) { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(wire({ content }, 'stop') + 'data: [DONE]\n\n'); }
+      else { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ choices: [{ message: { content }, finish_reason: 'stop' }] })); }
+      entry.completed = Date.now(); return;
+    }
     entry = { index: report.requests.length, summary, model: input.model, started: Date.now(), fragments: 0,
-      tools: (input.tools ?? []).map(tool => tool.function.name) };
+      tools: (input.tools ?? []).map(tool => tool.function.name), messages };
     report.requests.push(entry);
     let closed; const close = new Promise(resolve => { closed = resolve; });
     res.on('close', () => { entry.closed = Date.now(); closed(); });
@@ -165,6 +195,18 @@ async function one(key, name, fn) {
   report.cases.push({ key, name, ms: Date.now() - started, ...value }); console.log(JSON.stringify({ case: name, state: 'passed' }));
 }
 let development, developmentEnded, browser, page, mcpConfiguration;
+function launchDevelopment(apiPort, webPort) {
+  const out = openSync(path.join(artifacts, 'dev-out.log'), 'a'), err = openSync(path.join(artifacts, 'dev-error.log'), 'a');
+  development = spawn(process.execPath, [path.join(sourceRoot, 'scripts/local-runtime/start-dev.mjs'), '--code-root', root, '--shutdown-stdin'], {
+    cwd: root, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', out, err], env: { ...process.env, HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', NO_PROXY: '127.0.0.1,localhost',
+      MEIDO_MEMORY_OPTIMIZER_ENABLED: 'false', MEIDO_DEV_API_PORT: String(apiPort), MEIDO_DEV_WEB_PORT: String(webPort) },
+  });
+  developmentEnded = new Promise(resolve => {
+    development.once('exit', (code, signal) => resolve({ code, signal }));
+    development.once('error', error => { report.developmentError = error.message; resolve({ code: null, error: error.message }); });
+  });
+  closeSync(out); closeSync(err); development.stdin.on('error', () => {});
+}
 try {
   await mkdir(artifacts, { recursive: true });
   root = await fixtureWorkspace();
@@ -177,34 +219,25 @@ try {
   report.ports = { apiPort, webPort };
   await new Promise(resolve => model.listen(0, '127.0.0.1', resolve));
   const upstream = `http://127.0.0.1:${model.address().port}/v1`;
-  const out = openSync(path.join(artifacts, 'dev-out.log'), 'w'), err = openSync(path.join(artifacts, 'dev-error.log'), 'w');
-  development = spawn(process.execPath, [path.join(sourceRoot, 'scripts/local-runtime/start-dev.mjs'), '--code-root', root, '--shutdown-stdin'], {
-    cwd: root, windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', out, err], env: { ...process.env, HTTP_PROXY: '', HTTPS_PROXY: '', ALL_PROXY: '', NO_PROXY: '127.0.0.1,localhost',
-      MEIDO_MEMORY_OPTIMIZER_ENABLED: 'false', MEIDO_DEV_API_PORT: String(apiPort), MEIDO_DEV_WEB_PORT: String(webPort) },
-  });
-  developmentEnded = new Promise(resolve => {
-    development.once('exit', (code, signal) => resolve({ code, signal }));
-    development.once('error', error => { report.developmentError = error.message; resolve({ code: null, error: error.message }); });
-  });
-  closeSync(out); closeSync(err); development.stdin.on('error', () => {});
+  launchDevelopment(apiPort, webPort);
   await until(async () => { assert.equal(report.developmentError, undefined); assert.equal(development.exitCode, null); try { return (await fetch(api + '/api/health', { signal: AbortSignal.timeout(1000) })).ok; } catch { return false; } }, 'Development startup', 60000);
   assert.deepEqual((await json('/api/roles')).roles, [], 'Refuse to seed an existing role collection');
   await json('/api/memory/settings', 'PUT', { enabled: false, embeddingEnabled: false });
   const settings = await json('/api/settings/advanced');
   await json('/api/settings/advanced', 'PUT', { expectedRevision: settings.revision, operationId: 'e2e-' + stamp, values: { ...settings.values, devMode: true } });
-  async function role(label, capacity = 500000, natural = false) {
+  async function role(label, capacity = 500000, natural = false, trigger) {
     const configuration = (await json('/api/model/configurations', 'POST', { providerId: 'custom', provider: 'fixture', baseUrl: upstream,
       model: label + '-' + stamp, api: 'openai-completions', apiKey: '', contextWindowTokens: capacity,
-      modelAutoCompactTokenLimit: capacity === 120000 ? 75000 : capacity ? 400000 : null })).configuration;
+      modelAutoCompactTokenLimit: trigger ?? (capacity === 120000 ? 75000 : capacity ? 400000 : null) })).configuration;
     const r = (await json('/api/roles', 'POST', { name: label + '-' + stamp, profile: { profile: '本地合成浏览器验收。' }, agentConfig: { naturalChatEnabled: natural } })).role;
     await json('/api/roles/' + r.id + '/model-configuration', 'PUT', { configurationId: configuration.id });
     return { ...r, configuration };
   }
-  const roles = { normal: await role('burst-normal'), long: await role('summary', 120000), invalid: await role('invalid-summary', 120000),
+  const roles = { normal: await role('burst-normal'), long: await role('summary', 120000), invalid: await role('invalid-summary', 64000, false, 35000), soft: await role('invalid-summary-soft', 180000, false, 75000),
     stop: await role('stop-normal'), stopSummary: await role('stop-summary', 120000), idle: await role('idle'),
     billing: await role('billing'), mcp: await role('mcp'), natural: await role('natural', 500000, true), unknown: await role('unknown', null) };
   report.roles = Object.fromEntries(Object.entries(roles).map(([key, r]) => [key, r.id]));
-  execFileSync(python, [path.join(directory, 'seed-history.py'), root, roles.normal.id, roles.long.id, roles.invalid.id, roles.stop.id, roles.stopSummary.id], { cwd: root, windowsHide: true });
+  execFileSync(python, [path.join(directory, 'seed-history.py'), root, roles.normal.id, roles.long.id, roles.invalid.id, roles.soft.id, roles.stop.id, roles.stopSummary.id], { cwd: root, windowsHide: true });
   browser = await chromium.launch({ ...(process.env.MEIDO_E2E_BROWSER ? { executablePath: process.env.MEIDO_E2E_BROWSER } : {}), headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 960 } });
   await context.route('**/*', route => [api, web].includes(new URL(route.request().url()).origin) ? route.continue() : route.abort());
@@ -229,7 +262,7 @@ try {
   }
   await one('tools', '长历史工具往返、切页、跨角色与刷新恢复', async () => {
     await select(roles.normal); hold(roles.normal.configuration.model);
-    const ring = page.getByRole('button', { name: /^上下文用量/ });
+    const ring = page.getByRole('button', { name: /^压缩上下文/ });
     await until(async () => /500,000/.test(await ring.getAttribute('aria-label')), 'Saved long context usage');
     const before = report.requests.length; await send('E2E_TOOL 查看隔离目录');
     await until(() => report.requests[before]?.waiting, 'Streaming gate');
@@ -260,14 +293,18 @@ try {
     const session = await json(`/api/roles/${roles.long.id}/session`); assert.ok(session.messages.length >= 164);
     return { settingsMs, savedOriginalMessages: session.messages.length };
   });
-  await one('summary-failure', '摘要失败保留原文且回退后可继续', async () => {
+  await one('summary-failure', '软阈值失败继续原文，硬阈值失败停止且保留原文', async () => {
     await select(roles.invalid); const before = report.requests.length; await send('E2E_LONG 摘要失败验收'); await done();
-    const calls = report.requests.slice(before); assert.equal(calls.filter(r => r.summary).length, 1); assert.ok(calls.some(r => !r.summary));
+    const calls = report.requests.slice(before); assert.equal(calls.filter(r => r.summary).length, 1); assert.equal(calls.filter(r => !r.summary).length, 0);
     const diagnostics = (await json('/api/settings/advanced/diagnostics')).diagnostics.find(d => d.roleId === roles.invalid.id)?.compaction;
     assert.notEqual(diagnostics.stage, 'committed');
     const session = await json(`/api/roles/${roles.invalid.id}/session`); assert.ok(session.messages.length >= 162);
-    await send('E2E_NEXT 失败回退后继续'); await done();
-    return { stage: diagnostics.stage, savedOriginalMessages: session.messages.length };
+    await select(roles.soft); const softBefore = report.requests.length;
+    await send('E2E_LONG 软阈值摘要失败验收'); await done();
+    assert.equal(report.requests.slice(softBefore).filter(r => r.summary).length, 1);
+    assert.equal(report.requests.slice(softBefore).filter(r => !r.summary).length, 1);
+    assert.ok((await json(`/api/roles/${roles.soft.id}/session`)).messages.length >= 162);
+    return { hardStage: diagnostics.stage, hardNormalRequests: 0, softNormalRequests: 1, savedOriginalMessages: session.messages.length };
   });
   for (const [key, r, summary] of [['stop', roles.stop, false], ['stop-summary', roles.stopSummary, true]]) await one(key, summary ? '摘要停止不提交窗口' : '普通流停止保存部分内容', async () => {
     await select(r); const before = report.requests.length; await send('E2E_STOP');
@@ -337,8 +374,97 @@ try {
     assert.equal(report.requests.length - before, 2, 'Natural reply recovery repeated a model request');
     return { modelRequests: report.requests.length - before };
   });
+  await one('memory', '记忆开启：覆盖提交、消费者故障、重启复用、工具、停止与手动压缩', async () => {
+    const fixture = (r, action = 'inspect') => JSON.parse(execFileSync(python,
+      [path.join(directory, 'memory-fixture.py'), root, action, r.id], { cwd: root, windowsHide: true, encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } }));
+    await json('/api/memory/embedding/configuration', 'PUT', { provider: 'local', baseUrl: upstream, model: 'memory-fixture', dimensions: 64, apiKey: 'local-fixture' });
+    await json('/api/memory/settings', 'PUT', { enabled: true, embeddingEnabled: true });
+    const auto = await role('memory-auto', 120000), manual = await role('memory-manual'), stopping = await role('memory-stop', 120000), unavailable = await role('memory-unavailable');
+    execFileSync(python, [path.join(directory, 'seed-history.py'), root, auto.id], { cwd: root, windowsHide: true });
+    fixture(manual, 'seed'); fixture(unavailable, 'seed'); fixture(stopping, 'seed-stop');
+    await page.reload(); await select(auto);
+    hold('markdown:' + auto.configuration.model); failEmbeddings = true;
+    const before = report.requests.length;
+    await send('E2E_TOOL 开启记忆后使用真实工具');
+    await until(() => report.auxiliaryRequests.some(r => r.kind === 'markdown' && r.model === auto.configuration.model && r.waiting), 'Markdown generation gate');
+    const settingsMs = await pagesDuringStream();
+    await page.reload(); await select(auto);
+    assert.equal(report.requests.length, before, 'Refresh submitted a normal turn during Markdown preparation');
+    release('markdown:' + auto.configuration.model); await done();
+    await until(() => fixture(auto).progress.pendingEvents?.length > 0, 'Failed semantic consumer was not preserved');
+    const covered = fixture(auto);
+    assert.ok(covered.progress.lastSequence > 0 && covered.windows.length === 1);
+    assert.match(covered.documents['HISTORY.md'], /MEMORY_E2E/);
+    assert.equal(report.requests.slice(before).filter(r => !r.summary).length, 3, 'Tool chain repeated after coverage');
+    assert.equal(report.requests.slice(before).filter(r => r.summary).length, 1);
+    const next = report.requests.length; await send('E2E_RESTORED 继续使用真实工具'); await done();
+    assert.equal(report.requests.slice(next).filter(r => !r.summary).length, 2);
+    assert.equal(report.requests.slice(next).filter(r => r.summary).length, 0);
+    failEmbeddings = false;
+    const history = covered.documents['HISTORY.md'], version = covered.progress.memoryVersion;
+    const drafts = report.auxiliaryRequests.filter(r => r.kind === 'markdown' && r.model === auto.configuration.model).length;
+    development.stdin.end('shutdown\n');
+    const exit = await developmentEnded; assert.equal(exit.code, 0);
+    launchDevelopment(apiPort, webPort);
+    await until(async () => { try { return (await fetch(api + '/api/health')).ok; } catch { return false; } }, 'Memory restart', 60000);
+    await until(() => !fixture(auto).progress.pendingEvents?.length, 'Pending semantic consumer did not resume');
+    assert.equal(fixture(auto).documents['HISTORY.md'], history);
+    assert.equal(fixture(auto).progress.memoryVersion, version);
+    assert.equal(report.auxiliaryRequests.filter(r => r.kind === 'markdown' && r.model === auto.configuration.model).length, drafts);
+    await page.reload(); await select(auto); const restarted = report.requests.length;
+    hold('embedding'); const embeddingStarted = Date.now();
+    await send('E2E_RESTORED 重启后继续');
+    await until(() => report.auxiliaryRequests.some(r => r.kind === 'embedding' && r.waiting && r.started >= embeddingStarted), 'Slow query embedding gate');
+    const embeddingSettingsMs = await pagesDuringStream();
+    assert.equal(report.requests.length, restarted, 'An ordinary request bypassed the pending embedding boundary');
+    await page.reload(); await select(auto);
+    release('embedding'); await done();
+    assert.equal(report.requests.slice(restarted).filter(r => r.summary).length, 0);
+    assert.equal(report.requests.slice(restarted).filter(r => !r.summary).length, 2);
+    assert.ok(fixture(auto).records > 0);
+
+    await select(stopping); hold('markdown:' + stopping.configuration.model);
+    await send('E2E_STOP_MARKDOWN');
+    await until(() => report.auxiliaryRequests.some(r => r.kind === 'markdown' && r.model === stopping.configuration.model && r.waiting), 'Stop Markdown gate');
+    await until(async () => {
+      const session = await json(`/api/roles/${stopping.id}/session`);
+      return session.activeRun?.phase === 'summarizing';
+    }, 'Foreground did not reach memory coverage while Markdown was pending');
+    const stopStarted = Date.now(); await page.getByRole('button', { name: '停止回复', exact: true }).click(); await done();
+    const stopMs = Date.now() - stopStarted; assert.ok(stopMs < 3000, `Markdown Stop blocked for ${stopMs}ms`);
+    await until(() => report.auxiliaryRequests.some(r => r.kind === 'markdown' && r.model === stopping.configuration.model && r.closed), 'Cancelled Markdown HTTP connection remained open', 3000);
+    release('markdown:' + stopping.configuration.model);
+    await pause(300);
+    assert.equal(fixture(stopping).progress.lastSequence ?? 0, 0);
+    assert.equal(fixture(stopping).windows.length, 0);
+
+    await select(manual); const count = fixture(manual).messages;
+    const ring = page.getByRole('button', { name: /^压缩上下文/ });
+    await until(async () => (await ring.getAttribute('aria-disabled')) === 'false', 'Manual eligible prefix below threshold');
+    await page.getByRole('textbox', { name: '消息内容', exact: true }).fill('保留未发送草稿');
+    const compacted = page.waitForResponse(r => r.url().endsWith('/context-compact') && r.status() === 200);
+    await ring.click(); assert.equal((await (await compacted).json()).compacted, true);
+    assert.equal(fixture(manual).messages, count);
+    assert.equal(await page.getByRole('textbox', { name: '消息内容', exact: true }).inputValue(), '保留未发送草稿');
+    await send('/compact'); await until(async () => (await ring.getAttribute('aria-busy')) === 'false', 'Slash compact completion');
+    assert.equal(fixture(manual).messages, count);
+    assert.equal(await page.getByRole('textbox', { name: '消息内容', exact: true }).inputValue(), '/compact');
+
+    await json('/api/memory/settings', 'PUT', { enabled: false, embeddingEnabled: false });
+    await select(unavailable); const unavailableBefore = report.requests.length;
+    await send('E2E_HOST_DOCS 仍使用宿主文档'); await done();
+    const request = report.requests.slice(unavailableBefore).find(r => !r.summary);
+    assert.match(JSON.stringify(request.messages[0]), /HOST_MEMORY_E2E/);
+    assert.ok(!request.tools.includes('memorize') && !request.tools.includes('recall_memory'));
+    await select(roles.idle); const isolatedBefore = report.requests.length;
+    await send('E2E_SCOPE 另一角色'); await done();
+    assert.doesNotMatch(JSON.stringify(report.requests[isolatedBefore].messages), /HOST_MEMORY_E2E|MEMORY_E2E/);
+    await page.screenshot({ path: path.join(artifacts, 'memory-scope-isolation.png') });
+    return { settingsMs, embeddingSettingsMs, stopMs, coverageVersion: version, manualSavedMessages: count, restartReused: true,
+      consumerRecovered: true, toolRequests: [3, 2, 2], semanticRecords: fixture(auto).records };
+  });
   await one('ring', 'Shiori 圆环、未知容量与移动端触摸', async () => {
-    await select(roles.idle); const ring = page.getByRole('button', { name: /^上下文用量/ });
+    await select(roles.idle); const ring = page.getByRole('button', { name: /^压缩上下文/ });
     await until(async () => /500,000/.test(await ring.getAttribute('aria-label')), 'Idle context status');
     const svg = await ring.locator('svg').boundingBox(); assert.equal(svg.width, 20); assert.equal(svg.height, 20);
     await ring.hover(); await page.getByRole('tooltip').waitFor(); assert.equal(await page.getByRole('tooltip').locator(':scope > div').count(), 2);
@@ -350,11 +476,58 @@ try {
     await mobile.route('**/*', route => [api, web].includes(new URL(route.request().url()).origin) ? route.continue() : route.abort());
     page = await mobile.newPage(); page.on('pageerror', error => report.browserErrors.push(error.message));
     await page.goto(web + '/app'); await select(roles.unknown);
-    await page.getByRole('button', { name: /^上下文用量/ }).tap(); await page.getByRole('tooltip').waitFor();
-    await until(async () => /模型尚未配置上下文容量/.test(await page.getByRole('button', { name: /^上下文用量/ }).getAttribute('aria-label')), 'Completed mobile unknown-capacity inspection');
-    assert.equal(await page.getByRole('button', { name: /^上下文用量/ }).locator('svg circle').count(), 1);
+    // aria-disabled prevents compaction; a physical touch still opens usage.
+    await page.getByRole('button', { name: /^压缩上下文/ }).tap({ force: true }); await page.getByRole('tooltip').waitFor();
+    await until(async () => /模型尚未配置上下文容量/.test(await page.getByRole('button', { name: /^压缩上下文/ }).getAttribute('aria-label')), 'Completed mobile unknown-capacity inspection');
+    assert.equal(await page.getByRole('button', { name: /^压缩上下文/ }).locator('svg circle').count(), 1);
     const box = await page.getByRole('tooltip').boundingBox(); assert.ok(box.x >= 0 && box.x + box.width <= 360);
     await page.screenshot({ path: path.join(artifacts, 'ring-mobile.png') });
+  });
+  await one('optimizer', '优化器开启：恢复旧快照、停用取消请求、并发候选保留与重新提交', async () => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const fixture = (r, action = 'inspect') => JSON.parse(execFileSync(python,
+      [path.join(directory, 'memory-fixture.py'), root, action, r.id], { cwd: root, windowsHide: true, encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } }));
+    // All preceding scenarios are complete. Use the real deletion API inside
+    // this owned disposable workspace so the serial upstream optimizer has one
+    // eligible role, rather than shortening its production inter-step delay.
+    for (const existing of (await json('/api/roles')).roles) await json('/api/roles/' + existing.id, 'DELETE');
+    const target = await role('optimizer'); fixture(target, 'optimizer-seed');
+    const policy = async enabled => {
+      const settings = await json('/api/settings/advanced');
+      await json('/api/settings/advanced', 'PUT', { expectedRevision: settings.revision,
+        operationId: 'optimizer-' + Date.now(), values: { ...settings.values, memoryOptimizerEnabled: enabled, memoryOptimizerIntervalSeconds: 60 } });
+    };
+    await json('/api/memory/settings', 'PUT', { enabled: false, embeddingEnabled: false });
+    hold('optimizer:' + target.configuration.model);
+    await policy(true); await page.reload(); await select(target);
+    const waiting = () => report.auxiliaryRequests.filter(r => r.kind === 'optimizer' && r.model === target.configuration.model && r.waiting);
+    await until(() => waiting().length === 1, 'Enabled periodic optimizer did not start', 75000);
+    assert.equal(fixture(target).snapshot, true);
+    const status = await json(`/api/roles/${target.id}/context-status`);
+    assert.notEqual(status.reason, 'busy', 'Independent optimizer blocked context inspection');
+    const settingsMs = await pagesDuringStream();
+    fixture(target, 'optimizer-append');
+    await policy(false);
+    await until(() => waiting()[0].closed, 'Disabled optimizer HTTP remained open', 3000);
+    const restored = fixture(target);
+    assert.equal(restored.snapshot, false);
+    for (const marker of ['CANDIDATE_INITIAL', 'CANDIDATE_RECOVERED', 'CANDIDATE_CONCURRENT']) assert.match(restored.documents['PENDING.md'], new RegExp(marker));
+    assert.equal(restored.documents['MEMORY.md'], 'OPTIMIZER_ORIGINAL_MEMORY');
+    assert.equal(restored.documents['SELF.md'], 'OPTIMIZER_ORIGINAL_SELF');
+    release('optimizer:' + target.configuration.model); hold('optimizer:' + target.configuration.model);
+    await policy(true);
+    await until(() => waiting().length === 2, 'Re-enabled optimizer did not start a new generation', 75000);
+    release('optimizer:' + target.configuration.model);
+    await until(() => fixture(target).documents['SELF.md'].includes('OPTIMIZER_SELF_COMMITTED'), 'Optimizer SELF did not commit', 25000);
+    const committed = fixture(target); assert.match(committed.documents['MEMORY.md'], /OPTIMIZER_COMMITTED/);
+    assert.equal(committed.snapshot, false);
+    for (const marker of ['CANDIDATE_INITIAL', 'CANDIDATE_RECOVERED', 'CANDIDATE_CONCURRENT']) {
+      assert.match(committed.documents['HISTORY.md'], new RegExp(marker));
+      assert.doesNotMatch(committed.documents['PENDING.md'], new RegExp(marker));
+    }
+    await policy(false);
+    await page.screenshot({ path: path.join(artifacts, 'optimizer-enabled.png') });
+    return { settingsMs, cancelledHttp: true, pendingRestored: true, generations: waiting().length, engineDisabled: true };
   });
   assert.equal(report.modelError, undefined); assert.deepEqual(report.browserErrors, []); report.ok = true;
 } catch (error) {

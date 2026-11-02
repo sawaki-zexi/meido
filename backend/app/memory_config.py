@@ -11,6 +11,7 @@ from pydantic import BaseModel
 class MemorySettings(BaseModel):
     enabled: bool = True
     embeddingEnabled: bool = True
+    ownerEmbeddingEnabled: bool = True
 
 
 class MemorySettingsStore:
@@ -27,6 +28,7 @@ class MemorySettingsStore:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raise ValueError("记忆设置格式无效")
+            raw.setdefault('ownerEmbeddingEnabled', raw.get('embeddingEnabled', True))
             return MemorySettings.model_validate(raw)
 
     def save(self, settings: MemorySettings) -> MemorySettings:

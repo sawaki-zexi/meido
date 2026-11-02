@@ -374,7 +374,7 @@ describe("设置", () => {
     await user.click(within(panel).getByRole("button", { name: "记忆" }));
     expect(await within(panel).findByRole("heading", { name: "记忆" })).toBeInTheDocument();
     await user.click(within(panel).getByRole("button", { name: "向量模型" }));
-    expect(await within(panel).findByLabelText("启用向量模型")).toBeChecked();
+    expect(await within(panel).findByLabelText("启用记忆引擎向量模型")).toBeChecked();
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
   });

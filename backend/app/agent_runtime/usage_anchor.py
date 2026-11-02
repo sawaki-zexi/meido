@@ -53,14 +53,21 @@ class _Anchor:
     prompt_tokens: int
 
 
-def mark_context_frame(request: Request, frame: str) -> Request:
-    """Only the host-created second message is replaceable, never user markers."""
+def mark_context_frame(request: Request, frame: str, *, index: int | None = 1, occurrence: int = 0) -> Request:
+    """Only the host-owned inserted message is replaceable, never user markers."""
     messages = request.get('messages', [])
-    if frame and len(messages) > 1 and messages[1].get('role') == 'user':
-        content = messages[1].get('content', messages[1].get('parts'))
+    candidates = range(len(messages)) if index is None else (index,)
+    for position in candidates:
+        if not frame or not 0 <= position < len(messages) or messages[position].get('role') != 'user':
+            continue
+        content = messages[position].get('content', messages[position].get('parts'))
         if content == frame or (isinstance(content, list) and len(content) == 1
                                and content[0].get('text') == frame):
-            request['_context_frames'] = (1,)
+            if occurrence:
+                occurrence -= 1
+                continue
+            request['_context_frames'] = (position,)
+            break
     return request
 
 

@@ -214,54 +214,41 @@ def test_model_consolidation_replaces_existing_record_when_sources_are_merged(tm
     assert "主人喜欢海风" not in memory
 
 
-def test_model_consolidation_uses_role_configuration_and_rejects_unknown_sources(tmp_path, monkeypatch):
-    role_store = RoleStore(tmp_path / "roles")
-    role = role_store.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
+def test_host_optimizer_uses_role_configuration_without_republishing_structured_sources(tmp_path, monkeypatch):
+    from backend.app.host_memory_optimizer import HostMemoryOptimizer
+    from backend.app.memory_store import MemoryStore
+    from backend.app.models import MemorySourceRef
+    roles = RoleStore(tmp_path / "roles")
+    role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
     configuration = ModelConfiguration(
-        providerId="test", provider="custom", baseUrl="https://model.test/v1", model="memory-model", apiKey="secret"
-    )
-    monkeypatch.setattr(main, "store", role_store)
+        providerId="test", provider="custom", baseUrl="https://model.test/v1", model="memory-model", apiKey="fixture")
+    monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main.model_configuration_store, "get", lambda configuration_id=None: configuration)
-
+    structured = MemoryStore(tmp_path / 'memory.db')
+    original = structured.add_or_reinforce(role.id, 'fact', '原有结构化事实',
+        MemorySourceRef(kind='manual', sessionKey='role:' + role.id, stableSourceKey='source-a'))
+    foreign = structured.add_or_reinforce('other', 'fact', '另一角色事实',
+        MemorySourceRef(kind='manual', sessionKey='role:other', stableSourceKey='other-source'))
+    monkeypatch.setattr(main, 'memory_store', structured)
+    folder = roles.root / role.id / 'memory'
+    (folder / 'PENDING.md').write_text('- [identity] 主人住在海边', encoding='utf-8')
+    calls = []
     class Adapter:
         async def stream_messages(self, messages, selected_configuration, *, max_tokens=None):
             assert selected_configuration is configuration
-            assert max_tokens == 1200
-            yield '{"memories":[{"memoryType":"fact","summary":"主人住在海边","sourceKeys":["source-a"]}],'
-            yield '"selfUnderstanding":"我们有共同回忆。"}'
-
-    monkeypatch.setattr(main, "model_adapter", Adapter())
-    optimized = main._consolidate_role_memories(
-        role.id,
-        [],
-        [_Record("fact", "主人住在海边", ["source-a"])],
-        "",
-        "",
-    )
-    assert optimized.records == [_Record("fact", "主人住在海边", ["source-a"])]
-    assert optimized.self_understanding == "我们有共同回忆。"
-
-    source_ref = main._consolidation_source_ref(
-        role.id,
-        f"consolidation:{role.id}:3-8:digest:message-7:fact",
-    )
-    assert source_ref.messageIds == ["message-7"]
-    assert source_ref.messageRange == (3, 8)
-
-    class HallucinatingAdapter:
-        async def stream_messages(self, messages, selected_configuration, *, max_tokens=None):
-            yield '{"memories":[{"memoryType":"fact","summary":"推断的内容","sourceKeys":["other-source"]}],'
-            yield '"selfUnderstanding":""}'
-
-    monkeypatch.setattr(main, "model_adapter", HallucinatingAdapter())
-    with pytest.raises(ValueError, match="无效的记忆来源"):
-        main._consolidate_role_memories(
-            role.id,
-            [],
-            [_Record("fact", "主人住在海边", ["source-a"])],
-            "",
-            "",
-        )
+            calls.append((messages, max_tokens))
+            yield '# 我的长期记忆\n- 主人住在海边' if max_tokens == 16384 else '# 我是谁\n- 我们有共同回忆。'
+    monkeypatch.setattr(main, 'model_adapter', Adapter())
+    optimizer = HostMemoryOptimizer(roles.root,
+        lambda role_id, system, prompt, tokens: main._memory_auxiliary_provider(role_id,
+            [{'role': 'system', 'content': system}, {'role': 'user', 'content': prompt}], tokens),
+        step_delay_seconds=0)
+    assert asyncio.run(optimizer.optimize(role.id))
+    assert [tokens for _, tokens in calls] == [16384, 2048]
+    assert '主人住在海边' in (folder / 'MEMORY.md').read_text(encoding='utf-8')
+    assert '共同回忆' in (folder / 'SELF.md').read_text(encoding='utf-8')
+    assert structured.list_all(role.id) == [original]
+    assert structured.list_all('other') == [foreign]
 
 
 def test_optimizer_worker_runs_in_background_and_serializes_roles(tmp_path):

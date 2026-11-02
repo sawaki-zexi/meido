@@ -22,12 +22,18 @@ def test_natural_wait_rechecks_recent_activity_and_keeps_current_notes_separate(
             s.result = {"action": "wait", "text": ""}
             await s.receive("before-wait", sender="22")
             await s.clock.advance(1)
+            async with asyncio.timeout(3):
+                while len(s.calls) < 1 or not any(end == s.clock.now + 2 for end, future in s.clock.waiters if not future.done()):
+                    await asyncio.sleep(.01)
             assert len(s.calls) == 1
             code = s.channels.create_pairing_code()
             assert s.channels.consume_pairing_code(code, role_id=s.role.id, channel="qq", scope="platform",
                 platform_user_id="33", account_id=s.adapter.account_id, chat_id="33")
             s.result = {"action": "silence", "text": ""}
             await s.clock.advance(2)
+            async with asyncio.timeout(3):
+                while len(s.calls) < 2:
+                    await asyncio.sleep(.01)
             assert len(s.calls) == 2
             first, second = [json.dumps(messages, ensure_ascii=False) for messages, _ in s.calls]
             assert "待配对私聊动态-722" in first and "待配对私聊动态-722" not in second

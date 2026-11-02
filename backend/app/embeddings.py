@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import asyncio
 import math
 import time
 from typing import Protocol
@@ -133,6 +134,65 @@ class SharedEmbeddingProvider:
     def embed(self, role_id: str, text: str) -> list[float] | None:
         del role_id
         return self.embed_query(text)
+
+
+class MemoryEmbeddingProvider(SharedEmbeddingProvider):
+    """Default semantic engine fingerprint: model name and declared dimension.
+
+    Endpoint and credentials can change without changing the vector space.
+    Owner-knowledge's SharedEmbeddingProvider retains its existing identity.
+    """
+
+    TOTAL_TIMEOUT_SECONDS = 40
+
+    def __init__(self, configuration, timeout=30, *, enabled=None, _state=None):
+        super().__init__(configuration, timeout, enabled=enabled, _state=_state)
+
+    async def _request_async(self, inputs, config=None):
+        if not self.is_enabled:
+            raise RuntimeError('向量模型已暂停')
+        config = config or self.configuration()
+        try:
+            async with asyncio.timeout(self.TOTAL_TIMEOUT_SECONDS):
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.post(f"{config.baseUrl.rstrip('/')}/embeddings",
+                        headers={'Authorization': f'Bearer {config.apiKey}'},
+                        json={'model': config.model, 'input': inputs, 'dimensions': config.dimensions})
+                    response.raise_for_status()
+                    raw = response.json().get('data')
+            if not isinstance(raw, list) or len(raw) != len(inputs):
+                raise ValueError('embedding 响应数量无效')
+            vectors = []
+            for item in sorted(raw, key=lambda value: value.get('index', 0) if isinstance(value, dict) else 0):
+                vector = item.get('embedding') if isinstance(item, dict) else None
+                if not isinstance(vector, list) or len(vector) != config.dimensions or not vector:
+                    raise ValueError('embedding 响应向量维度无效')
+                if not all(isinstance(value, (int, float)) for value in vector):
+                    raise ValueError('embedding 响应向量格式无效')
+                norm = math.sqrt(sum(float(value) ** 2 for value in vector))
+                if not math.isfinite(norm) or not norm:
+                    raise ValueError('embedding 响应向量不可归一化')
+                vectors.append([float(value) / norm for value in vector])
+            self.last_error = None
+            return vectors
+        except Exception as error:
+            self.last_error = str(error)[:500] or type(error).__name__
+            raise
+
+    def _request(self, inputs, config=None):
+        return asyncio.run(self._request_async(inputs, config))
+
+    async def embed_async(self, role_id, text):
+        return (await self._request_async([text[:self.MAX_TEXT_LENGTH]]))[0]
+
+    @property
+    def model_id(self) -> str:
+        return self.configuration().model
+
+    def snapshot(self):
+        config = self.configuration()
+        return MemoryEmbeddingProvider(lambda: config.model_copy(deep=True),
+            timeout=self.timeout, enabled=self.enabled, _state=self._state)
 
 
 class OpenAICompatibleEmbeddingAdapter:

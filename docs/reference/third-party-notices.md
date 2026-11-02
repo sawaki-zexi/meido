@@ -2,7 +2,9 @@
 
 状态：当前
 
-最后核验：2026-10-30
+最后核验：2026-11-02
+
+#302 的上下文、默认语义记忆、Markdown 维护/优化、JSON 修复和手动压缩适配固定 Shiori-Agent `c14152ed225954a2a50da775075fe64dbf7b8b50`。来源范围见[既有归属清单](../../third_party/shiori-agent/README.md)，沿用其 [MIT 许可](../../third_party/shiori-agent/LICENSE)。
 
 聊天表达与查证提示 `backend/app/agent_runtime/conversation_prompt.py` 参考并改编
 Shiori-Agent `d3acaed186b172a78a5892e0307e9affd89759f0` 的 `apps/backend/prompts/agent.py`

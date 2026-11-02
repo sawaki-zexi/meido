@@ -100,6 +100,10 @@ class MemoryRecallTool:
         self._memory = memory
         self._now = now or (lambda: datetime.now(_LOCAL_TZ))
         enabled = getattr(memory, "enabled", None)
+        engine = getattr(memory, 'engine', None)
+        spec = engine.tool_profile().recall if engine is not None else None
+        if spec is not None:
+            self.definition = replace(self.definition, description=spec.description, input_schema=spec.parameters, exposure='direct')
         if callable(enabled) and not enabled():
             self.definition = replace(self.definition, approval="deny")
 
@@ -125,7 +129,7 @@ class MemoryRecallTool:
         if not isinstance(intent_value, str) or intent_value not in _MEMORY_INTENT_VALUES:
             raise ValueError("unsupported memory query intent")
         intent = cast(MemoryRecallIntent, intent_value)
-        limit = arguments.get("limit", 5)
+        limit = arguments.get("limit", 8)
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= _MAX_RESULT_LIMIT:
             raise ValueError(f"limit must be an integer between 1 and {_MAX_RESULT_LIMIT}")
 

@@ -35,6 +35,7 @@ def freeze(app, role_id, config):
         (config.activeDecisionEnabled, config.decisionModelConfigurationId),
         (config.driftEnabled, config.driftModelConfigurationId)) if enabled and identifier}
     return {"role": shape(app.role_getter(role_id), role=True),
+            'memory': app.memory_context_reader(role_id) if app.memory_context_reader else '',
             'inheritedModelId': config.decisionModelConfigurationId if config.inheritRoleModel else None,
             "context": freeze_context(app.context_reader, role_id),
             "history": app.history_factory(role_id).snapshot() if app.history_factory else None,
@@ -58,7 +59,7 @@ def persona(frozen):
     role = frozen.get("role") or {}
     profile = role.get("profile", {})
     payload = {"name": role.get("name", ""), "profile": profile if isinstance(profile, dict) else {}}
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))[:12000]
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))[:12000] + '\n' + str(frozen.get('memory', ''))
 
 
 def history_view(app, origin):

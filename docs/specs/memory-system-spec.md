@@ -1,6 +1,6 @@
 # Meido 记忆系统规格
 
-状态：当前
+状态：已被[2026-11-02 完整对齐规格](shiori-context-memory-alignment.md)替代；保留为历史方案。
 
 事实来源：[`shiori-agent-memory.md`](../research/shiori-agent-memory.md)、
 [`shiori-memory-optimizer-deep-dive.md`](../research/shiori-memory-optimizer-deep-dive.md)。

@@ -14,6 +14,7 @@ from backend.app.memory_engine import (
     MemoryScope,
 )
 from backend.app.memory_service import MemoryService
+from memory_fakes import configured_service
 from backend.app.memory_store import MemoryStore
 from backend.app.models import MemorySourceRef
 
@@ -112,16 +113,16 @@ def test_memory_schema_migrates_existing_items_and_can_run_again(tmp_path):
 def test_memory_schema_refuses_to_downgrade_a_newer_database(tmp_path):
     database = tmp_path / "future-memory.db"
     with sqlite3.connect(database) as connection:
-        connection.execute("PRAGMA user_version = 2")
+        connection.execute("PRAGMA user_version = 3")
 
     with pytest.raises(RuntimeError, match="newer than this application"):
         MemoryStore(database)
 
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
-def test_embedding_dimension_change_invalidates_only_that_roles_vectors(tmp_path):
+def test_embedding_dimension_change_preserves_both_roles_vectors(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     source_a = MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="a")
     source_b = MemorySourceRef(kind="manual", sessionKey="role:role-b", stableSourceKey="b")
@@ -130,13 +131,14 @@ def test_embedding_dimension_change_invalidates_only_that_roles_vectors(tmp_path
     store.set_embedding("role-a", item_a.id, [1.0, 0.0])
     store.set_embedding("role-b", item_b.id, [1.0, 0.0])
 
-    store.set_embedding("role-a", item_a.id, [0.0, 1.0, 0.0])
+    with pytest.raises(ValueError):
+        store.set_embedding("role-a", item_a.id, [0.0, 1.0, 0.0])
 
     assert store.get("role-a", item_a.id).hasEmbedding is True
     assert store.get("role-b", item_b.id).hasEmbedding is True
     with sqlite3.connect(tmp_path / "memory.db") as connection:
         vectors = dict(connection.execute("SELECT role_id, embedding_json FROM memory_items"))
-    assert json.loads(vectors["role-a"]) == [0.0, 1.0, 0.0]
+    assert json.loads(vectors["role-a"]) == [1.0, 0.0]
     assert json.loads(vectors["role-b"]) == [1.0, 0.0]
 
 
@@ -153,7 +155,8 @@ def test_recall_detects_a_query_embedding_dimension_change(tmp_path):
 
     service.recall("role-a", "喜欢海边")
 
-    assert store.list_without_embeddings("role-a") == [store.get("role-a", item.id)]
+    assert store.list_without_embeddings("role-a") == []
+    assert store.embedding_for("role-a", item.id) == [1.0, 0.0]
 
 
 def test_async_recall_detects_a_query_embedding_dimension_change(tmp_path):
@@ -169,7 +172,8 @@ def test_async_recall_detects_a_query_embedding_dimension_change(tmp_path):
 
     asyncio.run(service.recall_async("role-a", "喜欢海边"))
 
-    assert store.list_without_embeddings("role-a") == [store.get("role-a", item.id)]
+    assert store.list_without_embeddings("role-a") == []
+    assert store.embedding_for("role-a", item.id) == [1.0, 0.0]
 
 
 def test_memory_store_rejects_missing_role_scope(tmp_path):
@@ -199,7 +203,7 @@ def test_default_engine_exposes_the_complete_memory_engine_contract(tmp_path):
     assert isinstance(engine, MemoryEngine)
 
 
-def test_migration_discards_mixed_embedding_dimensions_without_losing_items(tmp_path):
+def test_migration_preserves_ambiguous_vectors_and_reports_unavailable(tmp_path):
     database = tmp_path / "mixed-vectors.db"
     source = json.dumps({"kind": "manual", "sessionKey": "role:role-a", "stableSourceKey": "legacy"})
     with sqlite3.connect(database) as connection:
@@ -222,15 +226,17 @@ def test_migration_discards_mixed_embedding_dimensions_without_losing_items(tmp_
 
     assert {item.id for item in store.list_all("role-a")} == {"one", "two"}
     unembedded = store.list_without_embeddings("role-a", limit=5)
-    assert len(unembedded) == 2
+    assert len(unembedded) == 0
+    with pytest.raises(ValueError):
+        store.validate_embedding_space("role-a", 2, "fixture")
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
 
 
 def test_memory_engine_keeps_identical_content_isolated_between_roles(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     engine = DefaultMemoryEngine(
-        MemoryService(store),
+        configured_service(store),
         role_exists=lambda role_id: role_id in {"role-a", "role-b"},
     )
 
@@ -266,12 +272,12 @@ def test_memory_engine_keeps_identical_content_isolated_between_roles(tmp_path):
     assert [record.id for record in result.records] == [first.item_id]
     assert result.records[0].source["stable_source_key"] == "manual-a"
     assert result.records[0].status == "active"
-    assert result.records[0].has_embedding is False
+    assert result.records[0].has_embedding is True
 
 
 def test_memory_engine_mutation_can_change_item_state(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda _: True)
+    engine = DefaultMemoryEngine(configured_service(store), role_exists=lambda _: True)
     scope = MemoryScope("role-a", "role:role-a")
 
     async def exercise():
@@ -303,7 +309,7 @@ def test_memory_engine_rejects_unknown_roles(tmp_path):
 
 def test_memory_engine_applies_interest_filters_and_answer_lanes(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda _: True)
+    engine = DefaultMemoryEngine(configured_service(store), role_exists=lambda _: True)
     source = MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="source")
     store.add_or_reinforce("role-a", "preference", "喜欢海边", source)
     store.add_or_reinforce("role-a", "fact", "海边工作地点", source)
@@ -320,8 +326,8 @@ def test_memory_engine_applies_interest_filters_and_answer_lanes(tmp_path):
     interest, answer = asyncio.run(exercise())
 
     assert [record.kind for record in interest.records] == ["preference"]
-    assert [lane["query"] for lane in answer.trace["lanes"]] == ["海边"]
-    assert answer.trace["rrf"] is True
+    assert answer.trace['hyde_hypotheses'] == []
+    assert all(record.signals['rrf_score'] > 0 for record in answer.records)
 
 
 def test_memory_engine_uses_real_hyde_provider_and_falls_back(tmp_path):
@@ -332,11 +338,11 @@ def test_memory_engine_uses_real_hyde_provider_and_falls_back(tmp_path):
         calls.append(query)
         return ["用户过去的事件", "用户的一般事实"]
 
-    engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda _: True, hyde_provider=hyde)
+    engine = DefaultMemoryEngine(configured_service(store), role_exists=lambda _: True, hyde_provider=hyde)
     result = asyncio.run(engine.query(MemoryQuery("最近发生了什么", intent="answer", scope=MemoryScope("role-a", "role:role-a"))))
 
-    assert calls == ["最近发生了什么"]
-    assert [lane["query"] for lane in result.trace["lanes"]] == ["最近发生了什么", "用户过去的事件", "用户的一般事实"]
+    assert calls == ["最近发生了什么", "最近发生了什么"]
+    assert result.trace["hyde_hypotheses"] == ["用户过去的事件", "用户的一般事实"]
 
 
 def test_procedure_rule_schema_filters_unsafe_memory(tmp_path):
@@ -344,7 +350,7 @@ def test_procedure_rule_schema_filters_unsafe_memory(tmp_path):
     source = MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="procedure")
     store.add_or_reinforce("role-a", "procedure", "发送邮件前确认收件人", source, extra={"procedureTags": ["communication"], "confidence": 0.9})
     store.add_or_reinforce("role-a", "procedure", "自动删除草稿", MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="unsafe"), extra={"procedureTags": ["dangerous"], "confidence": 0.2})
-    engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda _: True)
+    engine = DefaultMemoryEngine(configured_service(store), role_exists=lambda _: True)
 
     result = asyncio.run(engine.query(MemoryQuery(
         "发送邮件", intent="procedure", scope=MemoryScope("role-a", "role:role-a"),
@@ -363,7 +369,7 @@ def test_memory_engine_applies_default_intent_policy_and_reports_injection_budge
             f"偏好项目 {index}",
             MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey=f"pref-{index}"),
         )
-    engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda _: True)
+    engine = DefaultMemoryEngine(configured_service(store), role_exists=lambda _: True)
 
     result = asyncio.run(engine.query(MemoryQuery(
         "偏好", intent="interest", scope=MemoryScope("role-a", "role:role-a"),
@@ -371,10 +377,10 @@ def test_memory_engine_applies_default_intent_policy_and_reports_injection_budge
     )))
 
     injection = result.trace["injection"]
-    assert injection["budget_chars"] == 80
-    assert injection["candidate_count"] <= 4
-    assert injection["injected_count"] <= injection["candidate_count"]
-    assert injection["trimmed_count"] == injection["candidate_count"] - injection["injected_count"]
+    assert injection['budget_chars'] == 6000
+    assert len(result.records) == 6
+    assert injection['injected_count'] == 0  # Interest returns summaries, not a context injection.
+    assert all(record.summary in result.text_block for record in result.records)
 
 
 def test_memory_engine_exposes_evidence_and_ranking_reasons(tmp_path):
@@ -386,7 +392,7 @@ def test_memory_engine_exposes_evidence_and_ranking_reasons(tmp_path):
         stableSourceKey="turn:role:role-a:user-1:assistant-1",
     )
     store.add_or_reinforce("role-a", "fact", "主人喜欢海边散步", source)
-    engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda _: True)
+    engine = DefaultMemoryEngine(configured_service(store), role_exists=lambda _: True)
 
     result = asyncio.run(engine.query(MemoryQuery(
         "海边", intent="context", scope=MemoryScope("role-a", "role:role-a")
@@ -395,20 +401,15 @@ def test_memory_engine_exposes_evidence_and_ranking_reasons(tmp_path):
     record = result.records[0]
     assert record.evidence[0].source_ref == source.stableSourceKey
     assert record.evidence[0].refs == ["user-1", "assistant-1"]
-    assert record.signals["lanes"] == ["海边"]
-    assert record.signals["lane_ranks"] == {"海边": 1}
-    assert record.signals["rrf_score"] == record.score
-    assert "lexical match" in record.signals["reasons"]
-    assert "selected for injection" in record.signals["reasons"]
-    assert result.trace["lanes"][0]["candidate_count"] == 1
-    assert result.trace["lanes"][0]["filtered_count"] == 0
-    assert result.trace["ranking"]["unique_candidates"] == 1
-    assert result.trace["session_key"] == "role:role-a"
+    assert record.signals["rrf_score"] == pytest.approx(.5 / 61)
+    assert record.score == 1.0
+    assert result.raw["candidate_count"] == 1
+    assert result.trace["role_id"] == "role-a"
 
 
 def test_memory_engine_timeline_requires_range_and_filters_event_time(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda _: True)
+    engine = DefaultMemoryEngine(configured_service(store), role_exists=lambda _: True)
     source = MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="source")
     store.add_or_reinforce(
         "role-a", "event", "搬到海边", source,
@@ -420,10 +421,9 @@ def test_memory_engine_timeline_requires_range_and_filters_event_time(tmp_path):
     )
 
     async def exercise():
-        with pytest.raises(ValueError, match="time_start"):
-            await engine.query(MemoryQuery(
-                "", intent="timeline", scope=MemoryScope("role-a", "role:role-a")
-            ))
+        missing = await engine.query(MemoryQuery("", intent="timeline", scope=MemoryScope("role-a", "role:role-a")))
+        assert missing.records == []
+        assert missing.trace["intent"] == "timeline_missing_time"
         return await engine.query(MemoryQuery(
             "", intent="timeline", scope=MemoryScope("role-a", "role:role-a"),
             filters=MemoryQueryFilters(
@@ -449,7 +449,7 @@ def test_memory_engine_returns_empty_result_when_retrieval_lane_fails(tmp_path):
     )))
 
     assert result.records == []
-    assert "error" in result.trace["lanes"][0]
+    assert result.trace["disabled"] and "配置" in result.trace["reason"]
 
 
 def test_metadata_update_preserves_content_hash_and_embedding(tmp_path):
@@ -500,13 +500,13 @@ def test_role_snapshot_restores_only_that_roles_events_and_replacements(tmp_path
 
 def test_memory_admin_filters_updates_metadata_and_keeps_embedding(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda role_id: role_id == "role-a")
+    engine = DefaultMemoryEngine(configured_service(store), role_exists=lambda role_id: role_id == "role-a")
     scope = MemoryScope("role-a", "role:role-a")
     created = asyncio.run(engine.mutate(MemoryMutation(
         kind="remember", scope=scope, summary="喜欢红茶", memory_kind="preference",
         metadata={"memory_domain": "relationship", "source_note": "manual"},
     )))
-    store.set_embedding("role-a", created.item_id, [1.0, 0.0])
+    original_vector = store.embedding_for("role-a", created.item_id)
 
     rows, total = engine.list_items_for_admin(
         role_id="role-a", memory_domain="relationship", has_embedding=True, page=1, page_size=10
@@ -519,12 +519,12 @@ def test_memory_admin_filters_updates_metadata_and_keeps_embedding(tmp_path):
     assert updated is not None
     assert updated["emotionalWeight"] == 8
     assert updated["contentHash"] == rows[0]["contentHash"]
-    assert store.embedding_for("role-a", created.item_id) == [1.0, 0.0]
+    assert store.embedding_for("role-a", created.item_id) == original_vector
 
 
 def test_memory_admin_supports_similar_batch_delete_and_invalidation_without_cross_role_access(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    engine = DefaultMemoryEngine(MemoryService(store), role_exists=lambda role_id: role_id in {"role-a", "role-b"})
+    engine = DefaultMemoryEngine(configured_service(store), role_exists=lambda role_id: role_id in {"role-a", "role-b"})
     source_a = MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="a")
     source_b = MemorySourceRef(kind="manual", sessionKey="role:role-b", stableSourceKey="b")
     first = store.add_or_reinforce("role-a", "fact", "主人喜欢海边", source_a)

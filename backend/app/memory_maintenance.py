@@ -5,6 +5,8 @@ import json
 import os
 import re
 import uuid
+import threading
+import inspect
 from pathlib import Path
 from collections.abc import Callable
 
@@ -12,6 +14,7 @@ from .memory_events import ConsolidationCandidate, ConsolidationCommitted
 from .models import Message
 from .session_store import SessionStore
 from .memory_documents import MemoryDocuments
+from .memory_document_lock import document_lock, MarkdownCommitGuard
 from .todo_intent import is_explicit_todo_request
 
 
@@ -22,9 +25,9 @@ class ConsolidationDraftError(ValueError):
 class MemoryMaintenance:
     """Maintain each role's Markdown memory views from committed messages."""
 
-    RECENT_MESSAGE_LIMIT = 12
+    RECENT_MESSAGE_LIMIT = 20
     RECENT_CHAR_LIMIT = 4000
-    CONSOLIDATION_MIN_READY_MESSAGES = max(5, RECENT_MESSAGE_LIMIT // 2)
+    CONSOLIDATION_MIN_READY_MESSAGES = 10
 
     def __init__(
         self,
@@ -35,6 +38,10 @@ class MemoryMaintenance:
         role_exists: Callable[[str], bool] | None = None,
         messages_provider: Callable[[str, str], list[Message]] | None = None,
         recent_limit_provider: Callable[[], int] | None = None,
+        relationship_consumer: Callable[[ConsolidationCommitted], None] | None = None,
+        ownership_provider: Callable[[str], dict[str, object]] | None = None,
+        defer_consumers: bool = False,
+        configuration_generation: Callable[[str], str] | None = None,
     ) -> None:
         self.roles_root = Path(roles_root).resolve()
         self.sessions = sessions
@@ -43,134 +50,173 @@ class MemoryMaintenance:
         self.role_exists = role_exists or (lambda role_id: True)
         self.messages_provider = messages_provider
         self.recent_limit_provider = recent_limit_provider
+        self.relationship_consumer = relationship_consumer
+        self.ownership_provider = ownership_provider
+        self.defer_consumers = defer_consumers
+        self.configuration_generation = configuration_generation
+        self._configuration_generations: dict[str, str] = {}
+        self._configuration_lock = threading.RLock()
+        self.failures: dict[str, str] = {}
         self.errors: list[str] = []
-        self._draft_overrides: dict[str, dict[str, str]] = {}
+        self._draft_local = threading.local()
 
-    def resume_pending(self) -> int:
-        """Retry durable consolidation events left by a previous process."""
+    def resume_pending(self, *, schedule: Callable[[str], None] | None = None) -> int:
+        """Import legacy cursors once, then resume each acknowledged consumer."""
         if not self.roles_root.exists():
             return 0
         resumed = 0
-        for role_root in self.roles_root.iterdir():
-            if not role_root.is_dir():
-                continue
-            if role_root.name.startswith(".") or not self.role_exists(role_root.name):
-                continue
-            cursor_path = role_root / "memory" / ".maintenance.json"
-            cursor = self._read_cursor(cursor_path)
-            if "pendingEvent" not in cursor:
-                continue
-            if self.on_consolidation_committed is None:
-                continue
-            try:
-                self.maintain(role_root.name, f"role:{role_root.name}")
-                resumed += 1
-            except Exception as error:
-                self.errors.append(f"{role_root.name}: pending consolidation retry failed: {error}")
+        for root in self.roles_root.iterdir():
+            if root.is_dir() and not root.name.startswith(".") and self.role_exists(root.name):
+                path = root / "memory" / ".maintenance.json"
+                progress = self._read_cursor(path)
+                if progress.get("pendingEvents") or progress.get("relationshipPayload"):
+                    if schedule is not None:
+                        schedule(root.name)
+                    else:
+                        self._retry_pending_event(path, progress, root.name, f"role:{root.name}")
+                    resumed += 1
         return resumed
 
     @property
     def recent_limit(self) -> int:
         return self.recent_limit_provider() if self.recent_limit_provider else self.RECENT_MESSAGE_LIMIT
 
-    def maintain(self, role_id: str, session_key: str, *, force: bool = False, through_sequence: int | None = None) -> None:
-        if session_key != f"role:{role_id}":
+    @property
+    def minimum_new_messages(self) -> int:
+        return max(5, self.recent_limit // 2)
+
+    def refresh_configuration(self, role_id: str) -> str:
+        """Known failures belong to the configuration that attempted the draft."""
+        with self._configuration_lock:
+            generation = self.configuration_generation(role_id) if self.configuration_generation else ''
+            if role_id in self._configuration_generations and self._configuration_generations[role_id] != generation:
+                self.failures.pop(role_id, None)
+            self._configuration_generations[role_id] = generation
+            return generation
+
+    def maintain(self, role_id: str, session_key: str, *, force: bool = False, through_sequence: int | None = None, commit_guard=None) -> None:
+        guard = commit_guard or MarkdownCommitGuard()
+        if guard.cancelled:
+            return
+        if session_key != f"role:{role_id}" or not self.role_exists(role_id):
             raise ValueError("会话与角色不匹配")
-        role_root = (self.roles_root / role_id).resolve()
-        if role_root.parent != self.roles_root:
-            raise ValueError("角色路径无效")
-        memory_dir = role_root / "memory"
+        generation = self.refresh_configuration(role_id)
+        memory_dir = MemoryDocuments(self.roles_root).memory_dir(role_id)
         memory_dir.mkdir(parents=True, exist_ok=True)
         (memory_dir / "journal").mkdir(parents=True, exist_ok=True)
-
-        messages = self._messages(role_id, session_key)
         cursor_path = memory_dir / ".maintenance.json"
+        messages = self._messages(role_id, session_key)
         cursor = self._read_cursor(cursor_path)
-        cursor = self._retry_pending_event(cursor_path, cursor, role_id, session_key)
-        if "pendingEvent" in cursor and self.on_consolidation_committed is None:
-            return
+        valid = self._context_cursor(cursor, messages, session_key)
+        if valid != cursor:
+            self._save(cursor_path, valid, expected=cursor)
+        cursor = valid if self.defer_consumers else self._retry_pending_event(cursor_path, valid, role_id, session_key)
         cursor_snapshot = dict(cursor)
-        cursor = self._context_cursor(cursor, messages, session_key)
-        last_sequence = cursor["lastSequence"]
-        recent = self._recent_context(messages)
-        writes: dict[Path, str] = {memory_dir / "RECENT_CONTEXT.md": recent}
-        document_snapshot = {path: self._file_signature(path) for path in writes}
-
-        new_messages = [message for message in messages if message.sequence > last_sequence]
-        eligible = [message for message in messages if message.sequence > last_sequence]
-        ready = len(eligible) - self.recent_limit
-        event: ConsolidationCommitted | None = None
-        if force or ready >= max(5, self.recent_limit // 2):
-            window = (self._window(messages, last_sequence) if through_sequence is None else
+        eligible = [message for message in messages if message.sequence > int(cursor["lastSequence"])]
+        recent_path = memory_dir / "RECENT_CONTEXT.md"
+        ownership = self.ownership_provider(role_id) if self.ownership_provider else {}
+        previous = self._read_text(recent_path)
+        abstract = ''
+        match = re.match(r'<!-- recent-context-sources: (.*?) -->\s*', previous)
+        if match:
+            try:
+                previous_owners = json.loads(match.group(1))
+            except ValueError:
+                previous_owners = None
+            if isinstance(previous_owners, dict) and self._ownership_matches(previous_owners, ownership):
+                abstract = previous[match.end():].split('<!-- recent-raw -->', 1)[0].strip()
+        raw = self._recent_context(messages, ownership=ownership).split('<!-- recent-raw -->', 1)[-1]
+        writes = {recent_path: self._recent_document(abstract, ownership, raw=raw)}
+        snapshots = {recent_path: self._file_signature(recent_path)}
+        additions = {}
+        window = []
+        if force or len(eligible) - self.recent_limit >= self.minimum_new_messages:
+            window = (self._window(messages, int(cursor["lastSequence"])) if through_sequence is None else
                       [message for message in eligible if message.sequence <= through_sequence])
-            if window:
-                source_key = self._source_key(role_id, window)
-                history_path = memory_dir / "HISTORY.md"
-                pending_path = memory_dir / "PENDING.md"
-                history = self._read_text(history_path)
-                pending = self._read_text(pending_path)
-                journal_path = MemoryDocuments(self.roles_root).journal_path(role_id, window[0].createdAt.date().isoformat())
-                journal = self._read_text(journal_path)
-                try:
-                    candidates = self._candidates(source_key, window)
-                except (ConsolidationDraftError, TimeoutError, ValueError):
-                    # Keep RECENT_CONTEXT, but leave the consolidation cursor
-                    # unchanged so the same input can be retried later.
-                    self._before_commit()
-                    latest = self._messages(role_id, session_key)
-                    if self._message_signature(latest) != self._message_signature(messages):
-                        return
-                    if self._read_cursor(cursor_path) != cursor_snapshot:
-                        return
-                    if any(self._file_signature(path) != signature for path, signature in document_snapshot.items()):
-                        return
-                    self._commit(writes, cursor_path, cursor_snapshot)
-                    return
-                draft = self._draft_overrides.get(source_key, {})
-                if draft.get("recent"):
-                    writes[memory_dir / "RECENT_CONTEXT.md"] = draft["recent"]
-                if source_key not in history:
-                    history += draft.get("history", "") or self._history_entry(source_key, window)
-                if source_key not in pending:
-                    pending += self._pending_entries(source_key, window, candidates)
-                if source_key not in journal:
-                    journal += MemoryDocuments.render_journal_entry(source_key, window[0].sequence, window[-1].sequence)
-                cursor = {"lastSequence": window[-1].sequence, "lastSourceKey": source_key}
-                if window[-1].metadata.get("contextSequenceSource"):
-                    cursor["sequenceSource"] = window[-1].metadata["contextSequenceSource"]
-                event = ConsolidationCommitted(
-                    role_id=role_id,
-                    session_key=session_key,
-                    source_key=source_key,
-                    message_ids=tuple(message.id for message in window),
-                    message_range=(window[0].sequence, window[-1].sequence),
-                    candidates=tuple(candidates),
-                )
-                self._draft_overrides.pop(source_key, None)
-                # Persist the event even when this process has no consumer;
-                # another process can resume it after startup.
-                cursor["pendingEvent"] = self._event_payload(event)
-                writes[history_path] = history
-                writes[pending_path] = pending
-                writes[journal_path] = journal
-                document_snapshot.update({
-                    history_path: self._file_signature(history_path),
-                    pending_path: self._file_signature(pending_path),
-                    journal_path: self._file_signature(journal_path),
-                })
+        if window:
+            source_key = self._source_key(role_id, window)
+            history_path, pending_path = memory_dir / "HISTORY.md", memory_dir / "PENDING.md"
+            journal_path = MemoryDocuments(self.roles_root).journal_path(role_id, window[0].createdAt.date().isoformat())
+            try:
+                candidates = self._candidates(source_key, window, commit_guard=guard)
+            except Exception as error:
+                with self._configuration_lock:
+                    if not guard.cancelled and generation == self.refresh_configuration(role_id):
+                        self.failures[role_id] = str(error) or type(error).__name__
+                return
+            draft = getattr(self._draft_local, 'draft', {})
+            self._draft_local.draft = {}
+            if draft.get("recent"):
+                writes[recent_path] = self._recent_document(draft["recent"], ownership)
+            additions = {
+                history_path: draft['history'] + f"\n<!-- source: {source_key} -->\n" if 'history' in draft else self._history_entry(source_key, window),
+                pending_path: draft['pending'] + f'\n<!-- source: {source_key} -->\n' if 'pending' in draft else self._pending_entries(source_key, window, candidates),
+                journal_path: MemoryDocuments.render_journal_entry(source_key, window[0].sequence, window[-1].sequence)}
+            event = ConsolidationCommitted(role_id=role_id, session_key=session_key, source_key=source_key,
+                message_ids=tuple(message.id for message in window), message_range=(window[0].sequence, window[-1].sequence),
+                candidates=tuple(candidates), history_entries=tuple(draft.get('history_entries', ())),
+                conversation=str(draft.get('conversation', '')))
+            version = int(cursor.get("memoryVersion", 0)) + 1
+            payload = self._event_payload(event)
+            cursor = {**cursor, "lastSequence": window[-1].sequence, "lastSourceKey": source_key,
+                "memoryVersion": version,
+                "sources": self._prefix_stamp([m for m in messages if m.sequence <= window[-1].sequence]),
+                "ownership": ownership,
+                "pendingEvents": [*cursor.get("pendingEvents", []), {"version": version, "payload": payload}],
+                "relationshipPayload": {"version": version, "payload": payload}}
+            if window[-1].metadata.get("contextSequenceSource"):
+                cursor["sequenceSource"] = window[-1].metadata["contextSequenceSource"]
         self._before_commit()
         latest = self._messages(role_id, session_key)
-        if self._message_signature(latest) != self._message_signature(messages):
+        # Only this frozen prefix belongs to the preparation. A legal tail append
+        # is independent; changed/deleted/re-authorized source messages are not.
+        if not self.role_exists(role_id) or not self._prefix_matches(messages, latest):
             return
-        if self._read_cursor(cursor_path) != cursor_snapshot:
+        if self.ownership_provider and not self._ownership_matches(ownership, self.ownership_provider(role_id)):
             return
-        if any(self._file_signature(path) != signature for path, signature in document_snapshot.items()):
-            return
-        if not new_messages and cursor_path.exists() and self._read_text(memory_dir / "RECENT_CONTEXT.md") == recent and cursor == cursor_snapshot:
-            return
-        self._commit(writes, cursor_path, cursor)
-        if event is not None and self.on_consolidation_committed is not None:
-            self._publish_event(event, cursor_path, cursor)
+        with guard.lock, document_lock(memory_dir):
+            if guard.cancelled:
+                return
+            if any(self._file_signature(path) != signature for path, signature in snapshots.items()):
+                return
+            for path, addition in additions.items():
+                latest_text = self._read_text(path)
+                if source_key not in latest_text:
+                    writes[path] = latest_text.rstrip() + '\n\n' + addition
+            # Independent consumer acknowledgements can advance while drafting.
+            current = self._read_cursor(cursor_path)
+            if current.get('memoryVersion', 0) != cursor_snapshot.get('memoryVersion', 0) or current.get('sources') != cursor_snapshot.get('sources'):
+                return
+            acknowledged = int(current.get('publishedVersion', 0))
+            cursor.update(publishedVersion=acknowledged,
+                pendingEvents=[entry for entry in cursor.get('pendingEvents', []) if entry['version'] > acknowledged],
+                relationshipVersion=current.get('relationshipVersion', 0))
+            if (cursor.get('relationshipPayload') or {}).get('version', 0) <= int(current.get('relationshipVersion', 0)):
+                cursor['relationshipPayload'] = None
+            self._save(cursor_path, cursor, expected=current, writes=writes)
+        with self._configuration_lock:
+            if generation == self.refresh_configuration(role_id):
+                self.failures.pop(role_id, None)
+        if not self.defer_consumers:
+            self._retry_pending_event(cursor_path, cursor, role_id, session_key)
+
+    def retry_consumers(self, role_id):
+        path = self.roles_root / role_id / 'memory' / '.maintenance.json'
+        return self._retry_pending_event(path, self._read_cursor(path), role_id, f'role:{role_id}')
+
+    def pending_publications(self, role_id):
+        path = self.roles_root / role_id / 'memory' / '.maintenance.json'
+        current = self._validated_pending_cursor(path, self._read_cursor(path), role_id, f'role:{role_id}')
+        return tuple(current.get('pendingEvents', []))
+
+    def publish_pending_event(self, role_id, entry):
+        path = self.roles_root / role_id / 'memory' / '.maintenance.json'
+        return self._publish_pending_entry(path, entry, role_id, f'role:{role_id}')
+
+    def retry_relationship(self, role_id):
+        path = self.roles_root / role_id / 'memory' / '.maintenance.json'
+        current = self._validated_pending_cursor(path, self._read_cursor(path), role_id, f'role:{role_id}')
+        return self._refresh_relationship(path, current, role_id)
 
     def ensure_memory_for_window(
         self,
@@ -198,25 +244,40 @@ class MemoryMaintenance:
         self.maintain(role_id, session_key, force=True)
         return True
 
-    def ensure_coverage(self, role_id: str, source_session: str, source_ids: list[str]) -> bool:
-        """Prove durable maintenance coverage; a failed extraction is never success."""
-        source = {m.id: m for m in self._committed_messages(self.sessions.context_messages(source_session)) if m.id in source_ids}
-        messages = self._messages(role_id, f'role:{role_id}')
+    def ensure_coverage(self, role_id: str, source_session: str, source_ids: list[str], *, commit_guard=None) -> bool:
+        """Coverage is durable Markdown progress, independent of consumer ACKs."""
+        all_messages = (self.messages_provider(role_id, f'role:{role_id}') if self.messages_provider
+            else self.sessions.context_messages(f'role:{role_id}'))
+        if set(source_ids) - {m.id for m in all_messages}:
+            return False
+        source = {m.id: m for m in self._committed_messages(all_messages) if m.id in source_ids}
+        messages = self._messages(role_id, f"role:{role_id}")
         eligible = {m.id: m for m in messages}
         if set(source) - set(eligible):
             return False
         if not source:
-            return True  # Tool audit rows do not have a Markdown ingestion obligation.
+            return True
         through = max(eligible[identifier].sequence for identifier in source)
-        path = self.roles_root / role_id / 'memory' / '.maintenance.json'
-        cursor = self._context_cursor(self._read_cursor(path), messages, f'role:{role_id}')
-        if int(cursor['lastSequence']) < through or 'pendingEvent' in cursor:
-            self.maintain(role_id, f'role:{role_id}', force=True, through_sequence=through)
-        latest = self._messages(role_id, f'role:{role_id}')
-        if any(identifier not in {m.id for m in latest} for identifier in source):
+        path = self.roles_root / role_id / "memory" / ".maintenance.json"
+        cursor = self._context_cursor(self._read_cursor(path), messages, f"role:{role_id}")
+        if int(cursor["lastSequence"]) < through:
+            self.maintain(role_id, f"role:{role_id}", force=True, through_sequence=through, commit_guard=commit_guard)
+        latest = self._messages(role_id, f"role:{role_id}")
+        if not self._prefix_matches([eligible[key] for key in source], latest, ordered=False):
             return False
-        cursor = self._context_cursor(self._read_cursor(path), latest, f'role:{role_id}')
-        return int(cursor['lastSequence']) >= through and 'pendingEvent' not in cursor
+        cursor = self._context_cursor(self._read_cursor(path), latest, f"role:{role_id}")
+        return int(cursor["lastSequence"]) >= through
+
+    @classmethod
+    def _prefix_matches(cls, frozen, latest, *, ordered=True):
+        if ordered:
+            return cls._message_signature(frozen) == cls._message_signature(latest[:len(frozen)])
+        found = {message.id: message for message in latest}
+        return all(message.id in found and cls._message_signature([message]) == cls._message_signature([found[message.id]]) for message in frozen)
+
+    @staticmethod
+    def _ownership_matches(saved, current):
+        return all(current.get(key) == value for key, value in saved.items())
 
     def _messages(self, role_id: str, session_key: str) -> list[Message]:
         messages = self.messages_provider(role_id, session_key) if self.messages_provider else self.sessions.context_messages(session_key)
@@ -248,11 +309,19 @@ class MemoryMaintenance:
         if self._read_cursor(cursor_path) != cursor or self._file_signature(path) != document_signature:
             return False
         memory_dir.mkdir(parents=True, exist_ok=True)
-        self._commit({path: recent}, cursor_path, cursor)
+        self._save(cursor_path, cursor, expected=cursor, writes={path: recent})
         return True
 
-    @staticmethod
-    def _context_cursor(cursor: dict[str, object], messages: list[Message], session_key: str) -> dict[str, object]:
+    @classmethod
+    def _context_cursor(cls, cursor: dict[str, object], messages: list[Message], session_key: str) -> dict[str, object]:
+        sources = cursor.get("sources")
+        if sources:
+            actual = messages[:int(sources.get('count', 0))]
+            if sources != cls._prefix_stamp(actual):
+                # Keep the old payload as evidence, but it no longer proves coverage.
+                return {**cursor, "lastSequence": 0, "sources": [],
+                        "pendingEvents": [], "relationshipPayload": None,
+                        "invalidatedSources": sources}
         if not messages or messages[-1].metadata.get("contextSequenceSource") != "global-rowid" or cursor.get("sequenceSource") == "global-rowid":
             return cursor
         previous = int(cursor.get("lastSequence", 0))
@@ -265,23 +334,53 @@ class MemoryMaintenance:
     def _before_commit(self) -> None:
         """Hook for deterministic stale-snapshot verification in tests."""
 
-    @staticmethod
-    def _read_cursor(path: Path) -> dict[str, object]:
-        if not path.exists():
-            return {"lastSequence": 0}
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {"lastSequence": 0}
-        if not isinstance(value, dict) or not isinstance(value.get("lastSequence"), int):
-            return {"lastSequence": 0}
-        return value
+    def _read_cursor(self, path: Path) -> dict[str, object]:
+        role_id = path.parent.parent.name
+        session_key = f"role:{role_id}"
+        current = self.sessions.maintenance_progress(role_id, session_key)
+        if path.exists() and not current.get("legacyImported"):
+            try:
+                legacy = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                legacy = {}
+            # No old content fingerprint: retain the cursor for inspection, never
+            # certify an unverifiable prefix merely from a sequence number.
+            imported = {**current, "legacyImported": True, "legacyProgress": legacy}
+            payload = legacy.get("pendingEvent") if isinstance(legacy, dict) else None
+            if payload:
+                # Legacy payloads did not bind their content to ownership or a
+                # prefix hash. Preserve them for review/rollback, never replay
+                # an unverifiable event under today's owner grant.
+                imported['unverifiedLegacyEvent'] = payload
+            self.sessions.save_maintenance_progress(role_id, session_key, imported, expected=current)
+            current = imported
+        if path.exists() and current.get("legacyImported"):
+            archive = path.with_name(path.name + ".migrated")
+            if not archive.exists():
+                os.replace(path, archive)
+            elif archive.read_bytes() == path.read_bytes():
+                # Recovery after the database commit retains the original backup.
+                path.unlink()
+            else:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+                restored = path.with_name(path.name + '.' + digest + '.migrated')
+                if restored.exists() and restored.read_bytes() == path.read_bytes():
+                    path.unlink()
+                else:
+                    os.replace(path, restored)
+        return current
+
+    def _save(self, path, cursor, *, expected=None, writes=None):
+        from .memory_optimizer import MemoryOptimizer
+        role_id = path.parent.parent.name
+        self.sessions.save_maintenance_progress(role_id, f"role:{role_id}", cursor, expected=expected,
+            write_documents=(lambda: MemoryOptimizer.commit_documents(writes)) if writes else None)
 
     @staticmethod
     def _read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8") if path.exists() else ""
 
-    def _recent_context(self, messages: list[Message]) -> str:
+    def _recent_context(self, messages: list[Message], *, ownership=None) -> str:
         heading = "# 近期对话\n\n"
         selected: list[str] = []
         length = 0
@@ -296,7 +395,14 @@ class MemoryMaintenance:
             selected.append(line)
             length = candidate_length
         selected.reverse()
-        return heading + "\n".join(selected) + ("\n" if selected else "")
+        return self._recent_document("", ownership or {}, raw=heading + "\n".join(selected) + ("\n" if selected else ""))
+
+    def _recent_document(self, abstract, ownership, *, raw=None):
+        if '## 最近的对话' in abstract:
+            abstract, generated_raw = abstract.split('## 最近的对话', 1)
+            raw = raw or '## 最近的对话' + generated_raw
+        marker = "<!-- recent-context-sources: " + json.dumps(ownership, ensure_ascii=False, sort_keys=True) + " -->\n"
+        return marker + abstract.strip() + "\n\n<!-- recent-raw -->\n" + (raw or "")
 
     def _window(self, messages: list[Message], after_sequence: int) -> list[Message]:
         eligible = [message for message in messages if message.sequence > after_sequence]
@@ -317,7 +423,7 @@ class MemoryMaintenance:
                 if message.runId and message.role == "assistant" and message.status == "completed"
             }
             for index, message in enumerate(transcript):
-                if message.role != "user" or is_explicit_todo_request(message.content):
+                if message.role != "user":
                     continue
                 if message.runId:
                     matched = replies.get(message.runId)
@@ -333,15 +439,20 @@ class MemoryMaintenance:
         return sorted(committed, key=lambda message: message.sequence)
 
     @staticmethod
-    def _message_signature(messages: list[Message]) -> tuple[tuple[object, ...], ...]:
-        return tuple(
-            (message.id, message.sequence, message.role, message.status, message.content, message.createdAt.isoformat())
-            for message in messages
-        )
+    def _message_signature(messages: list[Message]) -> list[list[object]]:
+        return [[message.id, message.sessionKey, message.role, message.status,
+                 message.content, message.createdAt.isoformat(),
+                 json.dumps(message.metadata, ensure_ascii=False, sort_keys=True)]
+                for message in messages]
+
+    @classmethod
+    def _prefix_stamp(cls, messages):
+        return {'count': len(messages), 'sha256': hashlib.sha256(json.dumps(
+            cls._message_signature(messages), ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()}
 
     @staticmethod
     def _source_key(role_id: str, window: list[Message]) -> str:
-        material = "\n".join(message.id for message in window)
+        material = json.dumps(MemoryMaintenance._message_signature(window), ensure_ascii=False, sort_keys=True)
         digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:20]
         return f"consolidation:{role_id}:{window[0].sequence}-{window[-1].sequence}:{digest}"
 
@@ -354,9 +465,11 @@ class MemoryMaintenance:
                 lines.append(f"- [{message.role}] {content}\n")
         return "".join(lines)
 
-    def _candidates(self, source_key: str, window: list[Message]) -> list[ConsolidationCandidate]:
+    def _candidates(self, source_key: str, window: list[Message], *, commit_guard=None) -> list[ConsolidationCandidate]:
+        self._draft_local.draft = {}
         if self.consolidation_provider is not None:
-            raw = self.consolidation_provider(source_key, window)
+            kwargs = {'commit_guard': commit_guard} if 'commit_guard' in inspect.signature(self.consolidation_provider).parameters else {}
+            raw = self.consolidation_provider(source_key, window, **kwargs)
             draft: dict[str, str] = {}
             if isinstance(raw, dict):
                 history = raw.get("history", raw.get("historyText", ""))
@@ -365,11 +478,15 @@ class MemoryMaintenance:
                     draft["history"] = history[:12000]
                 if isinstance(recent, str):
                     draft["recent"] = recent[: self.RECENT_CHAR_LIMIT]
+                if isinstance(raw.get('pending'), str):
+                    draft['pending'] = raw['pending']
+                draft['history_entries'] = raw.get('history_entries', [])
+                draft['conversation'] = raw.get('conversation', '')
                 raw = raw.get("pendingItems", raw.get("memories", []))
             if not isinstance(raw, list) or (not raw and not draft):
                 raise ConsolidationDraftError("整理模型未返回有效候选")
             if draft:
-                self._draft_overrides[source_key] = draft
+                self._draft_local.draft = draft
             candidates: list[ConsolidationCandidate] = []
             for value in raw:
                 if isinstance(value, ConsolidationCandidate):
@@ -382,19 +499,7 @@ class MemoryMaintenance:
                     raise ConsolidationDraftError("整理模型返回空摘要")
                 candidates.append(candidate)
             return candidates
-        from .memory_service import MemoryService
-
-        candidates: list[ConsolidationCandidate] = []
-        for message in window:
-            if message.role != "user":
-                continue
-            for memory_type, summary, _ in MemoryService.extract_candidates(message.content):
-                candidates.append(ConsolidationCandidate(
-                    memory_type=memory_type,
-                    summary=summary,
-                    source_key=f"{source_key}:{message.id}:{memory_type}",
-                ))
-        return candidates
+        raise ConsolidationDraftError('宿主记忆整理模型未配置')
 
     def _pending_entries(
         self,
@@ -432,6 +537,8 @@ class MemoryMaintenance:
                 for candidate in event.candidates
             ],
             "error": event.error,
+            'historyEntries': list(event.history_entries),
+            'conversation': event.conversation,
         }
 
     @staticmethod
@@ -468,24 +575,9 @@ class MemoryMaintenance:
             message_range=parsed_range,
             candidates=tuple(candidates),
             error=payload.get("error") if isinstance(payload.get("error"), str) else None,
+            history_entries=tuple((str(item[0]), int(item[1])) for item in payload.get('historyEntries', [])),
+            conversation=str(payload.get('conversation', '')),
         )
-
-    def _publish_event(
-        self,
-        event: ConsolidationCommitted,
-        cursor_path: Path,
-        cursor: dict[str, object],
-    ) -> None:
-        assert self.on_consolidation_committed is not None
-        try:
-            self.on_consolidation_committed(event)
-        except Exception:
-            # The committed event remains in the cursor and is retried before
-            # the next maintenance snapshot. Structured consumers are idempotent.
-            raise
-        acknowledged = dict(cursor)
-        acknowledged.pop("pendingEvent", None)
-        self._commit({}, cursor_path, acknowledged)
 
     @staticmethod
     def _file_signature(path: Path) -> str | None:
@@ -496,28 +588,64 @@ class MemoryMaintenance:
         except OSError:
             return None
 
-    def _retry_pending_event(
-        self,
-        cursor_path: Path,
-        cursor: dict[str, object],
-        role_id: str,
-        session_key: str,
-    ) -> dict[str, object]:
-        payload = cursor.get("pendingEvent")
-        if payload is None:
-            return cursor
-        event = self._event_from_payload(payload)
-        if event.role_id != role_id or event.session_key != session_key:
-            raise ValueError("整理事件作用域与当前角色不匹配")
-        # A process started without its structured consumer must retain the
-        # durable event for the next process that can consume it.
+    def _retry_pending_event(self, cursor_path, cursor, role_id, session_key):
+        # Each acknowledged publication is saved before the next. Relationship
+        # refresh has its own latest payload and cannot undo memory coverage.
+        current = self._validated_pending_cursor(cursor_path, cursor, role_id, session_key)
+        for entry in tuple(current.get('pendingEvents', [])):
+            if not self._publish_pending_entry(cursor_path, entry, role_id, session_key):
+                break
+        return self._refresh_relationship(cursor_path, self._read_cursor(cursor_path), role_id)
+
+    def _validated_pending_cursor(self, cursor_path, cursor, role_id, session_key):
+        messages = self._messages(role_id, session_key)
+        current = self._context_cursor(cursor, messages, session_key)
+        ownership = self.ownership_provider(role_id) if self.ownership_provider else {}
+        if (not self.role_exists(role_id) or any(ownership.get(key) != value for key, value in cursor.get('ownership', {}).items())):
+            current = {**current, 'lastSequence': 0, 'sources': {}, 'pendingEvents': [], 'relationshipPayload': None,
+                       'invalidatedProgress': cursor}
+        if current != cursor:
+            self._save(cursor_path, current, expected=cursor)
+        return current
+
+    def _publish_pending_entry(self, cursor_path, entry, role_id, session_key):
+        current = self._validated_pending_cursor(cursor_path, self._read_cursor(cursor_path), role_id, session_key)
+        if entry not in current.get('pendingEvents', []):
+            return True
         if self.on_consolidation_committed is None:
-            return cursor
-        self.on_consolidation_committed(event)
-        updated = dict(cursor)
-        updated.pop("pendingEvent", None)
-        self._commit({}, cursor_path, updated)
-        return updated
+            return False
+        try:
+            event = self._event_from_payload(entry['payload'])
+            if event.role_id != role_id or event.session_key != session_key:
+                raise ValueError('整理事件作用域与当前角色不匹配')
+            self.on_consolidation_committed(event)
+        except Exception as error:
+            self.errors.append(f'{role_id}: publication pending: {error}')
+            return False
+        with document_lock(cursor_path.parent):
+            current = self._read_cursor(cursor_path)
+            if entry in current.get('pendingEvents', []):
+                updated = {**current, 'publishedVersion': max(int(current.get('publishedVersion', 0)), entry['version']),
+                           'pendingEvents': [item for item in current.get('pendingEvents', []) if item['version'] > entry['version']]}
+                self._save(cursor_path, updated, expected=current)
+        return True
+
+    def _refresh_relationship(self, cursor_path, current, role_id):
+        entry = current.get("relationshipPayload")
+        if entry and int(current.get("publishedVersion", 0)) >= entry["version"]:
+            try:
+                if self.relationship_consumer is not None:
+                    self.relationship_consumer(self._event_from_payload(entry["payload"]))
+                with document_lock(cursor_path.parent):
+                    current = self._read_cursor(cursor_path)
+                    updated = {**current, "relationshipVersion": max(int(current.get('relationshipVersion', 0)), entry["version"])}
+                    if current.get('relationshipPayload') == entry:
+                        updated['relationshipPayload'] = None
+                    self._save(cursor_path, updated, expected=current)
+                    current = updated
+            except Exception as error:
+                self.errors.append(f"{role_id}: relationship pending: {error}")
+        return current
 
     @staticmethod
     def _commit(writes: dict[Path, str], cursor_path: Path, cursor: dict[str, object]) -> None:

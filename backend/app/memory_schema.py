@@ -1,0 +1,156 @@
+# Adapted from Shiori c14152ed; Copyright (c) 2026 YinFengWindy.
+# MIT license: third_party/shiori-agent/LICENSE.
+"""Canonical role-memory Markdown schemas and legacy migration helpers."""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from pathlib import Path
+
+DOCUMENT_DEFAULTS = {
+    "SELF.md": """# 我是谁
+
+## 我的性格与形象
+- 我以自己的身份表达，并遵守角色设定中的人格、语气和边界。
+
+## 我对你的理解
+- 我只根据你明确表达或确认过的信息逐步理解你，不在缺少证据时补全画像。
+
+## 我们的关系
+- 我们的关系从真实互动中发展，不虚构共同经历。
+""",
+    "MEMORY.md": """# 我的长期记忆
+
+## 关于你
+
+## 你的偏好
+
+## 你希望我记住的事
+""",
+    "HISTORY.md": "# 我们的共同经历\n",
+    "RECENT_CONTEXT.md": """# 最近发生的事
+
+## 最近聊过的事
+- none
+
+## 还在继续的事
+- none
+
+## 最近的对话
+<!-- a-preview = assistant reply preview only -->
+- none
+""",
+    "PENDING.md": "# 待整理的记忆\n",
+}
+
+# SELF.md 的三个规范段落标题。
+SELF_PERSONA_SECTION = "## 我的性格与形象"
+SELF_UNDERSTANDING_SECTION = "## 我对你的理解"
+SELF_RELATIONSHIP_SECTION = "## 我们的关系"
+
+DOCUMENT_SECTIONS = {
+    "SELF.md": (
+        SELF_PERSONA_SECTION,
+        SELF_UNDERSTANDING_SECTION,
+        SELF_RELATIONSHIP_SECTION,
+    ),
+    "MEMORY.md": (
+        "## 关于你",
+        "## 你的偏好",
+        "## 你希望我记住的事",
+    ),
+}
+
+
+def select_memory_sections(filename: str, content: str, headings: Iterable[str]) -> str:
+    """Returns only the chosen canonical sections of a SELF or MEMORY document.
+
+    Sections are located by their canonical headings (``DOCUMENT_SECTIONS``); each
+    one runs until the next canonical heading, so nested sub-headings stay with
+    their section. Everything else is dropped: the document title, text before the
+    first canonical heading, and the unselected sections. Kept sections appear in
+    document order. Returns an empty string when none of them is present.
+    """
+
+    sections = DOCUMENT_SECTIONS.get(filename)
+    wanted = set(headings)
+    if sections is None or not wanted.issubset(sections):
+        raise ValueError(f"unsupported memory section: {filename} {sorted(wanted)}")
+    kept: list[str] = []
+    current: str | None = None
+    for line in str(content or "").replace("\r\n", "\n").splitlines():
+        stripped = line.strip()
+        # 只有规范标题切换段落；其他行归属当前段落。
+        if stripped in sections:
+            current = stripped
+        if current in wanted:
+            kept.append(line)
+    return "\n".join(kept).strip()
+
+
+def ensure_memory_documents(memory_dir: Path) -> None:
+    """Creates missing role-memory documents without rewriting existing content."""
+
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    for filename, default in DOCUMENT_DEFAULTS.items():
+        path = memory_dir / filename
+        if not path.exists():
+            path.write_text(default, encoding="utf-8")
+
+
+def normalize_memory_document(filename: str, content: str) -> str:
+    """Validates a supported memory document and normalizes line endings."""
+
+    if filename not in DOCUMENT_DEFAULTS:
+        raise ValueError(f"unsupported memory document: {filename}")
+    text = str(content or "").replace("\r\n", "\n").strip()
+    if not text:
+        return DOCUMENT_DEFAULTS[filename].rstrip() + "\n"
+
+    return text + "\n"
+
+
+def pending_body(content: str) -> str:
+    """Returns pending items without the canonical document title."""
+
+    lines = str(content or "").splitlines()
+    if lines and lines[0].strip() == "# 待整理的记忆":
+        lines = lines[1:]
+    return "\n".join(lines).strip()
+
+
+def replace_memory_section(path: Path, heading: str, body: str) -> None:
+    """Replaces one canonical SELF or MEMORY section without touching its peers."""
+
+    current = path.read_text(encoding="utf-8") if path.exists() else ""
+    path.write_text(
+        render_memory_section(path.name, current, heading, body), encoding="utf-8"
+    )
+
+
+def render_memory_section(filename: str, content: str, heading: str, body: str) -> str:
+    """Renders a section replacement without writing a memory document."""
+
+    sections = DOCUMENT_SECTIONS.get(filename)
+    if sections is None or heading not in sections:
+        raise ValueError(f"unsupported memory section: {filename} {heading}")
+    lines = normalize_memory_document(filename, content).rstrip().splitlines()
+    if heading not in lines:
+        clean_body = str(body or "").strip()
+        appended = [heading]
+        if clean_body:
+            appended.extend(["", *clean_body.splitlines()])
+        return "\n".join([*lines, "", *appended]).strip() + "\n"
+
+    start = lines.index(heading)
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if lines[index] in sections:
+            end = index
+            break
+    clean_body = str(body or "").strip()
+    replacement = [heading]
+    if clean_body:
+        replacement.extend(["", *clean_body.splitlines()])
+    updated = [*lines[:start], *replacement, "", *lines[end:]]
+    return "\n".join(updated).strip() + "\n"

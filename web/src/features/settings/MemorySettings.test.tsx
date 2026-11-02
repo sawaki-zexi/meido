@@ -13,6 +13,26 @@ function expectFeedbackBelowActions(saveButton: HTMLElement, feedback: HTMLEleme
 }
 
 describe("MemorySettings", () => {
+  it("keeps the owner knowledge embedding editor and switch independent", async () => {
+    const configuration = { provider: "local", baseUrl: "http://localhost/v1", model: "owner-model", dimensions: 64, apiKeyConfigured: true };
+    let enabled = true;
+    const { calls } = fakeBackend({
+      "GET /api/embedding/configuration": () => ({ body: { configuration, status: { configured: true, ready: true, enabled } } }),
+      "PUT /api/embedding/configuration": () => ({ body: { configuration, status: { configured: true, ready: true, enabled } } }),
+      "PUT /api/memory/settings": init => {
+        enabled = JSON.parse(String(init?.body)).ownerEmbeddingEnabled;
+        return { body: { ownerEmbeddingEnabled: enabled } };
+      },
+    });
+    render(<MemorySettings scope="owner" embeddingOnly />);
+    fireEvent.click(await screen.findByRole("switch", { name: "启用主人资料向量模型" }));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "启用主人资料向量模型" })).not.toBeChecked());
+    fireEvent.click(screen.getByRole("button", { name: "保存向量配置" }));
+    await screen.findByText("向量模型配置已保存并生效");
+    expect(calls.find(call => call.path === "/api/memory/settings")?.body).toEqual({ ownerEmbeddingEnabled: false });
+    expect(calls.some(call => call.path.startsWith("/api/memory/embedding/"))).toBe(false);
+  });
+
   it("only reveals the saved embedding key on demand and keeps it out of the test draft", async () => {
     const configuration = { provider: "dashscope", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "text-embedding-v3", dimensions: 1024, apiKeyConfigured: true };
     const { calls } = fakeBackend({
@@ -20,9 +40,9 @@ describe("MemorySettings", () => {
         enabled: true, embeddingEnabled: true,
         embedding: { configuration, status: { configured: true, ready: true, enabled: true } },
       } }),
-      "POST /api/embedding/configuration/reveal-key": () => ({ body: { apiKey: "saved-embedding-secret" } }),
-      "POST /api/embedding/configuration/test": () => ({ body: { ok: true, message: "连接成功", latencyMs: 12 } }),
-      "PUT /api/embedding/configuration": () => ({ body: { configuration, status: { configured: true, ready: true, enabled: true } } }),
+      "POST /api/memory/embedding/configuration/reveal-key": () => ({ body: { apiKey: "saved-embedding-secret" } }),
+      "POST /api/memory/embedding/configuration/test": () => ({ body: { ok: true, message: "连接成功", latencyMs: 12 } }),
+      "PUT /api/memory/embedding/configuration": () => ({ body: { configuration, status: { configured: true, ready: true, enabled: true } } }),
     });
 
     render(<MemorySettings />);
@@ -37,7 +57,7 @@ describe("MemorySettings", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
     await screen.findByText("连接成功 · 12 ms");
-    expect(calls.find((call) => call.path === "/api/embedding/configuration/test")?.body).toMatchObject({ apiKey: "" });
+    expect(calls.find((call) => call.path === "/api/memory/embedding/configuration/test")?.body).toMatchObject({ apiKey: "" });
     expect(key).toHaveValue("");
     expect(key).toHaveAttribute("type", "password");
     fireEvent.click(screen.getByRole("button", { name: "显示向量 API Key" }));
@@ -60,11 +80,11 @@ describe("MemorySettings", () => {
         enabled: true, embeddingEnabled: true,
         embedding: { configuration, status: { configured: false, ready: false, enabled: true } },
       } }),
-      "PUT /api/embedding/configuration": () => ({ body: {
+      "PUT /api/memory/embedding/configuration": () => ({ body: {
         configuration: { ...configuration, apiKeyConfigured: true },
         status: { configured: true, ready: true, enabled: true },
       } }),
-      "POST /api/embedding/configuration/test": () => new Promise((resolve) => {
+      "POST /api/memory/embedding/configuration/test": () => new Promise((resolve) => {
         completeTest = () => resolve({ body: { ok: true, message: "连接成功", latencyMs: 42 } });
       }),
     });
@@ -85,7 +105,7 @@ describe("MemorySettings", () => {
     expect(embedding.getByRole("status")).toHaveTextContent("正在测试向量模型连接");
     expectFeedbackBelowActions(embedding.getByRole("button", { name: "保存向量配置" }), embedding.getByRole("status"));
     expect(embedding.getByRole("button", { name: "保存向量配置" })).toBeDisabled();
-    expect(calls.find((call) => call.path === "/api/embedding/configuration/test")?.body).toMatchObject({ apiKey: "", model: "text-embedding-v3", dimensions: 1024 });
+    expect(calls.find((call) => call.path === "/api/memory/embedding/configuration/test")?.body).toMatchObject({ apiKey: "", model: "text-embedding-v3", dimensions: 1024 });
 
     completeTest();
     await waitFor(() => expect(embedding.getByRole("status")).toHaveTextContent("连接成功 · 42 ms"));
@@ -108,7 +128,7 @@ describe("MemorySettings", () => {
           status: { configured: true, ready: true, enabled: true },
         },
       } }),
-      "POST /api/embedding/configuration/test": () => {
+      "POST /api/memory/embedding/configuration/test": () => {
         if (++attempts > 1) return { body: { ok: true, message: "连接成功" } };
         if (!reply) throw new TypeError("Failed to fetch");
         return reply;
@@ -167,20 +187,20 @@ describe("MemorySettings", () => {
           embedding: { configuration: { provider: "dashscope", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "text-embedding-v3", dimensions: 1024, apiKeyConfigured: false }, status: { configured: false, ready: false, enabled: state.embeddingEnabled } },
         } };
       },
-      "PUT /api/embedding/configuration": (init) => ({ body: { configuration: { ...JSON.parse(String(init?.body)), apiKeyConfigured: true }, status: { configured: true, ready: true, enabled: state.embeddingEnabled } } }),
+      "PUT /api/memory/embedding/configuration": (init) => ({ body: { configuration: { ...JSON.parse(String(init?.body)), apiKeyConfigured: true }, status: { configured: true, ready: true, enabled: state.embeddingEnabled } } }),
     });
 
     render(<MemorySettings />);
-    const memoryToggle = await screen.findByRole("switch", { name: "启用记忆功能" });
+    const memoryToggle = await screen.findByRole("switch", { name: "启用语义记忆引擎" });
     fireEvent.click(memoryToggle);
     await waitFor(() => expect(calls.some((call) => call.method === "PUT" && call.path === "/api/memory/settings" && (call.body as { enabled: boolean }).enabled === false)).toBe(true));
     fireEvent.click(screen.getByRole("button", { name: "向量模型" }));
-    fireEvent.click(screen.getByRole("switch", { name: "启用向量模型" }));
+    fireEvent.click(screen.getByRole("switch", { name: "启用记忆引擎向量模型" }));
     await waitFor(() => expect(calls.some((call) => call.method === "PUT" && call.path === "/api/memory/settings" && (call.body as { embeddingEnabled: boolean }).embeddingEnabled === false)).toBe(true));
     fireEvent.change(screen.getByLabelText("向量 API Key"), { target: { value: "secret-key" } });
     fireEvent.click(screen.getByRole("button", { name: "保存向量配置" }));
-    await waitFor(() => expect(calls.some((call) => call.method === "PUT" && call.path === "/api/embedding/configuration")).toBe(true));
-    expect(calls.find((call) => call.path === "/api/embedding/configuration")?.body).toMatchObject({ apiKey: "secret-key" });
+    await waitFor(() => expect(calls.some((call) => call.method === "PUT" && call.path === "/api/memory/embedding/configuration")).toBe(true));
+    expect(calls.find((call) => call.path === "/api/memory/embedding/configuration")?.body).toMatchObject({ apiKey: "secret-key" });
   });
 });
 
@@ -189,7 +209,7 @@ it('基础页不堆叠向量表单，子页往返保留未保存内容', async (
   const { calls } = fakeBackend({ 'GET /api/memory/settings': () => ({ body: { enabled: true, embeddingEnabled: false,
     embedding: { configuration: { provider: 'local', baseUrl: 'http://localhost/v1', model: 'embedding', dimensions: 1024, apiKeyConfigured: false }, status: { configured: false, ready: false, enabled: false } } } }) });
   render(<MemorySettings />);
-  await screen.findByRole('switch', { name: '启用记忆功能' });
+  await screen.findByRole('switch', { name: '启用语义记忆引擎' });
   expect(screen.queryByLabelText('向量模型 ID')).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: '向量模型' }));
   fireEvent.change(screen.getByLabelText('向量模型 ID'), { target: { value: 'unsaved-embedding' } });
@@ -209,7 +229,7 @@ it('重回缓存页面刷新开关事实并保留向量草稿，切换只提交�
     'PUT /api/memory/settings': () => ({ body: state() }),
   });
   const view = render(<MemorySettings />);
-  await screen.findByRole('switch', { name: '启用记忆功能' });
+  await screen.findByRole('switch', { name: '启用语义记忆引擎' });
   fireEvent.click(screen.getByRole('button', { name: '向量模型' }));
   fireEvent.change(screen.getByLabelText('向量模型 ID'), { target: { value: 'unsaved-embedding' } });
   view.rerender(<MemorySettings active={false} />);
@@ -218,8 +238,8 @@ it('重回缓存页面刷新开关事实并保留向量草稿，切换只提交�
   await waitFor(() => expect(calls.filter(call => call.method === 'GET')).toHaveLength(2));
   expect(screen.getByLabelText('向量模型 ID')).toHaveValue('unsaved-embedding');
   fireEvent.click(screen.getByRole('button', { name: '基础' }));
-  await waitFor(() => expect(screen.getByRole('switch', { name: '启用记忆功能' })).not.toBeChecked());
+  await waitFor(() => expect(screen.getByRole('switch', { name: '启用语义记忆引擎' })).not.toBeChecked());
   fireEvent.click(screen.getByRole('button', { name: '向量模型' }));
-  fireEvent.click(screen.getByRole('switch', { name: '启用向量模型' }));
+  fireEvent.click(screen.getByRole('switch', { name: '启用记忆引擎向量模型' }));
   await waitFor(() => expect(calls.find(call => call.method === 'PUT')?.body).toEqual({ embeddingEnabled: true }));
 });

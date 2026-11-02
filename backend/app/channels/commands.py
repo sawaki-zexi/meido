@@ -14,7 +14,7 @@ def pairing_code(content: str) -> str | None:
 
 
 def control_command(content: str) -> str | None:
-    match = re.fullmatch(r"\s*/(stop|chatid|myid)(?:@[A-Za-z0-9_]+)?\s*", content, re.IGNORECASE)
+    match = re.fullmatch(r"\s*/(stop|chatid|myid|compact)(?:@[A-Za-z0-9_]+)?\s*", content, re.IGNORECASE)
     return match.group(1).lower() if match else None
 
 

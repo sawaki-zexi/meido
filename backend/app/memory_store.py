@@ -6,6 +6,7 @@ import math
 import re
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
@@ -48,12 +49,22 @@ class SQLiteVecIndex:
         self.database_path = str(database_path)
         self._sqlite_vec = sqlite_vec
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self):
         connection = sqlite3.connect(self.database_path, timeout=10)
-        connection.enable_load_extension(True)
-        self._sqlite_vec.load(connection)
-        connection.enable_load_extension(False)
-        return connection
+        try:
+            connection.enable_load_extension(True)
+            self._sqlite_vec.load(connection)
+            connection.enable_load_extension(False)
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _unit(vector):
+        length = math.sqrt(sum(float(value) ** 2 for value in vector))
+        return [float(value) / length for value in vector] if length else vector
 
     @staticmethod
     def _table(dimension: int) -> str:
@@ -74,20 +85,22 @@ class SQLiteVecIndex:
             connection.execute(f"DELETE FROM {table} WHERE item_id = ?", (item_id,))
             connection.execute(
                 f"INSERT INTO {table}(item_id, role_id, embedding) VALUES (?, ?, ?)",
-                (item_id, role_id, self._sqlite_vec.serialize_float32(vector)),
+                (item_id, role_id, self._sqlite_vec.serialize_float32(self._unit(vector))),
             )
 
     def search(self, role_id: str, vector: list[float], limit: int) -> list[tuple[str, float]]:
         if limit <= 0:
             return []
         with self._connect() as connection:
-            table = self._ensure_table(connection, len(vector))
+            table = self._table(len(vector))
+            if connection.execute('SELECT 1 FROM sqlite_master WHERE name=?', (table,)).fetchone() is None:
+                return []
             rows = connection.execute(
                 f"SELECT item_id, distance FROM {table} WHERE embedding MATCH ? AND k = ? AND role_id = ?",
-                (self._sqlite_vec.serialize_float32(vector), limit, role_id),
+                (self._sqlite_vec.serialize_float32(self._unit(vector)), limit, role_id),
             ).fetchall()
-        # sqlite-vec reports distance; MemoryStore's hybrid path expects cosine-like relevance.
-        return [(str(row[0]), max(-1.0, 1.0 - float(row[1]))) for row in rows]
+        # L2 on the unit sphere, as in the fixed Shiori store.
+        return [(str(row[0]), max(-1.0, min(1.0, 1.0 - float(row[1]) ** 2 / 2))) for row in rows]
 
     def delete(self, role_id: str, item_id: str) -> None:
         with self._connect() as connection:
@@ -154,7 +167,7 @@ class MemoryStore:
         Path(self.database_path).parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if schema_version > 1:
+            if schema_version > 2:
                 raise RuntimeError(f"memory database schema {schema_version} is newer than this application")
             connection.execute(
                 """
@@ -255,9 +268,32 @@ class MemoryStore:
             embedding_space_columns = {row[1] for row in connection.execute("PRAGMA table_info(memory_embedding_spaces)")}
             if "model_id" not in embedding_space_columns:
                 connection.execute("ALTER TABLE memory_embedding_spaces ADD COLUMN model_id TEXT")
-            if schema_version < 1:
+            if "validation_error" not in embedding_space_columns:
+                connection.execute("ALTER TABLE memory_embedding_spaces ADD COLUMN validation_error TEXT")
+            if schema_version < 2:
                 self._migrate_embedding_dimensions(connection)
-            connection.execute("PRAGMA user_version = 1")
+                # Legacy Meido identifiers included endpoint and credentials'
+                # provider namespace. Only model+dimension define the engine space.
+                configuration_path = Path(self.database_path).parent / 'memory-embedding-config.json'
+                if not configuration_path.exists():
+                    configuration_path = Path(self.database_path).parent / 'embedding-config.json'
+                if configuration_path.exists():
+                    legacy_config = self._decode_json(configuration_path.read_text(encoding='utf-8'), {})
+                    model = legacy_config.get('model', '')
+                    dimension = legacy_config.get('dimensions')
+                    legacy_id = f"{legacy_config.get('provider')}:{str(legacy_config.get('baseUrl', '')).rstrip('/')}:{model}:dimensions={dimension}"
+                    if model and isinstance(dimension, int):
+                        connection.execute('UPDATE memory_embedding_spaces SET model_id=? WHERE dimension=? AND model_id IN (?,?)',
+                            (model, dimension, legacy_id, legacy_id + ':disabled'))
+            # Unlike an empty first setup, existing untyped vectors cannot be
+            # attributed to the next configured model. Mark this once at setup,
+            # including databases already imported by schema v2; reads stay O(1).
+            connection.execute("""UPDATE memory_embedding_spaces
+                SET validation_error = '旧记忆向量的模型身份无法验证；原数据已保留'
+                WHERE COALESCE(validation_error, '') = '' AND TRIM(COALESCE(model_id, '')) = ''
+                AND EXISTS (SELECT 1 FROM memory_items
+                    WHERE memory_items.role_id = memory_embedding_spaces.role_id AND embedding_json IS NOT NULL)""")
+            connection.execute("PRAGMA user_version = 2")
         self._rebuild_vector_index_for_all_roles()
 
     def _rebuild_vector_index_for_all_roles(self) -> None:
@@ -293,13 +329,24 @@ class MemoryStore:
                     break
                 dimensions.add(len(vector))
             if invalid or len(dimensions) != 1:
-                connection.execute("UPDATE memory_items SET embedding_json = NULL WHERE role_id = ?", (role_id,))
-                connection.execute("DELETE FROM memory_embedding_spaces WHERE role_id = ?", (role_id,))
+                # Preserve ambiguous legacy vectors. Setup must report the
+                # incompatible space; it must never erase them to look ready.
+                connection.execute(
+                    "INSERT INTO memory_embedding_spaces(role_id,dimension,validation_error) VALUES (?,1,?) "
+                    "ON CONFLICT(role_id) DO UPDATE SET validation_error=excluded.validation_error",
+                    (role_id, '旧记忆向量维度无法验证；原数据已保留'),
+                )
+                continue
+            dimension = dimensions.pop()
+            declared = connection.execute('SELECT dimension FROM memory_embedding_spaces WHERE role_id=?', (role_id,)).fetchone()
+            if declared and declared[0] != dimension:
+                connection.execute('UPDATE memory_embedding_spaces SET validation_error=? WHERE role_id=?',
+                    ('旧记忆向量与已声明维度不匹配；原数据已保留', role_id))
                 continue
             connection.execute(
                 "INSERT INTO memory_embedding_spaces(role_id, dimension, model_id) VALUES (?, ?, NULL) "
-                "ON CONFLICT(role_id) DO UPDATE SET dimension = excluded.dimension",
-                (role_id, dimensions.pop()),
+                "ON CONFLICT(role_id) DO NOTHING",
+                (role_id, dimension),
             )
 
     @staticmethod
@@ -590,36 +637,45 @@ class MemoryStore:
     @staticmethod
     def _register_embedding_space(connection: sqlite3.Connection, role_id: str, dimension: int, model_id: str | None = None) -> bool:
         row = connection.execute(
-            "SELECT dimension, model_id FROM memory_embedding_spaces WHERE role_id = ?", (role_id,)
+            "SELECT dimension, model_id, validation_error FROM memory_embedding_spaces WHERE role_id = ?", (role_id,)
         ).fetchone()
+        if row is not None and row['validation_error']:
+            raise ValueError(row['validation_error'])
         changed = row is not None and (
             int(row["dimension"]) != dimension
-            or (model_id is not None and row["model_id"] is not None and str(row["model_id"]) != model_id)
-            or (model_id is not None and row["model_id"] is None)
+            or (model_id is not None and str(row["model_id"] or '').strip() and str(row["model_id"]) != model_id)
         )
         if changed:
-            connection.execute("UPDATE memory_items SET embedding_json = NULL WHERE role_id = ?", (role_id,))
+            raise ValueError('记忆向量空间与当前模型或维度不匹配；原向量已保留')
         connection.execute(
             "INSERT INTO memory_embedding_spaces(role_id, dimension, model_id) VALUES (?, ?, ?) "
             "ON CONFLICT(role_id) DO UPDATE SET dimension = excluded.dimension, model_id = COALESCE(excluded.model_id, memory_embedding_spaces.model_id)",
             (role_id, dimension, model_id),
         )
-        return changed
+        return False
+
+    def validate_embedding_space(self, role_id, dimension=None, model_id=None):
+        """Read-only validation; absence is legal on first setup, mismatch is not."""
+        with self._connect() as db:
+            row = db.execute('SELECT dimension,model_id,validation_error FROM memory_embedding_spaces WHERE role_id=?', (role_id,)).fetchone()
+            if row and row['validation_error']:
+                raise ValueError(row['validation_error'])
+            if row and (dimension is not None and int(row['dimension']) != dimension or
+                        model_id is not None and str(row['model_id'] or '').strip() and row['model_id'] != model_id):
+                raise ValueError('记忆向量空间与当前模型或维度不匹配；原向量已保留')
+
+    def retrieval_snapshot(self, role_id):
+        with self._connect() as db:
+            rows = db.execute("SELECT * FROM memory_items WHERE role_id=? AND status='active'", (role_id,)).fetchall()
+        return [(self._item(row), self._decode_json(row['embedding_json'], None)) for row in rows]
 
     def observe_query_embedding(self, role_id: str, vector: list[float], model_id: str | None = None) -> bool:
-        """Register a query vector's dimension; return whether old vectors were invalidated."""
+        """Validate a query without modifying any existing vector or fingerprint."""
         if not vector or any(not math.isfinite(float(value)) for value in vector):
             raise ValueError("embedding vector must contain finite values")
         self._require_role_id(role_id)
-        with self._connect() as connection:
-            changed = self._register_embedding_space(connection, role_id, len(vector), model_id)
-        if changed and self.vector_index is not None:
-            try:
-                self.vector_index.delete_role(role_id)
-            except Exception:
-                self.vector_index_available = False
-                self.vector_index_error = "vector index dimension reset failed"
-        return changed
+        self.validate_embedding_space(role_id, len(vector), model_id)
+        return False
 
     def embedding_for(self, role_id: str, item_id: str) -> list[float] | None:
         self._require_role_id(role_id)
@@ -645,6 +701,11 @@ class MemoryStore:
                 (role_id, time_start, time_end, max(0, limit)),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def has_consolidation_source(self, role_id, source_key):
+        with self._connect() as connection:
+            return connection.execute('SELECT 1 FROM consolidation_events WHERE role_id=? AND source_ref=?',
+                (role_id, source_key)).fetchone() is not None
 
     def consume_consolidation_event(
         self,

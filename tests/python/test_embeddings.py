@@ -78,18 +78,19 @@ def test_embedding_configuration_api_masks_key_and_shares_provider(tmp_path, mon
     assert current["status"]["ready"] is True
 
 
-def test_owner_knowledge_and_memory_use_one_shared_provider():
+def test_owner_knowledge_keeps_its_provider_and_memory_has_an_independent_one():
     assert main.owner_knowledge_plugin.embedder is main.embedding_provider
-    assert main.memory_service.embedding_provider is main.embedding_provider
+    assert main.memory_service.embedding_provider is main.memory_embedding_provider
+    assert main.memory_embedding_provider is not main.embedding_provider
 
 
-def test_memory_embedding_model_change_invalidates_same_dimension_vectors(tmp_path):
+def test_memory_embedding_model_change_preserves_same_dimension_vectors(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
     source = MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="source")
     item = store.add_or_reinforce("role-a", "fact", "主人喜欢红茶", source)
     store.set_embedding("role-a", item.id, [1.0, 0.0], "dashscope:text-embedding-v3:dimensions=1024")
 
-    changed = store.observe_query_embedding("role-a", [0.0, 1.0], "dashscope:other-model:dimensions=1024")
-
-    assert changed is True
-    assert store.embedding_for("role-a", item.id) is None
+    import pytest
+    with pytest.raises(ValueError, match='原向量已保留'):
+        store.observe_query_embedding("role-a", [0.0, 1.0], "dashscope:other-model:dimensions=1024")
+    assert store.embedding_for("role-a", item.id) == [1.0, 0.0]

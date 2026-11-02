@@ -11,10 +11,10 @@ afterEach(() => {
 });
 
 describe("MemorySettings embedding configuration", () => {
-  it("loads the shared embedding defaults and saves the API key without displaying it", async () => {
+  it("loads the memory embedding defaults and saves the API key without displaying it", async () => {
     const { calls } = fakeBackend({
       "GET /api/memory/settings": () => ({ body: { enabled: true, embeddingEnabled: true, embedding: { configuration: { provider: "dashscope", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "text-embedding-v3", dimensions: 1024, apiKeyConfigured: false }, status: { configured: false, ready: false, enabled: true } } } }),
-      "PUT /api/embedding/configuration": (init) => ({ body: { configuration: { ...(JSON.parse(String(init?.body)) as object), apiKeyConfigured: true }, status: { configured: true, ready: true, enabled: true } } }),
+      "PUT /api/memory/embedding/configuration": (init) => ({ body: { configuration: { ...(JSON.parse(String(init?.body)) as object), apiKeyConfigured: true }, status: { configured: true, ready: true, enabled: true } } }),
     });
 
     render(<MemorySettings />);
@@ -23,8 +23,8 @@ describe("MemorySettings embedding configuration", () => {
     fireEvent.change(key, { target: { value: "secret-key" } });
     fireEvent.click(screen.getByRole("button", { name: "保存向量配置" }));
 
-    await waitFor(() => expect(calls.some((call) => call.method === "PUT" && call.path === "/api/embedding/configuration")).toBe(true));
-    const save = calls.find((call) => call.method === "PUT" && call.path === "/api/embedding/configuration");
+    await waitFor(() => expect(calls.some((call) => call.method === "PUT" && call.path === "/api/memory/embedding/configuration")).toBe(true));
+    const save = calls.find((call) => call.method === "PUT" && call.path === "/api/memory/embedding/configuration");
     expect(save?.body).toMatchObject({ model: "text-embedding-v3", dimensions: 1024, apiKey: "secret-key" });
   });
 });

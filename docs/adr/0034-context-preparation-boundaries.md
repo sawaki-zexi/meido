@@ -1,5 +1,7 @@
 # ADR-0034：准备投影与执行授权分离，按配置保留完整轮次
 
+2026-11-02：上下文/记忆的后续变更由 [ADR-0036](0036-shiori-context-memory-ownership.md) 替代；本文保留原决策历史，其余适用边界继续有效。
+
 状态：当前，已采纳；维护者于 2026-10-31 批准三票及整体架构对照。
 最后核验：2026-11-02。
 事实来源：[#291](https://github.com/sawaki-zexi/meido/issues/291)、[规格](../specs/chat-responsiveness.md)、[调研](../research/chat-responsiveness-shiori.md)、[准备回归](../../tests/python/test_context_preparation.py)、[流式边界回归](../../tests/python/test_stream_preparation.py)。

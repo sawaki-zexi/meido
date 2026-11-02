@@ -12,4 +12,6 @@ def test_control_command_accepts_telegram_bot_suffix_and_exact_commands():
     assert control_command(" /STOP@meido_bot ") == "stop"
     assert control_command("/chatid") == "chatid"
     assert control_command("/myid") == "myid"
+    assert control_command(" /COMPACT@meido_bot ") == "compact"
+    assert control_command("/compact later") is None
     assert control_command("/stop everything") is None

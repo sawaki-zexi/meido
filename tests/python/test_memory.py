@@ -6,8 +6,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import main
+from memory_fakes import configured_service, conversation_service, ControlledEmbedding
 from backend.app.memory_service import MemoryService, MemoryWorker
-from backend.app.memory_maintenance import MemoryMaintenance
+from memory_fakes import ControlledMaintenance as MemoryMaintenance
 from backend.app import memory_maintenance
 from backend.app.embeddings import OpenAICompatibleEmbeddingAdapter
 from backend.app.memory_store import MemoryStore
@@ -20,7 +21,7 @@ from backend.app.storage import initialize_databases
 
 def test_memory_worker_blocks_new_tasks_during_role_deletion(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     worker = MemoryWorker(service)
     user = Message(
         id="user-1",
@@ -44,7 +45,7 @@ def test_memory_worker_blocks_new_tasks_during_role_deletion(tmp_path):
 
 def test_memory_worker_accepts_tasks_after_role_deletion_finishes(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     worker = MemoryWorker(service)
     user = Message(
         id="user-1",
@@ -69,7 +70,7 @@ def test_memory_worker_accepts_tasks_after_role_deletion_finishes(tmp_path):
 
 def test_memory_worker_close_drains_and_rejects_new_tasks(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     worker = MemoryWorker(service)
     user = Message(
         id="user-1",
@@ -93,7 +94,7 @@ def test_memory_worker_close_drains_and_rejects_new_tasks(tmp_path):
 
 def test_memory_worker_ignores_uncommitted_assistant_replies(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     worker = MemoryWorker(service)
     user = Message(
         id="user-1",
@@ -125,7 +126,7 @@ def test_memory_worker_runs_maintenance_when_semantic_processing_fails(tmp_path)
         def __init__(self):
             self.calls = 0
 
-        def maintain(self, role_id, session_key):
+        def maintain(self, role_id, session_key, **kwargs):
             self.calls += 1
 
     maintenance = RecordingMaintenance()
@@ -146,10 +147,10 @@ def test_memory_worker_runs_semantic_processing_when_maintenance_fails(tmp_path)
     store = MemoryStore(tmp_path / "memory.db")
 
     class FailingMaintenance:
-        def maintain(self, role_id, session_key):
+        def maintain(self, role_id, session_key, **kwargs):
             raise RuntimeError("maintenance failure")
 
-    worker = MemoryWorker(MemoryService(store), FailingMaintenance())  # type: ignore[arg-type]
+    worker = MemoryWorker(conversation_service(store), FailingMaintenance())  # type: ignore[arg-type]
     user = Message(id="u", sessionKey="role:role-a", sequence=1, role="user", content="请记住我喜欢海边", status="completed", createdAt=datetime.now(timezone.utc))
     assistant = user.model_copy(update={"id": "a", "sequence": 2, "role": "assistant", "content": "好的", "status": "completed"})
 
@@ -168,7 +169,7 @@ def test_fastapi_shutdown_closes_memory_worker(tmp_path, monkeypatch):
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     memory_store = MemoryStore(tmp_path / "data" / "memory.db")
-    service = MemoryService(memory_store)
+    service = conversation_service(memory_store)
     worker = MemoryWorker(service)
     user = Message(
         id="user-1",
@@ -220,7 +221,7 @@ def test_hybrid_recall_finds_semantic_match_without_shared_words_and_is_role_sco
     }
     provider = FakeEmbeddingProvider(vectors)
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store, provider)
+    service = configured_service(store, provider)
     first = service.remember("role-a", "主人喜欢海边散步", "preference", stable_source_key="a")
     service.remember("role-b", "主人喜欢海边散步", "preference", stable_source_key="b")
 
@@ -294,7 +295,7 @@ def test_hybrid_recall_fuses_keyword_and_semantic_rankings(tmp_path):
         ("role-a", "红茶"): [0.0, 1.0],
     })
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store, provider)
+    service = configured_service(store, provider)
     semantic = service.remember("role-a", "喜欢红茶", "preference", stable_source_key="semantic")
     keyword = service.remember("role-a", "红茶", "fact", stable_source_key="keyword")
 
@@ -330,7 +331,7 @@ def test_embedding_adapter_uses_configured_openai_compatible_endpoint(monkeypatc
 
 def test_memory_store_is_role_scoped_and_source_idempotent(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     first = service.remember("role-a", "喜欢红茶", "preference", stable_source_key="turn-1", supersede_key="preference")
     repeated = service.remember("role-a", "喜欢红茶", "preference", stable_source_key="turn-1", supersede_key="preference")
     other = service.remember("role-b", "喜欢红茶", "preference", stable_source_key="turn-1", supersede_key="preference")
@@ -344,7 +345,7 @@ def test_memory_store_is_role_scoped_and_source_idempotent(tmp_path):
 
 def test_memory_store_new_preference_supersedes_old(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     old = service.remember("role-a", "喜欢红茶", "preference", stable_source_key="turn-1", supersede_key="preference")
     new = service.remember("role-a", "喜欢咖啡", "preference", stable_source_key="turn-2", supersede_key="preference")
 
@@ -355,7 +356,7 @@ def test_memory_store_new_preference_supersedes_old(tmp_path):
 
 def test_unrelated_preference_does_not_supersede_without_explicit_change(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     old = service.process_turn(
         "role-a",
         "role:role-a",
@@ -374,7 +375,7 @@ def test_unrelated_preference_does_not_supersede_without_explicit_change(tmp_pat
 
 def test_same_source_with_changed_extraction_is_idempotent(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     first = service.remember("role-a", "主人住在海边", "fact", stable_source_key="turn-1")
     second = service.remember("role-a", "主人住在海边附近", "fact", stable_source_key="turn-1")
     assert second.id == first.id
@@ -384,7 +385,7 @@ def test_same_source_with_changed_extraction_is_idempotent(tmp_path):
 
 def test_matching_memory_keeps_each_source_for_traceability(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     first = service.remember(
         "role-a", "主人喜欢海边散步", "preference", session_key="role:role-a",
         message_ids=["message-1"], stable_source_key="turn-1",
@@ -399,7 +400,7 @@ def test_matching_memory_keeps_each_source_for_traceability(tmp_path):
 
 def test_memory_worker_extracts_explicit_and_implicit_memory_without_blocking(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     worker = MemoryWorker(service)
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
@@ -422,9 +423,9 @@ def test_memory_worker_extracts_explicit_and_implicit_memory_without_blocking(tm
     assert memories[0].sourceRef.kind == "turn"
 
 
-def test_post_response_marks_explicit_memory_as_protected(tmp_path):
+def test_post_response_text_does_not_claim_an_explicit_tool_write(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     user = Message(
         id="explicit-user",
         sessionKey="role:role-a",
@@ -440,13 +441,13 @@ def test_post_response_marks_explicit_memory_as_protected(tmp_path):
 
     assert len(saved) == 1
     assert saved[0].memoryType == "preference"
-    assert saved[0].extra["explicit"] is True
-    assert saved[0].extra["protectedTurn"] == "turn:role:role-a:explicit-user:explicit-assistant"
+    assert not saved[0].extra.get("explicit")
+    assert "protectedTurn" not in saved[0].extra
 
 
 def test_replaying_a_committed_turn_is_idempotent(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     user = Message(id="replay-user", sessionKey="role:role-a", sequence=1, role="user", content="请记住我喜欢乌龙茶", status="completed", createdAt=datetime.now(timezone.utc))
     assistant = user.model_copy(update={"id": "replay-assistant", "sequence": 2, "role": "assistant", "content": "好的"})
 
@@ -457,13 +458,13 @@ def test_replaying_a_committed_turn_is_idempotent(tmp_path):
     assert store.get("role-a", first[0].id).reinforcement == 1
 
 
-def test_post_response_extracts_events_and_corrections(tmp_path):
+def test_post_response_limits_implicit_types_and_preserves_distinct_preferences(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     event_user = Message(id="event-user", sessionKey="role:role-a", sequence=1, role="user", content="昨天我去了海边", status="completed", createdAt=datetime.now(timezone.utc))
     event_assistant = event_user.model_copy(update={"id": "event-assistant", "sequence": 2, "role": "assistant", "content": "听起来不错"})
     event = service.process_turn("role-a", "role:role-a", event_user, event_assistant)
-    assert [(item.memoryType, item.summary) for item in event] == [("event", "昨天我去了海边")]
+    assert event == []  # Episodes belong to committed consolidation, not implicit post-response.
 
     first_user = event_user.model_copy(update={"id": "pref-user-1", "sequence": 3, "content": "我喜欢红茶"})
     first_assistant = event_assistant.model_copy(update={"id": "pref-assistant-1", "sequence": 4})
@@ -474,12 +475,12 @@ def test_post_response_extracts_events_and_corrections(tmp_path):
 
     active = store.list_active("role-a")
     assert {item.summary for item in active} >= {"喜欢咖啡"}
-    assert "喜欢红茶" not in {item.summary for item in active}
+    assert "喜欢红茶" in {item.summary for item in active}
 
 
 def test_turn_forgetting_memory_keeps_message_evidence_and_is_role_scoped(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     target = service.remember("role-a", "喜欢红茶", "preference", stable_source_key="saved")
     other = service.remember("role-b", "喜欢红茶", "preference", stable_source_key="saved-other")
     user = Message(
@@ -493,6 +494,7 @@ def test_turn_forgetting_memory_keeps_message_evidence_and_is_role_scoped(tmp_pa
     )
     assistant = user.model_copy(update={"id": "forget-reply", "sequence": 4, "role": "assistant", "content": "好的"})
 
+    service.forget_matching("role-a", "喜欢红茶")
     service.process_turn("role-a", "role:role-a", user, assistant)
     service.process_turn("role-a", "role:role-a", user, assistant)
 
@@ -501,17 +503,19 @@ def test_turn_forgetting_memory_keeps_message_evidence_and_is_role_scoped(tmp_pa
     assert store.query("role-a", "红茶") == []
 
 
-def test_worker_forgetting_turn_removes_memory_markdown_view(tmp_path):
+def test_worker_after_explicit_forget_preserves_host_markdown(tmp_path):
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     session = sessions.open_role_session(role.id)
     store = MemoryStore(tmp_path / "data" / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     maintenance = MemoryMaintenance(tmp_path / "roles", sessions)
     target = service.remember(role.id, "喜欢红茶", "preference", stable_source_key="saved")
-    maintenance.sync_structured_memory(role.id, store.list_active(role.id))
+    path = tmp_path / "roles" / role.id / "memory" / "MEMORY.md"
+    path.write_text("手工文档：喜欢红茶", encoding="utf-8")
+    service.forget_matching(role.id, "喜欢红茶")
     user = sessions.append_message(session.sessionKey, "user", "请忘记我喜欢红茶")
     assistant = sessions.append_message(session.sessionKey, "assistant", "好的")
     worker = MemoryWorker(service, maintenance)
@@ -522,7 +526,7 @@ def test_worker_forgetting_turn_removes_memory_markdown_view(tmp_path):
 
     asyncio.run(run())
     assert store.get(role.id, target.id).status == "forgotten"
-    assert "喜欢红茶" not in (tmp_path / "roles" / role.id / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert path.read_text(encoding="utf-8") == "手工文档：喜欢红茶"
 
 
 def test_rejected_unstructured_candidate_is_removed_from_pending_markdown(tmp_path):
@@ -530,7 +534,7 @@ def test_rejected_unstructured_candidate_is_removed_from_pending_markdown(tmp_pa
     role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
     initialize_databases(tmp_path / "data")
     store = MemoryStore(tmp_path / "data" / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     documents = MemoryMaintenance(tmp_path / "roles", SessionStore(tmp_path / "data" / "sessions.db"))
     memory_dir = tmp_path / "roles" / role.id / "memory"
     memory_dir.mkdir(parents=True, exist_ok=True)
@@ -543,9 +547,9 @@ def test_rejected_unstructured_candidate_is_removed_from_pending_markdown(tmp_pa
     assert "喜欢红茶" not in (memory_dir / "PENDING.md").read_text(encoding="utf-8")
 
 
-def test_turn_rejection_is_persisted_without_becoming_recallable(tmp_path):
+def test_turn_rejection_does_not_invent_a_semantic_tombstone(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     user = Message(
         id="reject-message",
         sessionKey="role:role-a",
@@ -559,8 +563,8 @@ def test_turn_rejection_is_persisted_without_becoming_recallable(tmp_path):
 
     rejected = service.process_turn("role-a", "role:role-a", user, assistant)
 
-    assert len(rejected) == 1
-    assert rejected[0].status == "rejected"
+    assert rejected == []
+    assert store.list_all("role-a") == []
     assert store.query("role-a", "红茶") == []
 
 
@@ -606,7 +610,7 @@ def test_memory_maintenance_consolidates_once_and_keeps_source_window(tmp_path):
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     session = sessions.open_role_session(role.id)
-    for index in range(10):
+    for index in range(15):
         sessions.append_message(session.sessionKey, "user", f"请记住第{index}项")
         sessions.append_message(session.sessionKey, "assistant", "收到")
     maintenance = MemoryMaintenance(tmp_path / "roles", sessions)
@@ -631,7 +635,7 @@ def test_memory_maintenance_writes_idempotent_journal_and_documents_endpoint(tmp
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     session = sessions.open_role_session(role.id)
-    for index in range(10):
+    for index in range(15):
         sessions.append_message(session.sessionKey, "user", f"请记住第{index}项")
         sessions.append_message(session.sessionKey, "assistant", "收到")
     maintenance = MemoryMaintenance(tmp_path / "roles", sessions)
@@ -666,8 +670,8 @@ def test_memory_maintenance_does_not_consolidate_before_keep_window_is_exceeded(
 
     memory_dir = tmp_path / "roles" / role.id / "memory"
     assert (memory_dir / "RECENT_CONTEXT.md").exists()
-    assert not (memory_dir / "HISTORY.md").exists()
-    assert json.loads((memory_dir / ".maintenance.json").read_text(encoding="utf-8"))["lastSequence"] == 0
+    assert '<!-- source:' not in (memory_dir / "HISTORY.md").read_text(encoding="utf-8")
+    assert sessions.maintenance_progress(role.id, session.sessionKey)["lastSequence"] == 0
 
 
 def test_memory_maintenance_window_pressure_entry_point_consolidates_old_turns(tmp_path):
@@ -676,15 +680,15 @@ def test_memory_maintenance_window_pressure_entry_point_consolidates_old_turns(t
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     session = sessions.open_role_session(role.id)
-    for index in range(8):
+    for index in range(14):
         sessions.append_message(session.sessionKey, "user", f"窗口消息{index}")
         sessions.append_message(session.sessionKey, "assistant", "收到")
 
     maintenance = MemoryMaintenance(tmp_path / "roles", sessions)
-    assert maintenance.ensure_memory_for_window(role.id, session.sessionKey, max_messages=12) is True
+    assert maintenance.ensure_memory_for_window(role.id, session.sessionKey, max_messages=24) is True
     memory_dir = tmp_path / "roles" / role.id / "memory"
     assert (memory_dir / "HISTORY.md").exists()
-    assert json.loads((memory_dir / ".maintenance.json").read_text(encoding="utf-8"))["lastSequence"] > 0
+    assert sessions.maintenance_progress(role.id, session.sessionKey)["lastSequence"] > 0
 
 
 def test_memory_maintenance_preserves_documents_changed_during_draft(tmp_path):
@@ -693,7 +697,7 @@ def test_memory_maintenance_preserves_documents_changed_during_draft(tmp_path):
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     session = sessions.open_role_session(role.id)
-    for index in range(10):
+    for index in range(15):
         sessions.append_message(session.sessionKey, "user", f"消息{index}")
         sessions.append_message(session.sessionKey, "assistant", "收到")
 
@@ -709,9 +713,10 @@ def test_memory_maintenance_preserves_documents_changed_during_draft(tmp_path):
     maintenance = UserEditDuringDraft(tmp_path / "roles", sessions)
     maintenance.maintain(role.id, session.sessionKey)
     history_path = tmp_path / "roles" / role.id / "memory" / "HISTORY.md"
-    assert history_path.read_text(encoding="utf-8") == "用户保留内容\n"
+    assert history_path.read_text(encoding="utf-8").startswith("用户保留内容\n")
+    assert "consolidation:" in history_path.read_text(encoding="utf-8")
     cursor_path = tmp_path / "roles" / role.id / "memory" / ".maintenance.json"
-    assert not cursor_path.exists() or json.loads(cursor_path.read_text(encoding="utf-8"))["lastSequence"] == 0
+    assert sessions.maintenance_progress(role.id, session.sessionKey)["lastSequence"] == 10
 
 
 def test_memory_maintenance_keeps_pending_event_without_consumer(tmp_path):
@@ -720,29 +725,15 @@ def test_memory_maintenance_keeps_pending_event_without_consumer(tmp_path):
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     session = sessions.open_role_session(role.id)
-    for index in range(10):
+    for index in range(15):
         sessions.append_message(session.sessionKey, "user", f"请记住第{index}项")
         sessions.append_message(session.sessionKey, "assistant", "收到")
-    consumer = MemoryMaintenance(tmp_path / "roles", sessions, lambda event: None)
-    consumer.maintain(role.id, session.sessionKey)
-    # A maintenance process without a callback must leave the durable event;
-    # this variant simulates restart before the consumer is available.
-    cursor_path = tmp_path / "roles" / role.id / "memory" / ".maintenance.json"
-    cursor = json.loads(cursor_path.read_text(encoding="utf-8"))
-    cursor["pendingEvent"] = cursor.get("pendingEvent") or {
-        "roleId": role.id,
-        "sessionKey": session.sessionKey,
-        "sourceKey": "source",
-        "messageIds": [],
-        "messageRange": None,
-        "candidates": [],
-    }
-    cursor_path.write_text(json.dumps(cursor, ensure_ascii=False), encoding="utf-8")
     without_consumer = MemoryMaintenance(tmp_path / "roles", sessions)
     without_consumer.maintain(role.id, session.sessionKey)
-    assert "pendingEvent" in json.loads(cursor_path.read_text(encoding="utf-8"))
-
-
+    saved = sessions.maintenance_progress(role.id, session.sessionKey)
+    assert saved["memoryVersion"] == 1 and len(saved["pendingEvents"]) == 1
+    without_consumer.maintain(role.id, session.sessionKey)
+    assert sessions.maintenance_progress(role.id, session.sessionKey)["pendingEvents"] == saved["pendingEvents"]
 @pytest.mark.parametrize("result", [[], [{"bad": "shape"}], [{"memoryType": "", "summary": "摘要", "sourceKey": "source"}]])
 def test_invalid_consolidation_provider_result_does_not_advance_cursor(tmp_path, result):
     roles = RoleStore(tmp_path / "roles")
@@ -750,7 +741,7 @@ def test_invalid_consolidation_provider_result_does_not_advance_cursor(tmp_path,
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     session = sessions.open_role_session(role.id)
-    for index in range(10):
+    for index in range(15):
         sessions.append_message(session.sessionKey, "user", f"请记住第{index}项")
         sessions.append_message(session.sessionKey, "assistant", "收到")
     maintenance = MemoryMaintenance(tmp_path / "roles", sessions, consolidation_provider=lambda source, window: result)
@@ -767,7 +758,7 @@ def test_consolidation_committed_event_is_retried_and_acknowledged(tmp_path):
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     session = sessions.open_role_session(role.id)
-    for index in range(10):
+    for index in range(15):
         sessions.append_message(session.sessionKey, "user", f"请记住第{index}项")
         sessions.append_message(session.sessionKey, "assistant", "收到")
 
@@ -782,14 +773,14 @@ def test_consolidation_committed_event_is_retried_and_acknowledged(tmp_path):
             raise RuntimeError("consumer unavailable")
 
     maintenance = MemoryMaintenance(tmp_path / "roles", sessions, consume)
-    with pytest.raises(RuntimeError, match="consumer unavailable"):
-        maintenance.maintain(role.id, session.sessionKey)
+    maintenance.maintain(role.id, session.sessionKey)
     cursor_path = tmp_path / "roles" / role.id / "memory" / ".maintenance.json"
-    assert "pendingEvent" in json.loads(cursor_path.read_text(encoding="utf-8"))
+    assert sessions.maintenance_progress(role.id, session.sessionKey)["pendingEvents"]
 
     maintenance.maintain(role.id, session.sessionKey)
-    cursor = json.loads(cursor_path.read_text(encoding="utf-8"))
-    assert "pendingEvent" not in cursor
+    cursor = sessions.maintenance_progress(role.id, session.sessionKey)
+    assert not cursor["pendingEvents"]
+    assert cursor["publishedVersion"] == cursor["memoryVersion"] == 1
     assert len(events) == 2
     assert events[0].source_key == events[1].source_key
 
@@ -800,7 +791,7 @@ def test_maintenance_resumes_pending_event_after_restart(tmp_path):
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     session = sessions.open_role_session(role.id)
-    for index in range(10):
+    for index in range(15):
         sessions.append_message(session.sessionKey, "user", f"请记住第{index}项")
         sessions.append_message(session.sessionKey, "assistant", "收到")
     first_events = []
@@ -810,16 +801,13 @@ def test_maintenance_resumes_pending_event_after_restart(tmp_path):
         raise RuntimeError("restart required")
 
     first = MemoryMaintenance(tmp_path / "roles", sessions, fail_once)
-    with pytest.raises(RuntimeError, match="restart required"):
-        first.maintain(role.id, session.sessionKey)
+    first.maintain(role.id, session.sessionKey)
 
     resumed_events = []
     resumed = MemoryMaintenance(tmp_path / "roles", sessions, resumed_events.append)
     assert resumed.resume_pending() == 1
     assert len(resumed_events) == 1
-    assert "pendingEvent" not in json.loads(
-        (tmp_path / "roles" / role.id / "memory" / ".maintenance.json").read_text(encoding="utf-8")
-    )
+    assert not sessions.maintenance_progress(role.id, session.sessionKey)["pendingEvents"]
 
 
 def test_consolidation_event_consumer_is_idempotent(tmp_path):
@@ -881,7 +869,7 @@ def test_memory_worker_serially_runs_markdown_maintenance(tmp_path):
     user = sessions.append_message(session.sessionKey, "user", "请记住我喜欢红茶")
     assistant = sessions.append_message(session.sessionKey, "assistant", "好的")
     store = MemoryStore(tmp_path / "data" / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     worker = MemoryWorker(service, MemoryMaintenance(tmp_path / "roles", sessions))
 
     async def run_worker() -> None:
@@ -892,7 +880,7 @@ def test_memory_worker_serially_runs_markdown_maintenance(tmp_path):
     assert (tmp_path / "roles" / role.id / "memory" / "RECENT_CONTEXT.md").exists()
 
 
-def test_memory_maintenance_discards_stale_snapshot(tmp_path):
+def test_memory_maintenance_accepts_append_and_refreshes_new_tail_on_next_pass(tmp_path):
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
     initialize_databases(tmp_path / "data")
@@ -915,7 +903,8 @@ def test_memory_maintenance_discards_stale_snapshot(tmp_path):
     maintenance = MessageDuringPreparation(tmp_path / "roles", sessions)
     recent_path = tmp_path / "roles" / role.id / "memory" / "RECENT_CONTEXT.md"
     maintenance.maintain(role.id, session.sessionKey)
-    assert not recent_path.exists()
+    assert "第一条" in recent_path.read_text(encoding="utf-8")
+    assert "新消息" not in recent_path.read_text(encoding="utf-8")
     maintenance.maintain(role.id, session.sessionKey)
     assert "新消息" in recent_path.read_text(encoding="utf-8")
 
@@ -938,9 +927,10 @@ def test_memory_maintenance_discards_draft_when_snapshot_message_changes(tmp_pat
                 sessions.update_message(user.id, "已修改内容", "completed")
 
     maintenance = MessageChangedDuringPreparation(tmp_path / "roles", sessions)
-    maintenance.maintain(role.id, session.sessionKey)
     recent_path = tmp_path / "roles" / role.id / "memory" / "RECENT_CONTEXT.md"
-    assert not recent_path.exists()
+    before = recent_path.read_bytes()
+    maintenance.maintain(role.id, session.sessionKey)
+    assert recent_path.read_bytes() == before
     maintenance.maintain(role.id, session.sessionKey)
     assert "已修改内容" in recent_path.read_text(encoding="utf-8")
 
@@ -984,7 +974,7 @@ def test_memory_api_is_scoped_and_manual_memory_is_recalled(tmp_path, monkeypatc
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
     monkeypatch.setattr(main, "memory_store", MemoryStore(tmp_path / "data" / "memory.db"))
-    monkeypatch.setattr(main, "memory_service", MemoryService(main.memory_store))
+    monkeypatch.setattr(main, "memory_service", configured_service(main.memory_store))
     monkeypatch.setattr(main, "memory_worker", MemoryWorker(main.memory_service))
     client = TestClient(main.app)
 
@@ -994,8 +984,8 @@ def test_memory_api_is_scoped_and_manual_memory_is_recalled(tmp_path, monkeypatc
     payload = response.json()
     assert payload["memories"][0]["summary"] == "主人住在海边"
     assert payload["hits"][0]["evidence"][0]["source_ref"].startswith("manual:")
-    assert payload["hits"][0]["signals"]["reasons"]
-    assert payload["trace"]["ranking"]["unique_candidates"] == 1
+    assert payload["hits"][0]["score"] > 0
+    assert payload["trace"]["intent"] == 'context'
     assert client.get(f"/api/roles/{second.id}/memories", params={"q": "海边"}).json()["memories"] == []
 
 
@@ -1006,7 +996,7 @@ def test_memory_management_updates_forgets_and_deletes_only_current_role(tmp_pat
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     memory_store = MemoryStore(tmp_path / "data" / "memory.db")
-    service = MemoryService(memory_store)
+    service = conversation_service(memory_store)
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
     monkeypatch.setattr(main, "memory_store", memory_store)
@@ -1030,7 +1020,7 @@ def test_memory_api_can_reject_memory_in_current_role_only(tmp_path, monkeypatch
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     memory_store = MemoryStore(tmp_path / "data" / "memory.db")
-    service = MemoryService(memory_store)
+    service = conversation_service(memory_store)
     memory = service.remember(role.id, "喜欢红茶", "preference", stable_source_key="saved")
     monkeypatch.setattr(main, "store", roles)
     monkeypatch.setattr(main, "session_store", sessions)
@@ -1046,13 +1036,13 @@ def test_memory_api_can_reject_memory_in_current_role_only(tmp_path, monkeypatch
     assert client.post(f"/api/roles/{other.id}/memories/{memory.id}/reject").status_code == 404
 
 
-def test_memory_management_keeps_structured_and_markdown_views_in_sync(tmp_path, monkeypatch):
+def test_memory_management_preserves_independent_host_documents(tmp_path, monkeypatch):
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     memory_store = MemoryStore(tmp_path / "data" / "memory.db")
-    service = MemoryService(memory_store)
+    service = conversation_service(memory_store)
     memory_dir = tmp_path / "roles" / role.id / "memory"
     memory_dir.mkdir(parents=True, exist_ok=True)
     memory_path = memory_dir / "MEMORY.md"
@@ -1071,7 +1061,7 @@ def test_memory_management_keeps_structured_and_markdown_views_in_sync(tmp_path,
     memory = created.json()
     document = memory_path.read_text(encoding="utf-8")
     assert "只保留这段手写内容。" in document
-    assert "喜欢红茶" in document
+    assert "喜欢红茶" not in document
 
     forgotten = client.post(f"/api/roles/{role.id}/memories/{memory['id']}/forget")
 
@@ -1079,17 +1069,17 @@ def test_memory_management_keeps_structured_and_markdown_views_in_sync(tmp_path,
     document = memory_path.read_text(encoding="utf-8")
     assert "只保留这段手写内容。" in document
     assert "喜欢红茶" not in document
-    assert "喜欢红茶" not in pending_path.read_text(encoding="utf-8")
+    assert "喜欢红茶" in pending_path.read_text(encoding="utf-8")
     assert client.get(f"/api/roles/{role.id}/memories").json()["memories"] == []
 
 
-def test_memory_management_rolls_back_when_markdown_sync_fails(tmp_path, monkeypatch):
+def test_memory_management_never_calls_legacy_markdown_projection(tmp_path, monkeypatch):
     roles = RoleStore(tmp_path / "roles")
     role = roles.create(RoleInput(name="角色", profile=RoleProfile(profile="设定")))
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     memory_store = MemoryStore(tmp_path / "data" / "memory.db")
-    service = MemoryService(memory_store)
+    service = conversation_service(memory_store)
     memory = service.remember(role.id, "喜欢红茶", "preference", stable_source_key="saved")
     memory_path = tmp_path / "roles" / role.id / "memory" / "MEMORY.md"
     memory_path.write_text("原 Markdown\n", encoding="utf-8")
@@ -1105,8 +1095,8 @@ def test_memory_management_rolls_back_when_markdown_sync_fails(tmp_path, monkeyp
     monkeypatch.setattr("backend.app.memory_documents.MemoryDocuments.sync_structured_memory", fail_sync)
     response = TestClient(main.app).post(f"/api/roles/{role.id}/memories/{memory.id}/forget")
 
-    assert response.status_code == 500
-    assert memory_store.get(role.id, memory.id).status == "active"
+    assert response.status_code == 200
+    assert memory_store.get(role.id, memory.id).status == "forgotten"
     assert memory_path.read_text(encoding="utf-8") == "原 Markdown\n"
 
 
@@ -1117,7 +1107,7 @@ def test_editing_memory_rebuilds_its_embedding_for_the_new_summary(tmp_path):
         ("role-a", "旧内容查询"): [1.0, 0.0],
     })
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store, provider)
+    service = configured_service(store, provider)
     memory = service.remember("role-a", "旧摘要", "fact", stable_source_key="source")
 
     store.update("role-a", memory.id, "新摘要", "fact", None)
@@ -1132,7 +1122,7 @@ def test_memory_api_lists_active_items_and_searches_with_all_sources(tmp_path, m
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     memory_store = MemoryStore(tmp_path / "data" / "memory.db")
-    service = MemoryService(memory_store)
+    service = conversation_service(memory_store)
     service.remember(role.id, "喜欢海边散步", "preference", message_ids=["msg-a"], stable_source_key="source-a")
     service.remember(role.id, "喜欢海边散步", "preference", message_ids=["msg-b"], stable_source_key="source-b")
     monkeypatch.setattr(main, "store", roles)
@@ -1156,7 +1146,7 @@ def test_memory_api_hides_inactive_items_and_other_role_sources(tmp_path, monkey
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     memory_store = MemoryStore(tmp_path / "data" / "memory.db")
-    service = MemoryService(memory_store)
+    service = conversation_service(memory_store)
     active = service.remember(role.id, "主人喜欢海边", "preference", message_ids=["private-msg"], stable_source_key="active")
     superseded = service.remember(role.id, "主人住在海边", "fact", stable_source_key="superseded")
     forgotten = service.remember(role.id, "主人常去海边", "fact", stable_source_key="forgotten")
@@ -1187,7 +1177,7 @@ def test_memory_admin_api_filters_updates_metadata_and_supports_bulk_actions(tmp
     other_role = roles.create(RoleInput(name="其他", profile=RoleProfile(profile="设定")))
     initialize_databases(tmp_path / "data")
     memory_store = MemoryStore(tmp_path / "data" / "memory.db")
-    service = MemoryService(memory_store)
+    service = conversation_service(memory_store)
     source = MemorySourceRef(kind="manual", sessionKey=f"role:{role.id}", stableSourceKey="admin-a")
     first = memory_store.add_or_reinforce(
         role.id, "preference", "主人喜欢红茶", source,
@@ -1250,7 +1240,7 @@ def test_memory_admin_api_filters_updates_metadata_and_supports_bulk_actions(tmp
 
 def test_empty_recall_does_not_inject_all_memories(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     service.remember("role-a", "主人住在海边", "fact", stable_source_key="one")
     assert service.recall("role-a", "") == []
 
@@ -1261,7 +1251,7 @@ def test_delete_role_cleans_structured_memory(tmp_path, monkeypatch):
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     memory_store = MemoryStore(tmp_path / "data" / "memory.db")
-    memory_service = MemoryService(memory_store)
+    memory_service = conversation_service(memory_store)
     memory_service.remember(role.id, "主人住在海边", "fact", stable_source_key="one")
     memory_service.remember("other-role", "其他角色的记忆", "fact", stable_source_key="other")
     (tmp_path / "roles" / role.id / "memory" / "MEMORY.md").write_text("角色记忆", encoding="utf-8")
@@ -1283,7 +1273,7 @@ def test_recalled_memory_is_injected_only_for_related_current_role(tmp_path, mon
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     memory_store = MemoryStore(tmp_path / "data" / "memory.db")
-    memory_service = MemoryService(memory_store)
+    memory_service = conversation_service(memory_store)
     memory_service.remember(role.id, "主人喜欢海边散步", "preference", stable_source_key="manual:walk")
     adapter = ContextAdapter()
     monkeypatch.setattr(main, "store", roles)
@@ -1295,7 +1285,7 @@ def test_recalled_memory_is_injected_only_for_related_current_role(tmp_path, mon
     monkeypatch.setattr(main, "model_adapter", adapter)
     client = TestClient(main.app)
 
-    response = client.post(f"/api/roles/{role.id}/messages", json={"content": "我们去海边吧"})
+    response = client.post(f"/api/roles/{role.id}/messages", json={"content": "主人喜欢海边散步"})
     assert response.status_code == 200
     assert "海边散步" in adapter.contexts[0]
 
@@ -1311,7 +1301,7 @@ def test_fixed_owner_memory_is_injected_without_dynamic_recent_raw_history(tmp_p
     initialize_databases(tmp_path / "data")
     sessions = SessionStore(tmp_path / "data" / "sessions.db")
     memory_store = MemoryStore(tmp_path / "data" / "memory.db")
-    memory_service = MemoryService(memory_store)
+    memory_service = conversation_service(memory_store)
     adapter = ContextAdapter()
     monkeypatch.setattr(main, "roles_root", tmp_path / "roles")
     monkeypatch.setattr(main, "store", roles)
@@ -1331,7 +1321,7 @@ def test_fixed_owner_memory_is_injected_without_dynamic_recent_raw_history(tmp_p
 
 def test_context_block_never_exceeds_budget_and_keeps_complete_memory_items(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     first = service.remember("role-a", "第一条完整记忆", "fact", stable_source_key="one")
     second = service.remember("role-a", "第二条完整记忆", "fact", stable_source_key="two")
 
@@ -1349,7 +1339,7 @@ def test_context_block_never_exceeds_budget_and_keeps_complete_memory_items(tmp_
 
 def test_context_block_does_not_emit_empty_memory_heading(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     memory = service.remember("role-a", "一条很长的记忆" * 20, "fact", stable_source_key="one")
 
     context = service.context_block([memory], "", max_chars=12)
@@ -1357,15 +1347,15 @@ def test_context_block_does_not_emit_empty_memory_heading(tmp_path):
     assert context == ""
 
 
-def test_post_response_provider_is_structured_and_falls_back_on_invalid_output(tmp_path):
+def test_post_response_accepts_structured_output_and_never_regex_falls_back(tmp_path):
     calls = []
 
     def provider(role_id, session_key, user, assistant, active):
         calls.append((role_id, session_key, len(active)))
-        return [{"memoryType": "preference", "summary": "喜欢绿茶", "supersedeKey": None}]
+        return {"preference": [{"summary": "喜欢绿茶"}]}
 
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store, post_response_provider=provider)
+    service = configured_service(store, post_response_provider=provider)
     now = datetime.now(timezone.utc)
     user = Message(id="u1", role="user", content="今天聊聊", sessionKey="role:role-a", sequence=1, status="completed", createdAt=now)
     assistant = Message(id="a1", role="assistant", content="好的", sessionKey="role:role-a", sequence=2, status="completed", createdAt=now)
@@ -1374,11 +1364,12 @@ def test_post_response_provider_is_structured_and_falls_back_on_invalid_output(t
     assert [item.summary for item in saved] == ["喜欢绿茶"]
     assert calls == [("role-a", "role:role-a", 0)]
 
-    fallback = MemoryService(store, post_response_provider=lambda *args: {"bad": True})
+    fallback = configured_service(store, post_response_provider=lambda *args: {"bad": True})
     fallback_user = user.model_copy(update={"id": "u2", "sequence": 3, "content": "我叫小明"})
     fallback_assistant = assistant.model_copy(update={"id": "a2", "sequence": 4})
     result = fallback.process_turn("role-a", "role:role-a", fallback_user, fallback_assistant)
-    assert any(item.summary == "名字是小明" for item in result)
+    assert result == []
+    assert [item.summary for item in store.list_all("role-a")] == ["喜欢绿茶"]
 
 
 def test_post_response_implicit_extraction_can_be_disabled(tmp_path):
@@ -1389,7 +1380,7 @@ def test_post_response_implicit_extraction_can_be_disabled(tmp_path):
         return [{"memoryType": "fact", "summary": "模型不应被调用"}]
 
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(
+    service = configured_service(
         store,
         post_response_provider=provider,
         implicit_extraction_enabled=False,
@@ -1419,7 +1410,9 @@ def test_post_response_implicit_extraction_can_be_disabled(tmp_path):
     explicit_user = user.model_copy(update={"id": "u-explicit", "sequence": 3, "content": "请记住我喜欢红茶"})
     explicit_assistant = assistant.model_copy(update={"id": "a-explicit", "sequence": 4})
     saved = service.process_turn("role-a", "role:role-a", explicit_user, explicit_assistant)
-    assert [item.summary for item in saved] == ["喜欢红茶"]
+    assert saved == []
+    explicit = service.remember("role-a", "喜欢红茶", "preference", stable_source_key="explicit-tool")
+    assert explicit.summary == "喜欢红茶"
     assert calls == []
 
 
@@ -1437,7 +1430,7 @@ def test_memory_event_bus_observers_are_best_effort():
 
 def test_post_response_protects_explicit_tool_memory_ids(tmp_path):
     store = MemoryStore(tmp_path / "memory.db")
-    service = MemoryService(store)
+    service = conversation_service(store)
     source = MemorySourceRef(kind="manual", sessionKey="role:role-a", stableSourceKey="tool:item")
     item = store.add_or_reinforce("role-a", "preference", "喜欢咖啡", source, extra={"explicit": True})
     now = datetime.now(timezone.utc)

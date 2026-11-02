@@ -2,6 +2,12 @@
 
 状态：当前。最后核验：2026-11-02。
 
+## 上下文与记忆全链路（#302，2026-11-02）
+
+本轮适配固定提交 `c14152ed225954a2a50da775075fe64dbf7b8b50` 的默认记忆插件 retriever、prompts、procedure tagger、rule schema、post-response worker，宿主 Markdown user layer、recent context、optimizer，维护进度、请求压缩、手动上下文控制与 SDK JSON 修复边界。
+对应 Meido `memory_retriever.py`、`memory_prompts.py`、`memory_procedure_tagger.py`、`memory_rule_schema.py`、`memory_post_response.py`、`memory_markdown_prompts.py`、`memory_json.py` 保留算法/提示来源；会话、HTTP、角色/渠道授权与 SQLite 适配由 Meido 提供。精确文件链接与核验范围见[调研](../../docs/research/shiori-context-memory-20261102.md)。
+Copyright (c) 2026 YinFengWindy，MIT 许可沿用 [LICENSE](LICENSE)。
+
 ## 桌面聊天任务归属（2026-11-01）
 
 `backend/app/chat_runs.py` 与 `main.py` 适配固定提交
@@ -55,7 +61,7 @@ Copyright (c) 2026 YinFengWindy，MIT 许可见 [LICENSE](LICENSE)。
 `web/src/features/chat/{ChatContextRing,chatContextState,useChatContextStatus}.tsx/ts` 的细环、
 两行提示、用量格式和忙碌保留行为适配固定提交 `c14152ed225954a2a50da775075fe64dbf7b8b50` 的
 `apps/desktop/renderer/src/chat/{ChatContextRing,chatContextState,useChatComposerPopover,chatComposerPopoverLayout}.tsx/ts`。
-Meido 复用既有只读 HTTP 接口，额外按角色／会话／模型隔离显示值；不引入上游点击压缩操作。
+Meido 复用既有 HTTP 接口，按角色／会话隔离操作所有权；#302 同时适配上游点击压缩和 `/compact`，操作结束按当前模型重读状态。
 等待展示沿同版 `ChatHeader`、`ChatMessageBubbleBody` 保留星光和空回复光标，移除额外内部阶段标签。
 Copyright (c) 2026 YinFengWindy，MIT 许可见 [LICENSE](LICENSE)。
 

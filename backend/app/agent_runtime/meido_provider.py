@@ -40,6 +40,11 @@ from .conversation_prompt import CHAT_BEHAVIOR_PROMPT, tool_use_prompt
 from .usage_anchor import InputEstimate, UsageAnchors, SYSTEM_CONTEXT_FRAME_MARKER, mark_context_frame
 
 
+class FramedMessages(list):
+    """Own the inserted frame index; transcript markers never grant ownership."""
+    context_frame_index: int | None = None
+
+
 def _metadata_count(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
@@ -197,11 +202,14 @@ class MeidoProvider:
         required_context: str = "",
         usage_anchors: UsageAnchors | None = None, usage_context: tuple | None = None,
         readonly_usage: bool = False,
+        stable_memory: str = '',
     ) -> None:
         self.adapter = adapter
         self.role = role
         self.configuration = configuration
         self.memory_context = memory_context
+        self.stable_memory = stable_memory
+        self.current_input = _CURRENT_INPUT
         self.capability_prompt = capability_prompt
         # Host-verified sender/scope facts survive optional-context degradation.
         self.required_context = required_context
@@ -347,8 +355,17 @@ class MeidoProvider:
                           max_tokens=self.max_response_tokens if max_tokens is _CURRENT_INPUT else max_tokens)
         # _rich_messages owns this exact frame; arbitrary markers in transcript
         # messages cannot become replaceable context.
-        frame = runtime_messages[1].content[0].text
-        return mark_context_frame(request, frame)
+        index = getattr(runtime_messages, 'context_frame_index', None)
+        if index is None:
+            return request
+        frame = runtime_messages[index].content[0].text
+        # Protocol repair can insert missing tool results or omit rejected calls.
+        # User messages retain order; match the owned frame's occurrence, so even
+        # an identical user-supplied frame cannot acquire host ownership.
+        occurrence = sum(isinstance(message, RichUserMessage) and len(message.content) == 1
+            and isinstance(message.content[0], RichTextBlock) and message.content[0].text == frame
+            for message in runtime_messages[:index])
+        return mark_context_frame(request, frame, index=None, occurrence=occurrence)
 
     def _stream_rich_structured(self, system, messages, tools, signal, rich, prepared) -> AsyncIterator[ProviderEvent]:
         async def stream() -> AsyncIterator[ProviderEvent]:
@@ -498,10 +515,13 @@ class MeidoProvider:
         return stream()
 
     def _structured_messages(self, system: str, messages: Sequence[object], *, tool_prompt='', request_context='') -> list[dict[str, object]]:
-        prompt = self._structured_system_prompt(system, tool_prompt=tool_prompt, request_context=request_context)
+        prompt = self._structured_system_prompt(system, include_context=False, tool_prompt=tool_prompt, request_context=request_context)
         result: list[dict[str, object]] = [{"role": "system", "content": prompt}]
         provider_ids: dict[str, str] = {}
-        for message in messages:
+        boundary = self._context_boundary(messages)
+        for index, message in enumerate(messages):
+            if index == boundary:
+                result.append({'role': 'user', 'content': self._context_frame(include_memory=not system, request_context=request_context)})
             if isinstance(message, UserMessage):
                 result.append({"role": "user", "content": _user_content(message)})
             elif isinstance(message, AssistantMessage):
@@ -548,13 +568,25 @@ class MeidoProvider:
                     "tool_call_id": provider_ids.get(message.tool_call_id, message.tool_call_id),
                     "content": content,
                 })
+        if boundary == len(messages):
+            result.append({'role': 'user', 'content': self._context_frame(include_memory=not system, request_context=request_context)})
         return result
 
+    def _context_boundary(self, messages):
+        if self.current_input is _CURRENT_INPUT:
+            return next((index for index in range(len(messages) - 1, -1, -1) if isinstance(messages[index], UserMessage)), len(messages))
+        return next((index for index, message in enumerate(messages) if message is self.current_input or
+            self.current_input is not None and self.current_input.source_message_ids and
+            message.source_message_ids == self.current_input.source_message_ids), len(messages))
+
     def _rich_messages(self, system: str, messages: Sequence[object], *, tool_prompt='', request_context='') -> list[RichMessage]:
-        result: list[RichMessage] = [RichSystemMessage((RichTextBlock(self._structured_system_prompt(system, include_context=False, tool_prompt=tool_prompt)),)),
-                                  RichUserMessage((RichTextBlock(self._context_frame(include_memory=not system, request_context=request_context)),))]
+        result = FramedMessages([RichSystemMessage((RichTextBlock(self._structured_system_prompt(system, include_context=False, tool_prompt=tool_prompt)),))])
         provider_ids: dict[str, str] = {}
-        for message in messages:
+        boundary = self._context_boundary(messages)
+        for index, message in enumerate(messages):
+            if index == boundary:
+                result.context_frame_index = len(result)
+                result.append(RichUserMessage((RichTextBlock(self._context_frame(include_memory=not system, request_context=request_context)),)))
             if isinstance(message, UserMessage):
                 blocks: list[object] = [RichTextBlock(message.content)]
                 for attachment in message.attachments:
@@ -642,6 +674,9 @@ class MeidoProvider:
                     ),
                     timestamp=message.timestamp,
                 ))
+        if boundary == len(messages):
+            result.context_frame_index = len(result)
+            result.append(RichUserMessage((RichTextBlock(self._context_frame(include_memory=not system, request_context=request_context)),)))
         return result
 
     def _context_frame(self, *, include_memory=True, request_context='') -> str:
@@ -652,7 +687,7 @@ class MeidoProvider:
     def _structured_system_prompt(self, system: str, *, include_context=True, tool_prompt='', request_context='') -> str:
         if not system:
             return self.role_system_prompt(include_context=include_context, tool_prompt=tool_prompt, request_context=request_context)
-        return "\n\n".join(part for part in (system, self.required_context, self.capability_prompt, tool_prompt,
+        return "\n\n".join(part for part in (system, self.stable_memory, self.required_context, self.capability_prompt, tool_prompt,
             self._context_frame(include_memory=False, request_context=request_context) if include_context else '') if part)
 
     def role_system_prompt(self, *, include_context=True, tool_prompt='', request_context='') -> str:
@@ -666,6 +701,7 @@ class MeidoProvider:
             f"回复约束：{profile.responseConstraints}" if profile.responseConstraints else "",
             f"称呼用户：{profile.nickname}" if profile.nickname else "",
             CHAT_BEHAVIOR_PROMPT,
+            self.stable_memory,
             self.required_context,
             self._context_frame(request_context=request_context) if include_context else '',
             self.capability_prompt,
@@ -673,7 +709,7 @@ class MeidoProvider:
         ] if part)
 
     def _combined_memory_context(self, *, tool_prompt='', request_context='') -> str:
-        return "\n\n".join(part for part in (CHAT_BEHAVIOR_PROMPT, self.required_context, self._context_frame(request_context=request_context),
+        return "\n\n".join(part for part in (CHAT_BEHAVIOR_PROMPT, self.stable_memory, self.required_context, self._context_frame(request_context=request_context),
             self.capability_prompt, tool_prompt) if part)
 
     def _role_with_context(self, *, tool_prompt='', request_context='') -> Role:

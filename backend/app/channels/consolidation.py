@@ -7,8 +7,12 @@ its own cursor and never advances the conversation maintenance cursor.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import inspect
+import json
 from collections.abc import Callable
 from datetime import datetime
+from .source_authority import source_messages
 
 
 async def finish_io(work):
@@ -41,6 +45,8 @@ class ChannelMemoryMaintenance:
         self.errors: list[str] = []
         self.closed = False
         self._deleting: set[str] = set()
+        self._locks: dict[str, asyncio.Lock] = {}
+        self.owner_documents = None
 
     def _initialize(self):
         store = self.store_provider()
@@ -52,10 +58,27 @@ class ChannelMemoryMaintenance:
                     updated_at TEXT NOT NULL, PRIMARY KEY(role_id,thread_id,sender_id)
                 );
                 CREATE TABLE IF NOT EXISTS channel_memory_cursors (
-                    thread_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL DEFAULT 0
+                    thread_id TEXT PRIMARY KEY, sequence INTEGER NOT NULL DEFAULT 0,
+                    source_stamp TEXT NOT NULL DEFAULT ''
                 );
             """)
+            if 'source_stamp' not in {row[1] for row in db.execute('PRAGMA table_info(channel_memory_cursors)')}:
+                db.execute("ALTER TABLE channel_memory_cursors ADD COLUMN source_stamp TEXT NOT NULL DEFAULT ''")
         return store
+
+    @staticmethod
+    def _source_stamp(store, thread, through):
+        from .source_authority import channel_owner_binding
+        messages = [item.model_dump(mode='json') for item in store.sessions.list_messages(thread.session_key) if item.sequence <= through]
+        senders = {str(item['metadata'].get('senderId') or '') for item in messages if item['role'] == 'user'}
+        owners = {}
+        for sender in senders:
+            binding = channel_owner_binding(store, thread.channel, thread.account_id, sender)
+            owners[sender] = {key: binding[key] for key in ('identityId', 'pairedAt')} if binding else None
+        account = store.get_account(thread.account_id)
+        messages = source_messages(messages)
+        return hashlib.sha256(json.dumps([messages, owners, account.created_at if account else None],
+            sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def profile(self, role_id: str, thread_id: str, sender_id: str) -> dict:
         store = self._initialize()
@@ -93,6 +116,12 @@ class ChannelMemoryMaintenance:
         while thread_id in self._requested and not self.closed:
             self._requested.discard(thread_id)
             try:
+                if self.owner_documents is not None:
+                    store = self.store_provider()
+                    with store._connect() as db:
+                        row = db.execute('SELECT role_id FROM channel_threads WHERE thread_id=?', (thread_id,)).fetchone()
+                    if row:
+                        self.owner_documents.resume(row[0])
                 while await self.consolidate(thread_id, listening=True):
                     pass
                 while await self.consolidate(thread_id, listening=False):
@@ -106,10 +135,32 @@ class ChannelMemoryMaintenance:
         if self.closed or not self.enabled() or assistant_message is None or assistant_message.status != "completed":
             return
         if owner:
-            await finish_io(asyncio.to_thread(self.owner_ingest, thread, user_message, assistant_message))
+            if inspect.iscoroutinefunction(self.owner_ingest):
+                await self.owner_ingest(thread, user_message, assistant_message)
+            else:
+                await finish_io(asyncio.to_thread(self.owner_ingest, thread, user_message, assistant_message))
         self.request(thread.thread_id)
 
-    async def consolidate(self, thread_id: str, *, listening: bool, today: str | None = None) -> bool:
+    async def ensure_coverage(self, role_id, session_key, message_ids):
+        store = self._initialize()
+        thread = store.get_thread(role_id, session_key.removeprefix('thread:'))
+        if thread is None or thread.session_key != session_key:
+            return False
+        wanted = set(message_ids)
+        selected = [item for item in store.sessions.list_messages(session_key) if item.id in wanted]
+        if {item.id for item in selected} != wanted:
+            return False
+        through = max((item.sequence for item in selected), default=0)
+        await self.consolidate(thread.thread_id, listening=False, through_sequence=through)
+        with store._connect() as db:
+            row = db.execute('SELECT sequence FROM channel_memory_cursors WHERE thread_id=?', (thread.thread_id,)).fetchone()
+        return row is not None and row[0] >= through
+
+    async def consolidate(self, thread_id: str, *, listening: bool, today: str | None = None, through_sequence=None) -> bool:
+        async with self._locks.setdefault(thread_id, asyncio.Lock()):
+            return await self._consolidate(thread_id, listening=listening, today=today, through_sequence=through_sequence)
+
+    async def _consolidate(self, thread_id: str, *, listening: bool, today: str | None = None, through_sequence=None) -> bool:
         if not self.enabled():
             return False
         store = self._initialize()
@@ -133,6 +184,11 @@ class ChannelMemoryMaintenance:
         with store._connect() as db:
             row = db.execute(f"SELECT sequence FROM {cursor_table} WHERE thread_id=?", (thread_id,)).fetchone()
             cursor = int(row[0]) if row else 0
+            if not listening and cursor:
+                stamp = db.execute('SELECT source_stamp FROM channel_memory_cursors WHERE thread_id=?', (thread_id,)).fetchone()[0]
+                if stamp != self._source_stamp(store, thread, cursor):
+                    db.execute("UPDATE channel_memory_cursors SET sequence=0,source_stamp='' WHERE thread_id=?", (thread_id,))
+                    cursor = 0
             if listening:
                 rows = db.execute("SELECT * FROM channel_listening_records WHERE thread_id=? AND sequence>? ORDER BY sequence LIMIT ?", (thread_id, cursor, self.BATCH_SIZE)).fetchall()
                 batch = [store.listening._message(row) for row in rows]
@@ -143,7 +199,9 @@ class ChannelMemoryMaintenance:
             else:
                 messages = [item for item in store.sessions.list_messages(thread.session_key) if item.sequence > cursor and item.status == "completed" and item.messageType == "text"]
                 # Preserve a stable recent transcript, as the desktop maintenance does.
-                batch = [item.model_dump(mode="json") for item in messages[:-12][:self.BATCH_SIZE]] if len(messages) >= 18 else []
+                selected = ([item for item in messages if item.sequence <= through_sequence] if through_sequence is not None else
+                            messages[:-20][:self.BATCH_SIZE] if len(messages) >= 30 else [])
+                batch = [item.model_dump(mode='json') for item in selected]
         if not batch:
             return False
         with store._connect() as db:
@@ -182,7 +240,11 @@ class ChannelMemoryMaintenance:
         owner_messages = [message for message in batch if message["metadata"].get("senderIsOwner") is True and message["role"] == "user"]
         if listening and owner_messages and self.owner_statements is not None:
             await self.owner_statements(thread, owner_messages)
+        elif not listening and thread.chat_type == 'group' and owner_messages and self.owner_documents is not None:
+            await self.owner_documents.commit(thread, owner_messages, listening=False)
         up_to = batch[-1]["sequence"]
+        # Freeze the source prefix, while allowing a legitimate append beyond it.
+        frozen = json.dumps(source_messages(batch), sort_keys=True, ensure_ascii=False)
         with store._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             if db.execute("SELECT 1 FROM channel_threads WHERE role_id=? AND thread_id=?", (thread.role_id, thread_id)).fetchone() is None:
@@ -201,6 +263,11 @@ class ChannelMemoryMaintenance:
             row = db.execute(f"SELECT sequence FROM {cursor_table} WHERE thread_id=?", (thread_id,)).fetchone()
             if (int(row[0]) if row else 0) != cursor:
                 return False
+            if not listening:
+                current_batch = [item.model_dump(mode='json') for item in store.sessions.list_messages(thread.session_key)
+                    if cursor < item.sequence <= up_to and item.status == 'completed' and item.messageType == 'text']
+                if json.dumps(source_messages(current_batch), sort_keys=True, ensure_ascii=False) != frozen:
+                    return False
             if store.external_memory.revision_in(db, thread.role_id, "context", thread_id) != context_revision:
                 return False
             for sender_id in valid_senders:
@@ -224,7 +291,10 @@ class ChannelMemoryMaintenance:
                     store.external_memory.advance_revision(db, thread.role_id, "member", expected["key"])
                 else:
                     store.external_memory.members.write_in(db, thread, expected["key"], **fields)
-            db.execute(f"INSERT INTO {cursor_table} VALUES(?,?) ON CONFLICT(thread_id) DO UPDATE SET sequence=excluded.sequence", (thread_id, up_to))
+            db.execute(f"INSERT INTO {cursor_table}(thread_id,sequence) VALUES(?,?) ON CONFLICT(thread_id) DO UPDATE SET sequence=excluded.sequence", (thread_id, up_to))
+            if not listening:
+                db.execute('UPDATE channel_memory_cursors SET source_stamp=? WHERE thread_id=?',
+                    (self._source_stamp(store, thread, up_to), thread_id))
         store.publish(thread.role_id, {"type": "group_memory", "roleId": thread.role_id, "threadId": thread_id})
         return True
 
@@ -252,9 +322,13 @@ class ChannelMemoryMaintenance:
                 task.cancel()
             await asyncio.gather(*tuple(self._tasks.values()), return_exceptions=True)
         self._sweeper = None
+        if self.owner_documents is not None:
+            await self.owner_documents.drain()
 
     async def begin_role_deletion(self, role_id: str) -> None:
         self._deleting.add(role_id)
+        if self.owner_documents is not None:
+            await self.owner_documents.drain(role_id)
         with self.store_provider()._connect() as db:
             threads = {row[0] for row in db.execute("SELECT thread_id FROM channel_threads WHERE role_id=?", (role_id,))}
         tasks = [task for thread_id, task in tuple(self._tasks.items()) if thread_id in threads]

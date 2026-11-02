@@ -91,7 +91,9 @@ def test_real_channel_runtime_commits_reply_only_after_confirmed_delivery(tmp_pa
     monkeypatch.setattr(main, "_runtime_tool_candidates", lambda *args, **kwargs: ())
     monkeypatch.setattr(main, "_runtime_capabilities", resolve)
     monkeypatch.setattr(main, "_role_memory_context", lambda *_args, **_kwargs: "")
-    monkeypatch.setattr(main, "memory_worker", SimpleNamespace(role_deletion_blocked=lambda *_args: False, role_lock_for=lambda *_args: worker_lock))
+    from backend.app.memory_service import MemoryService, MemoryWorker
+    from backend.app.memory_store import MemoryStore
+    monkeypatch.setattr(main, "memory_worker", MemoryWorker(MemoryService(MemoryStore(tmp_path / 'memory.db'), memory_enabled=lambda: False)))
     monkeypatch.setattr(main, "channel_memory_maintenance", SimpleNamespace(commit_turn=commit))
 
     asyncio.run(main._handle_channel_message(thread, "hello", {"messageId": user.id, "senderId": "99", "platformMessageId": "1"}, True))

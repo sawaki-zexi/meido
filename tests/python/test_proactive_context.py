@@ -127,10 +127,15 @@ def test_tick_freezes_context_then_next_tick_reads_new_version_without_granting_
     sessions, tasks = SessionStore(data / "sessions.db"), TaskRuntime(data / "tasks")
     now, host, reader = [1780000000.0], McpHost(store), ProactiveContextReader()
     seen, calls = [], []
+    memory, memory_reads = ['OLD HOST MEMORY'], []
 
     def context_reader(role_id):
         calls.append(role_id)
         return reader.read(role_id, workspace, incarnation="created")
+
+    def memory_reader(role_id):
+        memory_reads.append(role_id)
+        return '[SELF.md]\n角色身份\n[MEMORY.md]\n' + memory[0]
 
     class Decision:
         async def stream_rich_messages(self, messages, configuration, tools=(), *, max_tokens=None, cancel_check=None):
@@ -139,6 +144,7 @@ def test_tick_freezes_context_then_next_tick_reads_new_version_without_granting_
             seen.append((system, {tool["function"]["name"] for tool in tools}))
             if len(messages) == 2:
                 path.write_text("NEW CONTEXT", encoding="utf-8")
+                memory[0] = 'NEW HOST MEMORY'
                 name, arguments = "get_context_data", {}
             elif len(messages) == 4:
                 assert isinstance(json.loads(messages[-1].content[0].text), list)
@@ -151,7 +157,7 @@ def test_tick_freezes_context_then_next_tick_reads_new_version_without_granting_
 
     app = ProactiveApplication(sessions, tasks, clock=lambda: now[0], role_getter=lambda key: {"id": key},
         model_getter=lambda key: {"id": key}, mcp_host=host, adapter_factory=lambda config: Decision(),
-        context_reader=context_reader)
+        context_reader=context_reader, memory_context_reader=memory_reader)
     app.configure("role", AutonomyConfig(), expected_revision=0)
     assert calls == [] and app.query("role")["runs"] == []
     async def exercise():
@@ -161,7 +167,7 @@ def test_tick_freezes_context_then_next_tick_reads_new_version_without_granting_
             app.configure("role", AutonomyConfig(activeDecisionEnabled=True,
                 decisionModelConfigurationId="explicit-model", consentRevision=1,
                 sourceGrants=[grant_for(source)]), expected_revision=1)
-            for expected in (malicious, "NEW CONTEXT"):
+            for expected, expected_memory in ((malicious, 'OLD HOST MEMORY'), ("NEW CONTEXT", 'NEW HOST MEMORY')):
                 now[0] += 1800
                 assert await app.on_clock() == 1
                 async with asyncio.timeout(10):
@@ -173,9 +179,11 @@ def test_tick_freezes_context_then_next_tick_reads_new_version_without_granting_
                         await asyncio.sleep(.01)
                 assert run["status"] == "skipped"
                 assert all(expected in prompt for prompt, _ in seen[-3:])
+                assert all(expected_memory in prompt and '[SELF.md]' in prompt for prompt, _ in seen[-3:])
                 assert all("shell" not in names and len(names) == 12 for _, names in seen[-3:])
                 assert sessions.list_messages("role:role") == []
             assert calls == ["role", "role"]
+            assert memory_reads == ['role', 'role']
         finally:
             await app.close()
             await host.close()

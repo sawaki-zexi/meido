@@ -11,11 +11,12 @@ import math
 import inspect
 import json
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 
 from ..memory_engine import MemoryMutation, MemoryScope
 from ..models import MemorySourceRef
 from .tools import AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
-from .memory_io import run_memory_io, run_async_memory_io
+from .memory_io import run_memory_io, run_async_memory_io, run_memory_read
 
 
 class RoleMemoryAccess:
@@ -56,13 +57,13 @@ class RoleMemoryAccess:
     async def query(self, request):
         if request.scope != self.scope or request.effect != "read_only" or not self.enabled():
             raise PermissionError("memory query scope/effect is not authorized")
-        return await run_async_memory_io(lambda: self.engine.query(request), timeout=self.io_timeout_seconds)
+        return await run_memory_read(lambda: self.engine.query(request), timeout=self.io_timeout_seconds)
 
     async def query_with_context(self, request, context):
         self.check_context(context)
         if request.scope != self.scope or request.effect != "read_only":
             raise PermissionError("memory query scope/effect is not authorized")
-        result = await run_async_memory_io(lambda: self.engine.query(request), signal=context.signal, timeout=self.io_timeout_seconds)
+        result = await run_memory_read(lambda: self.engine.query(request), signal=context.signal, timeout=self.io_timeout_seconds)
         self.check_context(context)
         return result
 
@@ -117,6 +118,9 @@ class MemorizeTool:
                 "steps": {"type": "array", "maxItems": 50, "description": "主人明确教授的执行步骤，可选", "items": {"type": "string", "minLength": 1, "maxLength": 1000}},
             }, "required": ["summary"], "additionalProperties": False}, risk="mutating", source="builtin:memory",
             approval="auto" if memory.enabled() else "deny", timeout_seconds=15, output_limit=12000)
+        spec = memory.engine.tool_profile().memorize
+        if spec is not None:
+            self.definition = replace(self.definition, description=spec.description, input_schema=spec.parameters, exposure='direct')
 
     async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None):
         ToolRegistry.validate_definition(self.definition, dict(arguments))
@@ -124,7 +128,7 @@ class MemorizeTool:
         summary = arguments["summary"].strip()
         if not summary:
             raise ValueError("summary must be non-empty")
-        kind = arguments.get("memory_kind", "") or "fact"
+        kind = arguments.get("memory_kind", "")
         key = hashlib.sha256(f"{kind}:{summary}".encode()).hexdigest()[:20]
         result = await self.memory.mutate(MemoryMutation(kind="remember", scope=self.memory.scope,
             summary=summary, memory_kind=kind, memory_domain=arguments.get("memory_domain", ""),
@@ -145,6 +149,9 @@ class ForgetMemoryTool:
                 "ids": {"type": "array", "maxItems": 200, "description": "已从注入条目或 recall_memory 定位并核对的 memory item_id，不能填消息 source_ref", "items": {"type": "string", "maxLength": 200}},
             }, "required": ["ids"], "additionalProperties": False}, risk="mutating", source="builtin:memory",
             approval="auto" if memory.enabled() else "deny", timeout_seconds=15, output_limit=16000, search_hint='记错了 删除记忆 撤销错误记忆 失效记忆')
+        spec = memory.engine.tool_profile().forget
+        if spec is not None:
+            self.definition = replace(self.definition, description=spec.description, input_schema=spec.parameters, exposure='direct')
 
     async def execute(self, arguments: Mapping[str, object], context: ToolContext, on_update=None):
         ToolRegistry.validate_definition(self.definition, dict(arguments))
@@ -154,5 +161,5 @@ class ForgetMemoryTool:
         return _result({"requested_ids": ids, "requested_count": len(ids), "superseded_ids": result.affected_ids,
             "missing_ids": result.missing_ids, "missing_count": len(result.missing_ids),
             "already_forgotten_ids": result.raw.get("already_forgotten_ids", []), "count": len(result.affected_ids),
-            "status": result.status, "items": [{"id": item_id, "status": "forgotten"} for item_id in result.affected_ids]},
+            "status": result.status, "items": [{"id": item_id, "status": "superseded"} for item_id in result.affected_ids]},
             error=bool(result.missing_ids), limit=self.definition.output_limit)

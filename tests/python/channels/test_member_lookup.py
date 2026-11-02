@@ -95,7 +95,7 @@ def test_id_lookup_uses_shared_profile_and_ignores_model_names(tmp_path):
     for chat, nickname in (("100", "Alice"), ("200", "艾丽丝")):
         thread = channels.ensure_channel_thread("r", "qq", "a", chat, "group")
         threads.append(thread)
-        for number in range(18):
+        for number in range(30):
             channels.append_event(thread, direction="inbound", content="RAW_CHAT_MUST_NOT_LEAK",
                 external_message_id=f"{chat}-{number}", metadata={"senderId": "22", "senderName": nickname})
         assert asyncio.run(worker.consolidate(thread.thread_id, listening=False))

@@ -2,6 +2,7 @@ import sqlite3
 import uuid
 import json
 import hashlib
+from contextlib import closing
 from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
@@ -95,6 +96,9 @@ class SessionStore:
     def __init__(self, database_path: str | Path) -> None:
         self.database_path = str(database_path)
         with sqlite3.connect(self.database_path) as connection:
+            connection.execute('''CREATE TABLE IF NOT EXISTS session_maintenance (
+                role_id TEXT NOT NULL, session_key TEXT NOT NULL, progress_json TEXT NOT NULL,
+                PRIMARY KEY(role_id, session_key))''')
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
             message_columns = {row[1] for row in connection.execute("PRAGMA table_info(messages)")}
             if "agent_runs" in tables and "run_id" in message_columns:
@@ -113,6 +117,32 @@ class SessionStore:
             elif "messages" in tables and "status" in message_columns:
                 # Legacy databases may be opened before initialize_databases.
                 connection.execute("UPDATE messages SET status = 'failed' WHERE status = 'streaming'")
+
+    def maintenance_progress(self, role_id: str, session_key: str) -> dict[str, object]:
+        """Session-owned Markdown coverage and independent consumer checkpoints."""
+        with closing(sqlite3.connect(self.database_path)) as db:
+            row = db.execute('SELECT progress_json FROM session_maintenance WHERE role_id=? AND session_key=?',
+                             (role_id, session_key)).fetchone()
+        return json.loads(row[0]) if row else {'lastSequence': 0}
+
+    def save_maintenance_progress(self, role_id: str, session_key: str, progress: dict[str, object],
+                                 *, expected=None, write_documents=None) -> None:
+        with closing(sqlite3.connect(self.database_path, timeout=15)) as db, db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT progress_json FROM session_maintenance WHERE role_id=? AND session_key=?',
+                             (role_id, session_key)).fetchone()
+            current = json.loads(row[0]) if row else {'lastSequence': 0}
+            if expected is not None and current != expected:
+                raise ValueError('会话记忆维护进度已变化')
+            if write_documents is not None:
+                write_documents()
+            db.execute('INSERT OR REPLACE INTO session_maintenance VALUES (?, ?, ?)',
+                       (role_id, session_key, json.dumps(progress, ensure_ascii=False)))
+
+    def maintenance_progress_entries(self, role_id: str):
+        with closing(sqlite3.connect(self.database_path)) as db:
+            rows = db.execute('SELECT session_key,progress_json FROM session_maintenance WHERE role_id=?', (role_id,)).fetchall()
+        return [(key, json.loads(payload)) for key, payload in rows]
 
     def open_role_session(self, role_id: str) -> SessionSummary:
         key = f"role:{role_id}"
@@ -1121,6 +1151,7 @@ class SessionStore:
     def delete_role_session(self, role_id: str) -> None:
         session_key = f"role:{role_id}"
         with sqlite3.connect(self.database_path) as connection:
+            connection.execute('DELETE FROM session_maintenance WHERE role_id=?', (role_id,))
             connection.execute("DELETE FROM messages WHERE session_key = ?", (session_key,))
             connection.execute("DELETE FROM proactive_messages WHERE message_id NOT IN (SELECT message_id FROM messages)")
             connection.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
@@ -1274,16 +1305,20 @@ class SessionStore:
                 "SELECT run_id, role_id, session_key, status, model_configuration_id, model_snapshot_json, turn_count, started_at, ended_at, cancel_reason, error FROM agent_runs WHERE role_id = ?",
                 (role_id,),
             ).fetchall()
-        return session, messages, runs
+            maintenance = connection.execute('SELECT role_id,session_key,progress_json FROM session_maintenance WHERE role_id=?', (role_id,)).fetchall()
+        return (session, messages, runs, maintenance) if maintenance else (session, messages, runs)
 
     def restore_role_session(
         self,
         role_id: str,
         snapshot: tuple[tuple[object, ...] | None, list[tuple[object, ...]], list[tuple[object, ...]]],
     ) -> None:
-        session, messages, runs = snapshot
+        session, messages, runs = snapshot[:3]
+        maintenance = snapshot[3] if len(snapshot) > 3 else []
         session_key = f"role:{role_id}"
         with sqlite3.connect(self.database_path) as connection:
+            connection.execute('DELETE FROM session_maintenance WHERE role_id=?', (role_id,))
+            connection.executemany('INSERT INTO session_maintenance VALUES (?, ?, ?)', maintenance)
             connection.execute("DELETE FROM messages WHERE session_key = ?", (session_key,))
             connection.execute("DELETE FROM proactive_messages WHERE message_id NOT IN (SELECT message_id FROM messages)")
             connection.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
