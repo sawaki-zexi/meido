@@ -338,6 +338,46 @@ describe("首页", () => {
 });
 
 describe("设置", () => {
+  it.each(['关闭', '对话导航'])("保存首个模型后通过%s返回原聊天，刷新模型并保留草稿附件", async closeWith => {
+    const model = { id: 'm1', providerId: 'openai', provider: 'OpenAI', baseUrl: 'https://example.invalid/v1', model: 'saved-first-model', apiKeyConfigured: false };
+    let saved = false;
+    const { calls } = fakeBackend({
+      'GET /api/roles': () => ({ body: { roles: [alice] } }),
+      'GET /api/roles/r1/session': emptySession,
+      'GET /api/model/providers': () => ({ body: { providers: [{ id: 'openai', label: 'OpenAI', provider: 'OpenAI', baseUrl: model.baseUrl }] } }),
+      'GET /api/model/configurations': () => ({ body: { configurations: saved ? [model] : [], activeId: saved ? model.id : null } }),
+      'GET /api/roles/r1/model-configuration': () => ({ body: { configurationId: null, effectiveConfigurationId: saved ? model.id : null } }),
+      'POST /api/model/configurations': () => { saved = true; return { body: { configuration: model } }; },
+      'POST /api/roles/r1/attachments': () => ({ body: { id: 'notes', name: 'notes.txt', mediaType: 'text/plain', size: 4, kind: 'file' } }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await chatHeading('爱丽丝');
+    const modelButton = screen.getByRole('button', { name: '选择聊天模型' });
+    await waitFor(() => expect(modelButton).toHaveTextContent('未配置模型'));
+    expect(modelButton).toBeDisabled();
+    const input = screen.getByRole('textbox', { name: '消息内容' });
+    await user.type(input, '保留这条草稿');
+    await user.upload(screen.getByLabelText('附件文件'), new File(['note'], 'notes.txt', { type: 'text/plain' }));
+    expect(await screen.findByRole('button', { name: '移除 notes.txt' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: '设置' }));
+    const settings = await dialog('设置');
+    await user.type(await within(settings).findByLabelText('模型 ID'), model.model);
+    await user.click(within(settings).getByRole('button', { name: '保存' }));
+    expect(await within(settings).findByText('配置已保存并生效')).toBeVisible();
+    if (closeWith === '关闭') await user.click(within(settings).getByRole('button', { name: '关闭' }));
+    else await user.click(within(screen.getByRole('navigation', { name: '页面' })).getByRole('button', { name: '对话' }));
+
+    await waitFor(() => expect(modelButton).toHaveTextContent(model.model));
+    expect(modelButton).toBeEnabled();
+    expect(screen.getByRole('textbox', { name: '消息内容' })).toBe(input);
+    expect(input).toHaveValue('保留这条草稿');
+    expect(screen.getByRole('button', { name: '移除 notes.txt' })).toBeVisible();
+    await user.click(modelButton);
+    expect(await within(screen.getByRole('menu')).findByRole('menuitemradio', { name: /saved-first-model/ })).toBeEnabled();
+    expect(calls.filter(call => call.method !== 'GET').map(call => call.path)).toEqual(['/api/roles/r1/attachments', '/api/model/configurations']);
+  });
+
   it("设置页遮盖的聊天不可操作，应用导航和 Escape 可返回", async () => {
     fakeBackend({
       "GET /api/roles": () => ({ body: { roles: [alice] } }),
