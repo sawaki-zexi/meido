@@ -1,7 +1,7 @@
 # 桌面聊天运行与恢复协议
 
-状态：当前实现；最后核验：2026-11-02；Refs #293、#291。
-事实来源：[服务所有者](../../backend/app/chat_runs.py)、[HTTP 宿主](../../backend/app/main.py)、[Runtime](../../backend/app/agent_runtime/runtime.py)、[客户端](../../web/src/features/chat/useChat.ts)、[HTTP 回归](../../tests/python/test_chat_lifecycle.py)。决定见 [ADR-0035](../adr/0035-service-owned-desktop-chat-runs.md)。
+状态：当前实现；最后核验：2026-11-02；Refs #293、#291、#315。
+事实来源：[服务所有者](../../backend/app/chat_runs.py)、[HTTP 宿主](../../backend/app/main.py)、[Runtime](../../backend/app/agent_runtime/runtime.py)、[客户端](../../web/src/features/chat/useChat.ts)、[客户端回归](../../web/src/features/chat/useChat.test.tsx)、[HTTP 回归](../../tests/python/test_chat_lifecycle.py)。决定见 [ADR-0035](../adr/0035-service-owned-desktop-chat-runs.md)。
 
 ## 接受与任务归属
 
@@ -22,6 +22,8 @@
 - `GET /api/roles/{roleId}/session` 返回原有 `{session, messages}`，增加 `activeRun`（无活动运行时为 `null`）。拟人补充存在时返回该桌面来源最新的未收尾执行。
 - `GET /api/roles/{roleId}/runs/{runId}` 返回 `{session, messages, run}`，始终按确切 ID 恢复。不存在、别的角色或渠道运行返回 404。
 - `GET /api/roles/{roleId}/runs/{runId}/events?after=N` 订阅严格大于 N 的事件。省略 after、游标超前或已落后于保留窗口时，发送 `run_snapshot`，客户端重新读取上述确切运行接口，以数据库历史、当前活动消息和新游标替换本地投影。这个操作不会调用模型或工具。
+
+浏览器空闲会话的定时、焦点及可见性刷新可能重叠；只有最后发起的刷新请求可以更新当前会话、消息或续接活动运行。较新请求失败时保留当前显示，也不接受更早请求的迟到快照；后续成功刷新仍可更新。角色切换、重置、卸载及新发送继续使原来源的刷新失效。这里采用 [Shiori `9814db5` 的请求序号检查](https://github.com/YinFengWindy/Shiori-Agent/blob/9814db57573b9e633b0f3dce183d21ada09dc843/apps/desktop/renderer/src/app/desktopRoleNavigation.ts#L46)，只控制浏览器读响应的采用顺序，不改变服务事件序号、历史存储或发送行为。
 
 `run` / `activeRun` 的字段：
 
