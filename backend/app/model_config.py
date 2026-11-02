@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .models import ModelConfiguration, ModelConfigurationInput
+from .models import ModelConfiguration, ModelConfigurationInput, Role
 from .ai.model_protocol import (
     ANTHROPIC_MESSAGES_API,
     AZURE_OPENAI_RESPONSES_API,
@@ -199,6 +199,9 @@ class ModelConfigurationStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self._lock = threading.RLock()
+        # API binding changes and connection deletion share this lock. Keep
+        # their existence checks and persistence in one synchronous section.
+        self.binding_lock = self._lock
 
     def _read(self) -> tuple[list[ModelConfiguration], str | None]:
         if not self.path.exists():
@@ -247,6 +250,12 @@ class ModelConfigurationStore:
             target_id = configuration_id or active_id
             item = next((item for item in configurations if item.id == target_id), None)
             return item.model_copy(deep=True) if item else None
+
+    def get_for_role(self, role: Role | None) -> ModelConfiguration | None:
+        """Resolve only the canonical binding; unresolved legacy roles stop here."""
+        if role is None or role.modelBindingRequired:
+            return None
+        return self.get(role.modelConfigurationId)
 
     def save(self, data: ModelConfigurationInput) -> ModelConfiguration:
         validate_model_configuration(data)

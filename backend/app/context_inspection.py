@@ -45,7 +45,7 @@ def _facts(host, role_id):
     # Reuse the host's inventory policy once per read boundary, never per tool.
     policy = host._runtime_capability_policy(role,
         include_channel=host._role_has_usable_channel_account(role_id))
-    return (role, host.model_configuration_store.get(role.modelConfigurationId), host.advanced_settings.get(),
+    return (role, host.model_configuration_store.get_for_role(role), host.advanced_settings.get(),
         host._role_recent_context(role_id),
         host._role_memory_context(role_id, include_recent=False, readonly=True),
         tuple(host._external_activity_blocks(role_id)),
@@ -123,7 +123,7 @@ async def _prepare(host, role_id, *, compact, thread=None, sender_id=''):
         facts, history, messages, source, owner, private = await asyncio.to_thread(_channel_read, host, thread, sender_id)
     role, configuration, advanced, memory, *_ = facts
     if configuration is None:
-        raise ValueError('该角色绑定的模型已不存在，请重新选择' if role.modelConfigurationId else '尚未配置聊天模型')
+        raise ValueError('该角色的模型连接无法使用，请重新选择模型' if role.modelBindingRequired or role.modelConfigurationId else '尚未配置聊天模型')
     settings = AdvancedSettings.model_validate(advanced['values'])
     candidates = await asyncio.to_thread(_candidates, host, role, history) if thread is None else await asyncio.to_thread(
         host._runtime_tool_candidates, role, is_channel_owner=owner, source_thread_id=thread.thread_id,

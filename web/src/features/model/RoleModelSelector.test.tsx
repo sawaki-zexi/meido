@@ -29,12 +29,14 @@ describe("角色聊天模型选择", () => {
     const menu = screen.getByRole("menu", { name: "聊天模型" });
     const option = await within(menu).findByRole("menuitemradio", { name: /claude-test/ });
     expect(within(menu).getByRole("menuitemradio", { name: /gpt-test/ })).toHaveAttribute("aria-checked", "true");
-    await user.click(option);
+    option.focus();
+    await user.keyboard("{Enter}");
 
     await waitFor(() => expect(trigger).toHaveTextContent("claude-test"));
     expect(selected).toBe("m2");
     expect(calls.find((call) => call.method === "PUT")?.body).toEqual({ configurationId: "m2" });
     expect(screen.queryByRole("menu")).toBeNull();
+    expect(trigger).toHaveFocus();
 
     view.unmount();
     render(<RoleModelSelector roleId="r1" />);
@@ -54,7 +56,7 @@ describe("角色聊天模型选择", () => {
     await user.click(trigger);
     await user.click(await within(screen.getByRole("menu")).findByRole("menuitemradio", { name: /claude-test/ }));
 
-    expect(await screen.findByRole("status")).toHaveTextContent("模型连接已不存在");
+    expect(await within(screen.getByRole("menu")).findByRole("status")).toHaveTextContent("模型连接已不存在");
     expect(trigger).toHaveTextContent("gpt-test");
   });
 
@@ -66,6 +68,68 @@ describe("角色聊天模型选择", () => {
     render(<RoleModelSelector roleId="r1" />);
     expect(await screen.findByRole("button", { name: "选择聊天模型" })).toHaveTextContent("模型已不存在");
     expect(await screen.findByRole("status")).toHaveTextContent("当前角色绑定的模型已不存在");
+  });
+
+  it.each([
+    { label: "已保存模型", configurationId: "m2", option: /claude-test/, model: "claude-test" },
+    { label: "全局模型", configurationId: null, option: /跟随全局模型/, model: "gpt-test" },
+  ])("旧绑定需要重新选择时可以明确选择$label", async ({ configurationId, option, model }) => {
+    let binding = { configurationId: null as string | null, effectiveConfigurationId: null as string | null,
+      reselectionRequired: true, error: "旧模型配置无法唯一匹配，请重新选择聊天模型" as string | null };
+    const { calls } = fakeBackend({
+      "GET /api/model/configurations": () => ({ body: { configurations: [first, second], activeId: "m1" } }),
+      "GET /api/roles/r1/model-configuration": () => ({ body: binding }),
+      "PUT /api/roles/r1/model-configuration": (init) => {
+        const selected = (JSON.parse(String(init?.body)) as { configurationId: string | null }).configurationId;
+        binding = { configurationId: selected, effectiveConfigurationId: selected ?? "m1", reselectionRequired: false, error: null };
+        return { body: binding };
+      },
+    });
+    const onChange = vi.fn();
+    const user = userEvent.setup();
+    render(<RoleModelSelector roleId="r1" onChange={onChange} />);
+    const trigger = await screen.findByRole("button", { name: "选择聊天模型" });
+    await waitFor(() => expect(trigger).toHaveTextContent("请重新选择模型"));
+    expect(await screen.findByRole("status")).toHaveTextContent("旧模型配置无法唯一匹配，请重新选择聊天模型");
+    expect(trigger).toBeEnabled();
+    expect(onChange).toHaveBeenLastCalledWith(null);
+
+    await user.click(trigger);
+    const menu = screen.getByRole("menu");
+    const target = await within(menu).findByRole("menuitemradio", { name: option });
+    expect(within(menu).getByRole("status")).toHaveTextContent("旧模型配置无法唯一匹配，请重新选择聊天模型");
+    for (const item of within(menu).getAllByRole("menuitemradio")) expect(item).toHaveAttribute("aria-checked", "false");
+    await user.click(target);
+
+    await waitFor(() => expect(trigger).toHaveTextContent(model));
+    expect(calls.find((call) => call.method === "PUT")?.body).toEqual({ configurationId });
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(onChange).toHaveBeenLastCalledWith(configurationId ? second : first);
+  });
+
+  it("旧绑定重新选择失败时保持待选择状态并允许重试", async () => {
+    const { calls } = fakeBackend({
+      "GET /api/model/configurations": () => ({ body: { configurations: [first], activeId: "m1" } }),
+      "GET /api/roles/r1/model-configuration": () => ({ body: { configurationId: null, effectiveConfigurationId: null,
+        reselectionRequired: true, error: "旧模型配置无法唯一匹配，请重新选择聊天模型" } }),
+      "PUT /api/roles/r1/model-configuration": () => ({ status: 409, body: { detail: "模型连接已变更，请重新选择" } }),
+    });
+    const onChange = vi.fn();
+    const user = userEvent.setup();
+    render(<RoleModelSelector roleId="r1" onChange={onChange} />);
+    const trigger = await screen.findByRole("button", { name: "选择聊天模型" });
+    await waitFor(() => expect(trigger).toHaveTextContent("请重新选择模型"));
+    await user.click(trigger);
+    const option = await within(screen.getByRole("menu")).findByRole("menuitemradio", { name: /跟随全局模型/ });
+    await user.click(option);
+
+    expect(await within(screen.getByRole("menu")).findByRole("status")).toHaveTextContent("模型连接已变更，请重新选择");
+    expect(trigger).toHaveTextContent("请重新选择模型");
+    expect(option).toHaveAttribute("aria-checked", "false");
+    expect(option).toBeEnabled();
+    expect(onChange).toHaveBeenLastCalledWith(null);
+    await user.click(option);
+    await waitFor(() => expect(calls.filter((call) => call.method === "PUT")).toHaveLength(2));
   });
 
   it("生成期间禁用选择器", async () => {

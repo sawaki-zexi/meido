@@ -96,6 +96,20 @@ def test_closed_role_cannot_list_windows_even_with_frozen_tool(tmp_path):
     asyncio.run(run())
 
 
+def test_unresolved_role_binding_never_uses_global_connection_or_starts_driver(tmp_path):
+    host, tools, context, driver, role = fixture_host(tmp_path)
+    role.modelBindingRequired = True
+    role.modelConfigurationId = None
+    assert host.dependency_status(role)['status'] == 'unavailable'
+
+    async def run():
+        result = await tools['computer_list_windows'].execute({}, context)
+        assert result.is_error and not driver.calls
+        await host.close()
+
+    asyncio.run(run())
+
+
 def test_new_observation_of_another_window_invalidates_previous_window(tmp_path):
     host, tools, context, driver, _ = fixture_host(tmp_path)
     async def run():
