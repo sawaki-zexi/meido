@@ -379,9 +379,8 @@ class SpawnTool:
                     if snapshot.ended_at is not None:
                         return _result(snapshot, self.tasks)
                     await asyncio.sleep(.01)
-            except asyncio.CancelledError:
-                await _finish_owned_cleanup(asyncio.to_thread(self.tasks.stop, task_id, origin))
-                raise
+            finally:
+                await _finish_owned_cleanup(asyncio.to_thread(self.tasks.cancel_owned_execution, task_id, executor))
         except (KeyError, ValueError, PermissionError):
             return _error()
 

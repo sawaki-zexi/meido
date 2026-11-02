@@ -443,6 +443,20 @@ class TaskRuntime:
         self._cancel(task_id, "cancelled")
         return self.query(task_id, origin)
 
+    def cancel_owned_execution(self, task_id: str, executor: TaskExecutor) -> None:
+        """Join host-owned cleanup even after public result access is revoked.
+
+        Only the submitter holding the original executor can use this boundary;
+        it grants no task observation or management access through an origin.
+        """
+        with self._lock:
+            active = self._active.get(task_id)
+            if active is None:
+                return
+            if active.executor is not executor:
+                raise KeyError("task does not belong to this executor")
+        self._cancel(task_id, "cancelled")
+
     def set_role_enabled(self, role_id: str, enabled: bool) -> None:
         with self._lock:
             if enabled:
