@@ -1,4 +1,5 @@
 import os
+import base64
 import asyncio
 import json
 import hashlib
@@ -137,6 +138,7 @@ from .browser_use.safety import sanitize_browser_arguments, sanitize_browser_tex
 from .browser_use.tool import BROWSER_USE_TOOL_NAMES, load_tools as load_browser_tools
 from .todo.models import TodoCreate, TodoList, TodoReminderList, TodoReminderRoleInput, TodoSettingsInput, TodoStatusInput, TodoUpdate
 from .role_card_import import MAX_SOURCE_BYTES, RoleCardImportError, parse_role_card
+from .role_card_export import RoleCardExportError, export_role_card
 from .multichannel import ChannelAccount, MultichannelStore, TelegramChannelService
 from .channels import (
     ChannelHost,
@@ -1172,6 +1174,7 @@ app.add_middleware(
     allow_origins=owner_knowledge_frontend_origins,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition", "X-Meido-Export-Summary"],
 )
 
 
@@ -1910,6 +1913,25 @@ def get_role(role_id: str) -> RoleResponse:
     if role is None:
         raise HTTPException(status_code=404, detail="角色不存在")
     return RoleResponse(role=role)
+
+
+@app.get("/api/roles/{role_id}/export")
+def download_role_card(role_id: str, format: str = "json") -> Response:
+    # Synchronous endpoint: bounded disk access and image decoding run off the
+    # event loop. Summary and download are built from the same saved snapshot.
+    try:
+        artifact = export_role_card(store, role_id, format)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="角色不存在") from None
+    except RoleCardExportError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
+    summary = base64.b64encode(json.dumps(artifact.summary, ensure_ascii=False).encode("utf-8")).decode("ascii")
+    return Response(artifact.content, media_type=artifact.media_type, headers={
+        "Content-Disposition": f"attachment; filename=\"role-card.{format}\"; filename*=UTF-8''{quote(artifact.filename, safe='')}",
+        "X-Meido-Export-Summary": summary,
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+    })
 
 
 @app.get("/api/roles/{role_id}/tools")

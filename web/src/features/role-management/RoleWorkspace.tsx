@@ -8,6 +8,7 @@ import { RoleAccountsPanel } from "../channels/RoleAccountsPanel";
 import { RoleMaterialLibrary } from "../materials/RoleMaterialLibrary";
 import { RoleIllustrationLibrary } from './RoleIllustrationLibrary';
 import { RoleEditor } from "./RoleEditor";
+import { RoleCardExport } from './RoleCardExport';
 import { RoleCapabilitiesPanel } from "./RoleCapabilitiesPanel";
 import type { RolesState } from "./useRoles";
 import type { SettingsSectionId } from '../settings/navigation';
@@ -84,6 +85,7 @@ export function RoleWorkspace({ role, state, tab, onTabChange, onBack, backLabel
     </div>
     <div className="role-workspace-content">
       {tab === "profile" && <div className="role-workspace-profile" role="tabpanel" aria-label="资料">
+        <RoleCardExport key={role.id} roleId={role.id} revision={role.updatedAt} blockedReason={state.creating ? '请先保存角色，再导出。' : state.saving ? '正在保存，请稍后导出。' : cropping ? '请完成图片裁剪并保存后再导出。' : profileDirty ? '请先保存角色修改，再导出。' : state.busy ? '请等待当前操作完成后再导出。' : ''} />
         <RoleEditor state={state} onSubmit={onSubmit} onCancel={onCancel} onDelete={onDelete} hideHeaderFields workspace formId={profileFormId} mediaOpen={mediaOpen} />
       </div>}
       {tab === "materials" && <div role="tabpanel" aria-label="素材库"><RoleIllustrationLibrary role={role} onRoleSaved={state.receiveRole} /><RoleMaterialLibrary roleId={role.id} roleName={role.name} /></div>}
