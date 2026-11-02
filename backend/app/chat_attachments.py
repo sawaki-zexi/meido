@@ -18,6 +18,8 @@ from fastapi import HTTPException, Request
 
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 MAX_ATTACHMENT_TEXT = 32_000
+MAX_DOCX_XML_BYTES = 10 * 1024 * 1024
+DOCX_READ_ERROR = "DOCX 附件无法读取，请重新导出文档或改用 TXT"
 MAX_GIF_DECODED_PIXELS = 40_000_000
 IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"}
 TEXT_SUFFIXES = {".txt", ".md", ".csv", ".json"}
@@ -63,12 +65,23 @@ def _extract_text(name: str, data: bytes) -> str:
     if suffix == ".docx":
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                xml = archive.read("word/document.xml")
+                document = archive.getinfo("word/document.xml")
+                # OPC supports stored/DEFLATE only. Other zipfile codecs can
+                # expand a whole stream internally despite a bounded read().
+                if document.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED) or document.flag_bits & 1:
+                    raise HTTPException(status_code=415, detail=DOCX_READ_ERROR)
+                if document.file_size > MAX_DOCX_XML_BYTES:
+                    raise HTTPException(status_code=413, detail="DOCX 正文展开后不能超过 10 MiB，请拆分文档或改用 TXT")
+                with archive.open(document) as source:
+                    xml = source.read(MAX_DOCX_XML_BYTES + 1)
+                if len(xml) > MAX_DOCX_XML_BYTES:
+                    raise HTTPException(status_code=413, detail="DOCX 正文展开后不能超过 10 MiB，请拆分文档或改用 TXT")
             root = ElementTree.fromstring(xml)
             text = " ".join(item.text or "" for item in root.iter() if item.tag.endswith("}t"))
             return text[:MAX_ATTACHMENT_TEXT]
-        except (KeyError, OSError, ValueError, ElementTree.ParseError):
-            raise HTTPException(status_code=415, detail="DOCX 附件无法读取")
+        except (LookupError, OSError, ValueError, EOFError, zipfile.BadZipFile,
+                NotImplementedError, zlib.error, ElementTree.ParseError):
+            raise HTTPException(status_code=415, detail=DOCX_READ_ERROR) from None
     if suffix == ".pdf":
         text_parts: list[str] = []
         for match in re.finditer(rb"(<<.*?>>)\s*stream\r?\n(.*?)\r?\nendstream", data, re.DOTALL):
@@ -149,7 +162,10 @@ def save_attachment(root: Path, filename: str, media_type: str, data: bytes, *, 
     if not output and suffix == ".pdf" and not data.startswith(b"%PDF-"):
         raise HTTPException(status_code=415, detail="PDF 附件无法读取")
     if not output and suffix == ".docx" and not zipfile.is_zipfile(io.BytesIO(data)):
-        raise HTTPException(status_code=415, detail="DOCX 附件无法读取")
+        raise HTTPException(status_code=415, detail=DOCX_READ_ERROR)
+    # Validate inbound content before creating any new attachment files.
+    # Explicit outputs send bytes without requesting document ingestion.
+    text = "" if output else _extract_text(name, data)
     # Stable output references make repeated send preparation reuse the same owned bytes.
     attachment_id = (hashlib.sha256(name.encode("utf-8") + b"\0" + data).hexdigest()[:32]
                      if output else uuid.uuid4().hex)
@@ -169,8 +185,7 @@ def save_attachment(root: Path, filename: str, media_type: str, data: bytes, *, 
         "size": len(data),
         "path": str(path.resolve()),
         "kind": "image" if normalized_type in IMAGE_TYPES else "file",
-        # Sending a file does not request document extraction or model ingestion.
-        "text": "" if output else _extract_text(name, data),
+        "text": text,
     }
     (directory / f"{attachment_id}.json").write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
     return result
