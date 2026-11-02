@@ -13,6 +13,11 @@ from .media import MediaTooLargeError, UntrustedMediaUrlError
 
 MAX_FILE_BYTES = 2 * 1024 * 1024
 FILE_TIMEOUT_SECONDS = 20.0
+IMAGE_FAILURE_REASONS = frozenset({
+    "没有可用下载地址", "图片下载失败或地址已失效", "图片超过接收大小限制",
+    "图片下载地址不可信", "图片接收超时", "图片存储空间不足或保存失败",
+    "图片数据无效", "每条消息最多接收 4 个附件",
+})
 
 
 class FileRejectedError(ValueError):
@@ -31,8 +36,17 @@ def file_description(name: str | None, error: str = "") -> str:
     return f"[文件：{name or '未命名文件'}" + (f"；{error}，未读取正文]" if error else "]")
 
 
+def image_failure(reason: str) -> dict[str, str]:
+    # Platform file names and exception messages may contain paths or signed URLs.
+    return {"kind": "image", "name": "图片",
+        "reason": reason if reason in IMAGE_FAILURE_REASONS else "图片下载失败或地址已失效"}
+
+
 def describe_failures(text: str, failures: list[dict]) -> str:
     for failure in failures:
+        if failure.get("kind") == "image":
+            text += f"\n[图片；{image_failure(failure['reason'])['reason']}，未读取图片内容]"
+            continue
         original = file_description(failure["name"])
         description = file_description(failure["name"], failure["reason"])
         text = text.replace(original, description, 1) if original in text else text + "\n" + description

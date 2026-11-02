@@ -2833,6 +2833,8 @@ async def _reject_channel_payload(adapter, payload) -> None:
 
 async def _persist_channel_attachments(event, role_id: str, *, failures: list[dict] | None = None,
                                        authorized=None) -> list[dict[str, object]]:
+    from .channels.qq_files import image_failure
+
     if not event.attachments or (event.chat_type is ChatType.GROUP and not event.triggered):
         return []
     adapter = channel_adapters.get(event.account_id)
@@ -2855,14 +2857,17 @@ async def _persist_channel_attachments(event, role_id: str, *, failures: list[di
             return []
         if getattr(item, "error", None):
             if failures is not None:
-                failures.append({"name": item.file_name or "未命名文件", "reason": item.error,
-                    "fileId": item.file_id, "size": item.source_size})
+                failures.append(image_failure(item.error) if item.kind == "image" else
+                    {"name": item.file_name or "未命名文件", "reason": item.error,
+                        "fileId": item.file_id, "size": item.source_size})
             continue
         if len(attachments) >= 4:
             break
         data = getattr(item, "data", None)
         if not isinstance(data, bytes) or len(data) > MAX_CHANNEL_MEDIA_BYTES:
             logger.warning("渠道附件超过大小限制 account=%s kind=%s", event.account_id, getattr(item, "kind", "unknown"))
+            if item.kind == "image" and failures is not None:
+                failures.append(image_failure("图片超过接收大小限制" if isinstance(data, bytes) else "图片数据无效"))
             continue
         try:
             saved = _save_channel_attachment(
@@ -2876,7 +2881,9 @@ async def _persist_channel_attachments(event, role_id: str, *, failures: list[di
             attachments.append(saved)
         except Exception as error:
             logger.warning("渠道附件保存失败 account=%s kind=%s error=%s", event.account_id, getattr(item, "kind", "unknown"), type(error).__name__)
-            if item.kind == "file" and failures is not None:
+            if item.kind == "image" and failures is not None:
+                failures.append(image_failure("图片存储空间不足或保存失败"))
+            elif item.kind == "file" and failures is not None:
                 failures.append({"name": item.file_name or "未命名文件", "reason": "附件存储空间不足或保存失败",
                     "fileId": item.file_id, "size": item.source_size})
     return attachments
@@ -3380,6 +3387,10 @@ async def _handle_channel_event_locked(event):
     content = event.content.strip() or ("[收到附件]" if event.attachments else "")
     from .channels.qq_files import describe_failures
     content = describe_failures(content, attachment_failures)
+    if any(failure.get("kind") == "image" for failure in quote_failures):
+        # Current receipt only: owner history resolves quotes independently from
+        # authorized originals, which may still contain a previously saved image.
+        content += "\n[本次未取得新的引用图片内容]"
     from .channels.reply_identity import capture_reply_identity
     metadata: dict[str, object] = {
         "hostReceivedAt": event.received_at,

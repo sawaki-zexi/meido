@@ -109,6 +109,9 @@ jobs:
               tests/python/channels/test_adapters.py::test_napcat_group_member_target_uses_private_message_shape
               tests/python/channels/test_runtime_delivery.py::test_real_channel_runtime_commits_reply_only_after_confirmed_delivery
               tests/python/channels/test_natural_turn.py::test_natural_model_receives_host_verified_sender_identity
+              tests/python/channels/test_qq_image_receiving.py
+              tests/python/channels/test_qq_file_receiving.py
+              tests/python/channels/test_natural_media.py
           - group: drift
             args: tests/python/test_drift_meme_api.py::test_owner_can_explicitly_enable_builtin_meme_maintenance_without_shell
           - group: chat-lifecycle
