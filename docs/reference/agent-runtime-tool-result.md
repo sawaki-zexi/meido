@@ -2,14 +2,16 @@
 
 状态：当前
 
-最后核验：2026-10-08
+最后核验：2026-11-02
 
 事实来源：
 
 - [`backend/app/agent_runtime/loop.py`](../../backend/app/agent_runtime/loop.py)
+- [`backend/app/agent_runtime/runtime.py`](../../backend/app/agent_runtime/runtime.py)
 - [`backend/app/agent_runtime/tools.py`](../../backend/app/agent_runtime/tools.py)
 - [`backend/app/agent_runtime/shell_tool.py`](../../backend/app/agent_runtime/shell_tool.py)
 - [`tests/python/test_agent_runtime.py`](../../tests/python/test_agent_runtime.py)
+- [`tests/python/test_tool_audit_diagnostics.py`](../../tests/python/test_tool_audit_diagnostics.py)
 
 ## 运行时结果
 
@@ -29,6 +31,8 @@ Tool 实现返回 `AgentToolResult`，Runtime 在工具调用边界补齐诊断�
 ```
 
 Tool 可以在 `details` 中提供领域字段，例如 Shell Tool 的 `exitCode`。Runtime 保留这些字段，并补齐或覆盖执行契约字段。`details` 不是映射时会放入 `value` 字段，以保证结果仍然是可记录的结构化对象。
+
+工具审计优先读取 `errorType` / `message`；错误结果也接受工具已脱敏的 `error_code` / `error`，分别补齐缺失的类型和消息。仅非空字符串会进入审计错误字段，不序列化非字符串值，也不从 `content`、参数或上游原始正文推导错误。结果持久化回调与工具结束事件使用相同规则，原始结构化结果继续保存在工具消息中。
 
 Tool 的执行策略（输入 Schema、超时和输出上限）取自运行开始时的能力快照；运行期间改变注册表或 Tool 定义不会改变当前运行。
 
