@@ -121,6 +121,17 @@ jobs:
             args: tests/python/test_drift_meme_api.py::test_owner_can_explicitly_enable_builtin_meme_maintenance_without_shell
           - group: chat-lifecycle
             args: >-
+              tests/python/test_shell_cleanup.py
+              tests/python/test_shell_tool.py::test_shell_tool_runs_allowlisted_command_in_fixed_workspace
+              tests/python/test_shell_tool.py::test_shell_tool_cancellation_terminates_process
+              tests/python/test_shell_tool.py::test_shell_tool_timeout_returns_error_result
+              tests/python/test_background_shell.py::test_async_foreground_cancellation_reaps_real_process_and_records_cancelled
+              tests/python/test_background_shell.py::test_real_child_and_grandchild_are_owned_after_stop_or_parent_exit[True]
+              tests/python/test_background_shell.py::test_background_command_survives_parent_and_returns_complete_result
+              tests/python/test_background_shell.py::test_auto_promotion_retains_hard_deadline_and_polling_never_restarts
+              tests/python/test_background_shell.py::test_task_id_does_not_grant_other_role_or_source_access_to_output_or_stop
+              tests/python/test_background_shell_api.py::test_http_background_task_can_be_observed_and_stopped_in_later_turn
+              tests/python/test_background_shell_api.py::test_channel_task_keeps_original_authority_across_turns_and_cannot_transfer_to_repaired_owner[private]
               tests/python/test_spawn_cleanup.py
               tests/python/test_spawn.py::test_child_requests_and_calls_follow_current_parent_registration
               tests/python/test_spawn.py::test_repeated_foreground_cancel_waits_for_owned_cleanup_after_real_process
