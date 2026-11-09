@@ -276,3 +276,95 @@ def test_verified_attachment_or_empty_quote_can_be_selected_without_original_row
     assert len([item for item in stored if item.role=='user']) == 1
     assert stored[-1].metadata['responseRelation']['targetQuotedFromSourceMessageId'] == stored[0].id
     assert stored[-1].metadata['responseRelation']['targetSenderId'] == '33'
+
+
+@pytest.mark.parametrize('display', ['default', 'empty', 'corrected', 'invalid-twice'])
+def test_mentioned_only_logical_member_does_not_require_a_sendable_mention(meme_turn, monkeypatch, display):
+    from backend.app.channels.models import TargetKind, target_from_chat
+    s, requests = meme_turn, []
+
+    class Model:
+        async def stream_structured_messages(self, messages, configuration, tools):
+            requests.append(messages)
+            assert '"mentionedIds": ["99", "44"]' in str(messages)
+            response = {'member_id': '44'}
+            if display == 'empty' or display == 'corrected' and len(requests) == 2:
+                response['mention_ids'] = []
+            elif display in {'corrected', 'invalid-twice'}:
+                response['mention_ids'] = ['44']
+            if len(requests) == 2:
+                assert {tool['function']['name'] for tool in tools} == {'finish_reply'}
+                assert '只能提及该群目录已观察或发现的成员' in str(messages)
+            yield ModelToolCall('finish-' + str(len(requests)), 'finish_reply', {
+                'messages': ['回应提到的成员，不改变发送会话'], 'response': response})
+            yield ModelResponseDone('tool_use')
+
+    monkeypatch.setattr(main, 'model_adapter', Model())
+    asyncio.run(main._dispatch_channel_payload(s.adapter.account_id,
+        group_message('mentioned-request', '11', '请回应这位群友', at('99'), at('44')),
+        source_adapter=s.adapter))
+    assert len(requests) == (2 if display in {'corrected', 'invalid-twice'} else 1)
+    sends = [params for op, params in s.operations if op == 'send_group_msg']
+    assert len(sends) == (0 if display == 'invalid-twice' else 1)
+    group = target_from_chat(account_id=s.adapter.account_id, chat_id='100', kind=TargetKind.GROUP)
+    known = s.channels.get_target(s.role.id, s.adapter.account_id, group.id)
+    assert '44' not in known.metadata.get('member_ids', [])
+    assert not any(target.chat_id == '44' for target in s.channels.list_targets(s.role.id, s.adapter.account_id))
+    if sends:
+        assert sends[0]['group_id'] == 100
+        assert not any(part['type'] == 'at' for part in sends[0]['message'])
+        thread = s.channels.get_thread_by_chat(s.role.id, s.adapter.account_id, '100', chat_type='group')
+        reply = s.sessions.list_messages(thread.session_key)[-1]
+        assert reply.metadata['deliveryStatus'] == 'sent'
+        assert reply.metadata['responseRelation']['triggerSenderId'] == '11'
+        assert reply.metadata['responseRelation']['targetSenderId'] == '44'
+        assert reply.metadata['responseRelation']['requestedMentionIds'] == []
+
+
+@pytest.mark.parametrize('state', ['invalidated', 'completed'])
+def test_selected_nontrigger_source_is_revalidated_at_actual_dispatch(meme_turn, monkeypatch, state):
+    from backend.app.channels.conversation_context import current_timeline
+    s, requests, changed = meme_turn, [], []
+    original_wait = s.adapter.scheduler.wait
+
+    async def wait(chat_id, kind, attempt, delay=0):
+        if attempt.message.content == 'RESPONSE_TO_SELECTED_SOURCE' and not changed:
+            thread = s.channels.get_thread_by_chat(s.role.id, s.adapter.account_id, '100', chat_type='group')
+            target = next(item for item in s.sessions.list_messages(thread.session_key)
+                if item.metadata.get('platformMessageId') == 'target-question')
+            s.channels.set_channel_turn_state(thread, target.id, state)
+            changed.append(target.id)
+            assert any(item['id'] == target.id for item in current_timeline(s.channels, thread)) is (state != 'invalidated')
+        await original_wait(chat_id, kind, attempt, delay)
+
+    class Model:
+        async def stream_structured_messages(self, messages, configuration, tools):
+            requests.append(messages)
+            if len(requests) == 1:
+                yield ModelTextDelta('PREVIOUS_CONFIRMED_ANSWER')
+            else:
+                assert 'TARGET_SOURCE_QUESTION' in str(messages)
+                yield ModelToolCall('finish', 'finish_reply', {'messages': ['RESPONSE_TO_SELECTED_SOURCE'],
+                    'response': {'message_id': 'target-question', 'quote_message_id': None, 'mention_ids': []}})
+                yield ModelResponseDone('tool_use')
+
+    monkeypatch.setattr(main, 'model_adapter', Model())
+    monkeypatch.setattr(s.adapter.scheduler, 'wait', wait)
+
+    async def run():
+        await main._dispatch_channel_payload(s.adapter.account_id,
+            group_message('target-question', '22', 'TARGET_SOURCE_QUESTION', at('99')), source_adapter=s.adapter)
+        thread = s.channels.get_thread_by_chat(s.role.id, s.adapter.account_id, '100', chat_type='group')
+        target = next(item for item in s.sessions.list_messages(thread.session_key)
+            if item.metadata.get('platformMessageId') == 'target-question')
+        s.channels.set_channel_turn_state(thread, target.id, 'queued')
+        await main._dispatch_channel_payload(s.adapter.account_id,
+            group_message('trigger-request', '11', '请解释前一位群友的问题', at('99')), source_adapter=s.adapter)
+
+    asyncio.run(run())
+    assert len(requests) == 2 and len(changed) == 1
+    sends = [params for op, params in s.operations if op == 'send_group_msg']
+    assert len(sends) == (1 if state == 'invalidated' else 2)
+    thread = s.channels.get_thread_by_chat(s.role.id, s.adapter.account_id, '100', chat_type='group')
+    replay = str(s.sessions.runtime_messages(thread.session_key))
+    assert ('RESPONSE_TO_SELECTED_SOURCE' in replay) is (state != 'invalidated')

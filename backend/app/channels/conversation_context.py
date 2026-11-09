@@ -13,6 +13,8 @@ import json
 from collections.abc import Mapping
 
 from .external_members import identity_scope, member_key
+from .directory import group_mention_member_ids
+from .models import TargetKind, make_target_id
 
 PROJECTION_VERSION = 1
 SOURCE_MARKER = '[消息来源] '
@@ -190,18 +192,26 @@ def record_fingerprint(record):
     return hashlib.sha256(render_record(record).encode()).hexdigest()
 
 
+def _timeline_record(message):
+    """Admission and dispatch share confirmed content and invalidation rules."""
+    from .delivery_projection import delivered_message
+    if message.metadata.get('channelTurnState') == 'invalidated':
+        return None
+    delivered = delivered_message(message)
+    if (delivered is None or delivered.messageType != 'text' or delivered.status != 'completed'
+            or delivered.role == 'assistant' and delivered.metadata.get('deliveryStatus') != 'sent'
+                and delivered.metadata.get('deliveryProjection') is not True):
+        return None
+    return delivered.model_dump(mode='json')
+
+
 def current_timeline(channels, thread, *, through_message_id=None, inputs=(), limit=30):
     """Only this original thread. Hearing overflow remains in its recent window."""
-    from .delivery_projection import delivered_message
     records = []
     for item in channels.sessions.list_messages(thread.session_key):
-        if item.metadata.get('channelTurnState') == 'invalidated':
-            continue
-        delivered = delivered_message(item)
-        if (delivered is not None and delivered.messageType == 'text' and delivered.status == 'completed'
-                and (delivered.role != 'assistant' or delivered.metadata.get('deliveryStatus') == 'sent'
-                     or delivered.metadata.get('deliveryProjection') is True)):
-            records.append(delivered.model_dump(mode='json'))
+        record = _timeline_record(item)
+        if record is not None:
+            records.append(record)
         if through_message_id and item.id == through_message_id:
             break
     if thread.channel == 'qq' and thread.chat_type == 'group':
@@ -346,6 +356,19 @@ class ResponseContext:
             raise ValueError('回应成员不在本轮当前会话中')
         if any(item not in observed_members for item in mentions):
             raise ValueError('提及成员不在本轮当前会话中')
+        mention_members = set()
+        supports_mentions = self.thread.channel in {'qq', 'telegram'} and self.thread.chat_type == 'group'
+        if supports_mentions:
+            identifier = make_target_id(self.thread.account_id, self.thread.chat_id, TargetKind.GROUP)
+            directory_target = self.channels.get_target(self.thread.role_id, self.thread.account_id, identifier)
+            if directory_target is not None:
+                mention_members = group_mention_member_ids(self.channels, self.thread.role_id, directory_target)
+        if mentions and not supports_mentions:
+            raise ValueError('该平台或目标不支持群成员提及')
+        if any(item not in mention_members for item in mentions):
+            raise ValueError('只能提及该群目录已观察或发现的成员')
+        if self.thread.channel == 'telegram' and any(not item.isdigit() for item in mentions):
+            raise ValueError('Telegram 提及成员必须使用数字平台 ID')
         if require_intent and target is None and not related:
             raise ValueError('自然话题需要可回查的消息依据')
         quote = self._message(value['quote_message_id']) if value.get('quote_message_id') else None
@@ -358,7 +381,7 @@ class ResponseContext:
             for identifier in _ids([source['senderId'], *source['mentionedIds'], source['replyToSenderId']]):
                 member_sources[identifier] = record['id']
         if 'mention_ids' not in value:
-            mentions = [member] if member and not self.natural and self.thread.channel == 'qq' and self.thread.chat_type == 'group' else []
+            mentions = [member] if member in mention_members and not self.natural and self.thread.channel == 'qq' else []
         source_ids = tuple(dict.fromkeys(self.quoted_sources.get(identifier, identifier) for identifier in [*([self.trigger_id] if self.trigger_id else []),
             *(item['id'] for item in [target, *related, quote] if item),
             *(member_sources[item] for item in [member, *mentions] if item)]))
@@ -388,13 +411,11 @@ class ResponseContext:
         selection = selection or self.selection
         if selection is None:
             return False
-        from .delivery_projection import delivered_message
         current = {}
         for original in self.channels.sessions.list_messages(self.thread.session_key):
-            item = delivered_message(original)
-            if item is not None and (item.role != 'assistant' or item.metadata.get('deliveryStatus') == 'sent'
-                                    or item.metadata.get('deliveryProjection') is True):
-                current[item.id] = item.model_dump(mode='json')
+            record = _timeline_record(original)
+            if record is not None:
+                current[record['id']] = record
         if self.thread.channel == 'qq' and self.thread.chat_type == 'group':
             current.update((item['id'], item) for item in self.channels.listening.recent(self.thread.role_id, self.thread.thread_id))
         return all(source_id in current and record_fingerprint(current[source_id]) == record_fingerprint(self.records[source_id])
@@ -411,6 +432,10 @@ def actual_display(metadata):
         parts = confirmed_parts(metadata)
         shown = bool(parts)
         quote = quote if any(not part.get('withoutReply') for part in parts) else None
+        if metadata.get('channel') == 'telegram':
+            confirmed_mentions = {item for part in parts if not part.get('plainText')
+                for item in _ids(part.get('mentionIds'))}
+            mentions = [item for item in mentions if item in confirmed_mentions]
     else:
         # A legacy/synthetic success without part details proves the content,
         # not how that platform displayed a quote or mention.

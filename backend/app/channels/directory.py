@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from copy import deepcopy
 from typing import Any
-from .models import Target
+from .models import Target, TargetKind
 
 MAX_RECORDS = 5000
 MAX_RESPONSE_BYTES = 1024 * 1024
@@ -19,6 +19,16 @@ QUERY_TIMEOUT = 10
 
 def observed_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def group_mention_member_ids(store, role_id, target):
+    """Read the same-group directory evidence accepted for display mentions."""
+    if target.kind is not TargetKind.GROUP:
+        return set()
+    members = {str(item) for item in target.metadata.get('member_ids', [])}
+    members.update(item.chat_id for item in store.list_targets(role_id, target.account_id)
+        if item.kind is TargetKind.GROUP_MEMBER and str(item.metadata.get('group_id') or '') == target.chat_id)
+    return members
 
 
 class DirectoryError(ValueError):

@@ -318,3 +318,58 @@ def test_private_memory_request_resolves_quotes_only_inside_its_admitted_window(
         assert facts['replyToSenderIdentity'] == '未知发送者'
     assert s.sessions.list_messages(thread.session_key)[-2].metadata['replyToContent'] == 'CACHED_PRIVATE_QUOTE_OUTSIDE_WINDOW'
     assert s.sessions.list_messages(thread.session_key)[-2].metadata['replyToSenderName'] == 'CACHED_PRIVATE_AUTHOR_NAME'
+
+
+@pytest.mark.parametrize('size', [100, 5000], ids=['one-part', 'multiple-parts'])
+@pytest.mark.parametrize('reject_entities', [False, True], ids=['entities-confirmed', 'first-part-plain-fallback'])
+def test_telegram_confirmed_mentions_follow_the_actual_entity_bearing_part(meme_turn, monkeypatch, size, reject_entities):
+    import httpx
+    from backend.app.channels.telegram import TelegramAccountAdapter
+    from backend.app.channels.delivery import OutboundScheduler
+    from backend.app.channels.models import DeliveryStatus, TargetKind, target_from_chat
+    from backend.app.multichannel import TelegramBotApi
+    from test_host import MemoryCredentials
+    s, wire = meme_turn, []
+    s.channels.credentials = MemoryCredentials()
+    account = s.channels.save_account(s.role.id, token='synthetic', enabled=True, allow_group=True)
+    s.channels.set_platform_identity(account.account_id, '99')
+    target = target_from_chat(account_id=account.account_id, chat_id='100', kind=TargetKind.GROUP, member_ids=['33'])
+    s.channels.remember_targets(s.role.id, [target])
+    relation = {'targetSenderId': '33', 'requestedMentionIds': ['33'], 'requestedQuoteMessageId': None}
+
+    def handle(request):
+        body = json.loads(request.content)
+        wire.append((body['chat_id'], body['text'], body))
+        if reject_entities and len(wire) == 1:
+            return httpx.Response(400, json={'ok': False, 'error_code': 400,
+                'description': "Bad Request: can't parse entities"})
+        return httpx.Response(200, json={'ok': True, 'result': {'message_id': len(wire)}})
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: original_client(transport=httpx.MockTransport(handle), **kwargs))
+    adapter = TelegramAccountAdapter(account.account_id, lambda: 'synthetic', TelegramBotApi(), scheduler=OutboundScheduler())
+    main.channel_host.register(adapter)
+    result = asyncio.run(main.channel_host.account_send(s.role.id, account.account_id, target.id, 'x' * size,
+        actor='owner', mention_ids=('33',), message_metadata={'responseRelation': relation}))
+    assert result.status is DeliveryStatus.SENT
+    assert any(entity.get('url') == 'tg://user?id=33' for entity in wire[0][2]['entities'])
+    confirmed_wire = wire[1:] if reject_entities else wire
+    assert len(confirmed_wire) == (2 if size > 4096 else 1)
+    assert all(chat == '100' for chat, _, _ in wire)
+    if reject_entities:
+        assert all(not options.get('entities') for _, _, options in confirmed_wire)
+    else:
+        assert confirmed_wire[0][2].get('entities')
+        assert all(not options.get('entities') for _, _, options in confirmed_wire[1:])
+    parts = result.raw['parts']
+    assert parts[0]['plainText'] is reject_entities
+    assert all(part['plainText'] is False for part in parts[1:])
+    thread = s.channels.get_thread_by_chat(s.role.id, account.account_id, '100', chat_type='group')
+    original = s.sessions.list_messages(thread.session_key)[0]
+    assert original.metadata['responseRelation'] == relation
+    replay = s.sessions.runtime_messages(thread.session_key)[0]
+    source = replay.metadata['conversationSource']
+    expected = [] if reject_entities else ['33']
+    assert source['actualMentionIds'] == expected and source['mentionedIds'] == expected
+    assert source['responseRelation']['targetSenderId'] == '33'
+    assert source['responseRelation']['requestedMentionIds'] == ['33']

@@ -14,6 +14,12 @@ from .formatting import telegram_text, telegram_chunks, utf16_length
 from .delivery import DeliveryAttempt, OutboundScheduler, StreamDelivery
 
 
+def _entity_mentions(entities, requested):
+    return [identifier for identifier in requested
+        if any(entity.get('type') == 'text_link' and entity.get('url') == f'tg://user?id={identifier}'
+            for entity in entities)]
+
+
 @dataclass(slots=True)
 class TelegramStreamSession:
     target: Target
@@ -113,13 +119,14 @@ class TelegramAccountAdapter(ChannelAdapter):
                 for content, chunk_entities in telegram_chunks(rendered, entities):
                     chunk_options = {**options, **({'entities': chunk_entities} if chunk_entities else {})}
                     operations.append((text_sender, (token, message.target.chat_id, content), chunk_options,
-                        {'kind': 'text', 'content': content}))
+                        {'kind': 'text', 'content': content, 'mentionIds': _entity_mentions(chunk_entities, mentions)}))
             for index, (sender, data, file_name) in enumerate(media):
                 caption = rendered if caption_fits and index == 0 else ''
-                chunk_options = {**options, **({'caption_entities': [entity.to_dict() for entity in entities]}
-                    if caption and entities else {})}
+                caption_entities = [entity.to_dict() for entity in entities] if caption else []
+                chunk_options = {**options, **({'caption_entities': caption_entities} if caption_entities else {})}
                 operations.append((sender, (token, message.target.chat_id, data, file_name),
-                    {**chunk_options, 'caption': caption}, {'kind': 'media', 'content': caption, 'fileName': file_name, 'attachmentIndex': index}))
+                    {**chunk_options, 'caption': caption}, {'kind': 'media', 'content': caption, 'fileName': file_name,
+                        'attachmentIndex': index, 'mentionIds': _entity_mentions(caption_entities, mentions)}))
         except Exception as error:
             return DeliveryResult(DeliveryStatus.FAILED, message.target, error=type(error).__name__)
         async def send_part(part):
