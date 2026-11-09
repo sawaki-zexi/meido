@@ -110,6 +110,10 @@ jobs:
               tests/python/channels/test_adapters.py::test_napcat_group_member_target_uses_private_message_shape
               tests/python/channels/test_runtime_delivery.py::test_real_channel_runtime_commits_reply_only_after_confirmed_delivery
               tests/python/channels/test_natural_turn.py::test_natural_model_receives_host_verified_sender_identity
+              tests/python/channels/test_natural_turn.py::test_natural_reply_scoped_real_message_and_no_tools
+              tests/python/channels/test_natural_turn.py::test_forged_tool_call_never_executes_or_sends
+              tests/python/channels/test_natural_turn.py::test_explicit_at_or_quote_preempts_natural_and_preserves_tools
+              tests/python/channels/test_natural_capability_scope.py
               tests/python/channels/test_qq_image_receiving.py
               tests/python/channels/test_qq_file_receiving.py
               tests/python/channels/test_attachment_turn.py
@@ -181,6 +185,7 @@ jobs:
               tests/python/test_current_tool_registry.py
               tests/python/test_tool_namespace_context.py
               tests/python/test_tool_exposure_contract.py
+              tests/python/test_capability_scope.py
               tests/python/channels/test_group_owner_identity.py
               tests/python/test_role_capabilities.py
               tests/python/test_capability_skills.py

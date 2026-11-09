@@ -1,6 +1,6 @@
 # 聊天表达与查证提示
 
-状态：当前实现；最后核验：2026-10-30；Refs #275、#277。
+状态：当前实现；最后核验：2026-11-09；Refs #275、#277、#341。
 事实来源：[共同提示](../../backend/app/agent_runtime/conversation_prompt.py)、[Provider](../../backend/app/agent_runtime/meido_provider.py)、[分条协议](../../backend/app/agent_runtime/natural_reply.py)、[模型请求验证](../../tests/python/test_natural_reply_api.py)。
 
 ## 表达与发送协议分开
@@ -20,6 +20,18 @@
 提示要求区分空结果、失败与成功；实际执行、工具授权和输出保存仍由原 Runtime 负责。网页内容和搜索材料不被当成可以改角色或权限的指令。基础表达和事实规则随最小回退保留；#277 的硬预算回退保留能装入完整预算的已授权业务工具，装不下则明确失败，可省略可选记忆和名称目录，不改变持久授权或历史。
 
 #277 后续按 Shiori `21e68d99` 补齐工具路由、独立委托、显式记忆写入/来源纠错及历史回溯指引。只有当前请求存在相应工具才给该工具的操作说明；仅有 finish_reply 时仍明确没有业务工具。已注入完整技能直接遵循，未载入且有可读路径才建议读取 SKILL.md；不扩大文件根。完整工具分类与适配差异见[核验报告](../research/shiori-tool-exposure-and-guidance-2026-10-30.md)。
+
+## 本轮执行限制与历史能力表述
+
+当前可见名称限定本次请求能调用的工具。无业务工具或仅有回复协议时，提示要求解释为本轮不能执行，不能据此推断角色永久没有相关能力；不增加工具、发现能力或自动切换为主人任务。旧能力声明、其他角色清单和当前聊天补充也不授予本轮调用权限。
+
+已确认的历史发言与结果可以作为过去事实承接，但不证明当前依赖可用或新操作已完成。工具可见、依赖未知、依赖明确不可用、实际成功执行分别处理：未知保持尚未核验，明确不可用按当前证据说明限制，完成必须有真实结果或回执。
+
+[最终 HTTP 请求回归](../../tests/python/test_capability_scope.py)覆盖无工具、仅回复协议、工具可见及未知/不可用依赖、历史成功事实；[渠道回归](../../tests/python/channels/test_natural_capability_scope.py)通过本地受控平台和模型验证明确 @ 请求后的自然补充保留确认送达的助手发言、工具仍为空，伪造业务调用不会执行或投递。测试验证请求契约与权限边界，不验证真实模型措辞质量或生图服务可用性。
+
+此基线的自然接话仍是单次决策；#339 的规划/表达双阶段尚未合入，本票没有导入其实现。双阶段端到端验证留待该流程集成；也没有补齐普通输入与旁听的时间线，现有历史投影范围保持不变。
+
+固定来源：[Shiori `467a97d` minimal prompting](https://github.com/YinFengWindy/Shiori-Agent/blob/467a97d1749b6f5aa7929f80c4304bc3732e989b/apps/backend/agent/prompting/minimal.py)将工具关闭限定于请求，并保留上下文和结果事实；[Tulpa `6753a28` turn handling](https://github.com/fumingyang2004/Tulpa/blob/6753a28a9757c93c0ad34ed54064965df2cb081c/chatlocal/mcp_chat_turns.py)区分当前参与状态与已发生事实。这里仅借鉴这种边界，不移植其参与或权限机制。
 
 ## 条件化技能
 
