@@ -258,16 +258,32 @@ def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_
         from .memory_engine import MemoryCoverageRequest
         if not await asyncio.to_thread(authorized):
             return False
-        sources = {session_key: ids}
-        if history is not None:
-            sources = {}
-            for message in await asyncio.to_thread(history.read):
-                if message.id in ids:
-                    sources.setdefault(message.sessionKey, []).append(message.id)
-        for source_session, source_ids in sources.items():
+        if history is None and source is None and session_key != f'role:{role_id}':
+            return False
+        messages = (await asyncio.to_thread(history.read) if history is not None else
+                    await asyncio.to_thread(session_store.list_messages, session_key))
+        wanted = set(ids)
+        selected = [message for message in messages if message.id in wanted]
+        # Validate the complete frozen window before projecting ordinary dialogue
+        # for extraction. Tool receipts and internal completions remain covered by
+        # the same history fingerprint and authorization, not the text-only cursor.
+        if {message.id for message in selected} != wanted or any(
+            message.status != 'completed' or message.messageType not in
+                {'text', 'tool_call', 'tool_result', 'internal_completion', 'desktop_push'}
+            for message in selected
+        ):
+            return False
+        sources = {}
+        for message in selected:
+            sources.setdefault(message.sessionKey, []).append(message)
+        for source_session, source_messages in sources.items():
             if source_session.startswith('thread:') and (not owner or source is not None and source.chat_type == 'group'):
-                if not await channel_memory_maintenance.ensure_coverage(role_id, source_session, source_ids):
+                if not await channel_memory_maintenance.ensure_coverage(role_id, source_session,
+                    [message.id for message in source_messages]):
                     return False
+                continue
+            source_ids = [message.id for message in source_messages if message.messageType == 'text']
+            if not source_ids:
                 continue
             request = MemoryCoverageRequest(MemoryScope(role_id, f'role:{role_id}'), source_session, tuple(source_ids),
                                            required=memory_required)
