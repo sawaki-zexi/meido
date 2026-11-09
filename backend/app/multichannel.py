@@ -1696,6 +1696,57 @@ class MultichannelStore:
         return ChannelThread(str(row["thread_id"]), str(row["session_key"]), str(row["role_id"]), str(row["channel"]), str(row["account_id"]), str(row["chat_id"]), str(row["chat_type"]), str(row["title"]), str(row["last_activity"]), _loads(row["metadata_json"]))
 
 
+def _telegram_skill_invocation_text(content: str, entities: object) -> str:
+    """Exclude native code/quotes from temporary authority, not saved text."""
+    if entities is None:
+        return content
+    if not isinstance(entities, list):
+        return ''
+    try:
+        raw = content.encode('utf-16-le')
+    except UnicodeError:
+        return ''
+    units = len(raw) // 2
+
+    def split_surrogate(position):
+        return (0 < position < units
+            and 0xD800 <= int.from_bytes(raw[(position - 1) * 2:position * 2], 'little') <= 0xDBFF
+            and 0xDC00 <= int.from_bytes(raw[position * 2:(position + 1) * 2], 'little') <= 0xDFFF)
+
+    ranges = []
+    for entity in entities:
+        if not isinstance(entity, Mapping):
+            return ''
+        kind = entity.get('type')
+        if not isinstance(kind, str):
+            return ''
+        if kind not in {'code', 'pre', 'blockquote', 'expandable_blockquote'}:
+            continue
+        offset, length = entity.get('offset'), entity.get('length')
+        if (type(offset) is not int or type(length) is not int or offset < 0 or length <= 0
+                or offset + length > units or split_surrogate(offset) or split_surrogate(offset + length)):
+            # An invalid code/quote range cannot prove which text is direct.
+            return ''
+        ranges.append((offset, offset + length))
+    if not ranges:
+        return content
+    merged = []
+    for start, end in sorted(ranges):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = merged[-1][0], max(end, merged[-1][1])
+        else:
+            merged.append((start, end))
+    masked = bytearray(raw)
+    for start, end in merged:
+        for position in range(start, end):
+            unit = raw[position * 2:(position + 1) * 2]
+            if unit not in {b'\n\x00', b'\r\x00'}:
+                # Non-whitespace placeholders preserve line layout without
+                # turning a real later invocation into indented Markdown code.
+                masked[position * 2:(position + 1) * 2] = b'\xfc\xff'
+    return masked.decode('utf-16-le')
+
+
 class TelegramChannelService:
     """Normalize Telegram updates and persist isolated private/group threads."""
 
@@ -1941,7 +1992,9 @@ class TelegramChannelService:
         if not accepted:
             return False
         if self.on_message is not None:
-            metadata = {**metadata, "messageId": getattr(stored_message, "id", None), '_skillInvocationText': raw_content}
+            invocation_entities = message.get('entities') if message.get('text') else message.get('caption_entities')
+            metadata = {**metadata, "messageId": getattr(stored_message, "id", None),
+                '_skillInvocationText': _telegram_skill_invocation_text(raw_content, invocation_entities)}
             if history is not None:
                 history.include_current(stored_message.id)
                 metadata["ownerHistory"] = history.snapshot()

@@ -428,3 +428,71 @@ def test_paired_channel_owner_code_keeps_its_original_indentation_before_manual_
     thread = channels.get_thread_by_chat(role['id'], account.account_id, '11', chat_type='private')
     user = next(item for item in sessions.list_messages(thread.session_key) if item.role == 'user')
     assert '_skillInvocationText' not in user.metadata and 'hostSkillInvocationText' not in user.metadata
+
+
+@pytest.mark.parametrize('body,expected', [
+    pytest.param({'text': '$manual', 'entities': [{'type': 'code', 'offset': 0, 'length': 7}]}, set(), id='native-code'),
+    pytest.param({'text': '$manual', 'entities': [{'type': 'pre', 'offset': 0, 'length': 7}]}, set(), id='native-pre'),
+    pytest.param({'caption': '$manual', 'caption_entities': [{'type': 'code', 'offset': 0, 'length': 7}]}, set(), id='caption-code'),
+    pytest.param({'text': '😀 $manual', 'entities': [{'type': 'code', 'offset': 3, 'length': 7}]}, set(), id='utf16-emoji-prefix'),
+    pytest.param({'text': '$manual $direct', 'entities': [{'type': 'code', 'offset': 0, 'length': 7}]}, {'direct'}, id='direct-after-code'),
+    pytest.param({'text': '😀 $manual $direct', 'entities': [{'type': 'pre', 'offset': 3, 'length': 7}]}, {'direct'}, id='utf16-direct-after-pre'),
+    pytest.param({'text': '$direct $manual', 'entities': [{'type': 'code', 'offset': 8, 'length': 7}]}, {'direct'}, id='direct-before-code'),
+    pytest.param({'caption': '$manual $direct', 'caption_entities': [{'type': 'pre', 'offset': 0, 'length': 7}],
+        'entities': [{'type': 'code', 'offset': 8, 'length': 7}]}, {'direct'}, id='caption-uses-caption-entities'),
+    pytest.param({'text': '$manual $direct', 'entities': [{'type': 'code', 'offset': 0, 'length': 7}],
+        'caption_entities': [{'type': 'code', 'offset': 8, 'length': 7}]}, {'direct'}, id='text-uses-text-entities'),
+    pytest.param({'text': '$manual', 'entities': [{'type': 'blockquote', 'offset': 0, 'length': 7}]}, set(), id='native-quote'),
+    pytest.param({'text': '$manual', 'entities': [{'type': 'expandable_blockquote', 'offset': 0, 'length': 7}]}, set(), id='native-expandable-quote'),
+    pytest.param({'text': '$manual $direct', 'entities': [{'type': 'code', 'offset': -1, 'length': 7}]}, set(), id='malformed-negative-offset'),
+    pytest.param({'text': '$manual', 'entities': [{'type': 'pre', 'offset': 0, 'length': 99}]}, set(), id='malformed-outside-text'),
+    pytest.param({'text': '😀 $manual', 'entities': [{'type': 'code', 'offset': 1, 'length': 1}]}, set(), id='malformed-surrogate-boundary'),
+    pytest.param({'text': '$manual', 'entities': [{'type': 'code', 'offset': True, 'length': 7}]}, set(), id='malformed-boolean-offset'),
+    pytest.param({'text': '$manual', 'entities': [{'type': ['code'], 'offset': 0, 'length': 7}]}, set(), id='malformed-entity-kind'),
+    pytest.param({'text': '$manual', 'entities': [{'type': 'bold', 'offset': 0, 'length': 7}]}, {'manual'}, id='ordinary-formatting-preserved'),
+    pytest.param({'text': '$manual'}, {'manual'}, id='plain-direct-preserved'),
+])
+def test_paired_telegram_native_code_and_quotes_never_supply_manual_authority(api, tmp_path, monkeypatch, body, expected):
+    from backend.app.multichannel import TelegramChannelService
+    from backend.app.agent_runtime.skills import explicit_skill_ids
+    from backend.app.agent_runtime.skill_discovery import SkillReadTool
+    from backend.app.agent_runtime.provider import CancellationToken
+    from backend.app.agent_runtime.tools import ToolContext
+    from test_multichannel import FakeTelegram
+    client, _, sessions, _ = api
+    monkeypatch.setattr(main, 'data_root', tmp_path / 'data')
+    role_id = client.post('/api/roles', json={'name': '原生格式边界', 'profile': {'profile': '本地夹具'}}).json()['role']['id']
+    library = main._skill_library(role_id)
+    saved = {name: library.save(method(name, manual=True, body=f'NATIVE_{name.upper()}_BODY')) for name in ('manual', 'direct')}
+    library.update_settings(enabled=True)
+    channels = main.multichannel_store
+    account = channels.save_account(role_id, token='bot-secret', enabled=True)
+    code = channels.create_pairing_code(role_id)
+    assert channels.consume_pairing_code(code, role_id=role_id, channel='telegram', scope='platform',
+        platform_user_id='11', account_id=account.account_id, chat_id='11')
+    observed = []
+
+    async def on_message(thread, content, metadata, owner):
+        assert owner is True
+        direct_text = metadata['_skillInvocationText']
+        state = SkillRun(library, role_id=role_id, session_key=thread.session_key, run_id='native-callback',
+            prompt=direct_text, explicit_ids=explicit_skill_ids(direct_text))
+        prompt = state.prompt_for([], state.capture())
+        context = ToolContext(role_id, thread.session_key, 'native-callback', CancellationToken())
+        for name, document in saved.items():
+            assert (f'NATIVE_{name.upper()}_BODY' in prompt) is (name in expected)
+            read = await SkillReadTool(state).execute({'ref': document['ref']}, context)
+            assert read.is_error is (name not in expected)
+            if read.is_error:
+                assert 'manual-only skill requires explicit activation' in read.content
+        observed.append((thread, content))
+
+    service = TelegramChannelService(channels, account.account_id, transport=FakeTelegram(), on_message=on_message)
+    message = {'message_id': 700, 'chat': {'id': 11, 'type': 'private'}, 'from': {'id': 11, 'first_name': '主人'}, **body}
+    assert asyncio.run(service.handle_update(account.account_id, {'update_id': 700, 'message': message}))
+    assert len(observed) == 1
+    original = str(body.get('text') or body.get('caption') or '').strip()
+    assert observed[0][1] == original
+    stored = next(item for item in sessions.list_messages(observed[0][0].session_key) if item.role == 'user')
+    assert stored.content == original
+    assert '_skillInvocationText' not in stored.metadata
