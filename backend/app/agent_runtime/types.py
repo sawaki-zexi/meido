@@ -39,6 +39,9 @@ class UserMessage:
     role: Literal["user"] = "user"
     timestamp: int | None = None
     source_message_ids: tuple[str, ...] = field(default=(), compare=False)
+    # Host projection for summary/inspection. User-authored text is never
+    # parsed as provenance; the same projection is rendered in content.
+    source_context: dict[str, object] | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)

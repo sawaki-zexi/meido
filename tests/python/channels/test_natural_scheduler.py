@@ -134,3 +134,25 @@ async def test_shared_quoted_ancestor_invalidates_old_answer(setup):
     await start(s,item('2','other',replyTo='ancestor'))
     s.block.set(); await s.clock.advance(0)
     assert s.calls==[('1',),('1','2')]
+
+
+@async_test
+async def test_explicit_turn_away_takes_unmarked_followups_out_of_original_topic(setup):
+    s=setup; s.block=asyncio.Event()
+    await start(s,item('1')); await s.clock.advance(1)
+    await start(s,item('2',mentionedIds=['other-conversation']))
+    await start(s,item('3'))
+    s.block.set(); await s.clock.advance(0)
+    assert s.calls==[('1',)] and s.sent==['hello']
+
+
+@async_test
+async def test_quote_rejoins_topic_after_explicit_turn_away(setup):
+    s=setup; s.block=asyncio.Event()
+    await start(s,item('1')); await s.clock.advance(1)
+    await start(s,item('2',mentionedIds=['other-conversation']))
+    await start(s,item('3'))
+    await start(s,item('4',replyTo='1'))
+    await start(s,item('5'))
+    s.block.set(); await s.clock.advance(0)
+    assert s.calls==[('1',),('1','2','3','4','5')] and s.sent==['hello']

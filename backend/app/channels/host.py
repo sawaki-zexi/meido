@@ -743,6 +743,8 @@ class ChannelHost:
                 _, pending_message = self.store.append_event(thread, direction="outbound", content=content,
                     external_message_id=None, role="assistant", status="pending",
                     metadata={**dict(message_metadata or {}), "naturalReply": source_kind == 'natural',
+                        'sourceRunId': source_run_id, 'sourceSessionKey': source_session_key,
+                        'sourceThreadId': source_thread_id,
                         "deliveryAttemptId": attempt_id, "deliveryStatus": "pending", "attachments": attachment_metadata})
             dispatch_cancelled = False
             latest_details = {}
@@ -835,6 +837,7 @@ class ChannelHost:
                 "deliveryStatus": result.status.value,
                 "platformMessageId": result.platform_message_id,
                 "mentionIds": list(mention_ids),
+                "replyTo": reply_to_message_id,
                 "messageThreadId": message_thread_id,
                 "error": result.error,
                 "attachments": attachment_metadata,

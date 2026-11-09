@@ -440,9 +440,11 @@ class MemoryMaintenance:
 
     @staticmethod
     def _message_signature(messages: list[Message]) -> list[list[object]]:
+        from .channels.conversation_context import PROJECTION_VERSION
         return [[message.id, message.sessionKey, message.role, message.status,
                  message.content, message.createdAt.isoformat(),
-                 json.dumps(message.metadata, ensure_ascii=False, sort_keys=True)]
+                 json.dumps(message.metadata, ensure_ascii=False, sort_keys=True),
+                 *([PROJECTION_VERSION] if message.metadata.get('channel') not in {None, '', 'desktop'} else [])]
                 for message in messages]
 
     @classmethod

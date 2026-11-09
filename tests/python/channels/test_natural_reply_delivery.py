@@ -62,7 +62,9 @@ def test_qq_reply_sequences_commit_only_confirmed_prefix(meme_turn, monkeypatch,
     assert [item.content for item in replies] == delivered
     assert [item.metadata['deliveryStatus'] for item in replies] == (['sent'] * 3 if failure is None else ['sent', failure])
     history = state.sessions.runtime_messages(thread.session_key)
-    assert [item.content for item in history if item.role == 'assistant'] == (delivered if failure is None else ['第一条'])
+    assert [item.content.split('\n', 1)[-1] for item in history if item.role == 'assistant'] == (delivered if failure is None else ['第一条'])
+    assert all(item.metadata['conversationSource']['responseRelation']['triggerPlatformMessageId'] == 'natural'
+        for item in history if item.role == 'assistant')
     assert all('replySequence' not in item.metadata for item in replies)
 
 

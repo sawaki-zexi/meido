@@ -50,9 +50,10 @@ def _channel_user_content(stored: Message) -> str:
                   for item in metadata.get('attachments', []) if isinstance(item, dict) and item.get('id')]
         return "\n".join(filter(None, (stored.content, '本消息附件：' + '；'.join(labels) if labels else '')))
     kind = "群友" if metadata.get("chatType") == "group" else "访客"
-    sender = "主人" if metadata.get("senderIsOwner") is True else kind
+    sender = "主人" if metadata.get("senderIsOwner") is True else kind if metadata.get('senderIsOwner') is False else '身份未知的成员'
     name = str(metadata.get("senderName") or metadata.get("senderId") or "")
-    lines = [f"[渠道 {metadata['channel']}；chat_id={metadata.get('chatId', '')}；{sender} {name}（ID {metadata.get('senderId', '')}）]"]
+    from .channels.conversation_context import source_header
+    lines = [source_header(stored), f"[渠道 {metadata['channel']}；chat_id={metadata.get('chatId', '')}；{sender} {name}（ID {metadata.get('senderId', '')}）]"]
     if metadata.get("groupName"):
         lines.append(f"群名：{metadata['groupName']}")
     if metadata.get("mentionedIds"):
@@ -77,6 +78,15 @@ def _runtime_assistant_metadata(metadata: dict[str, Any]) -> dict[str, object]:
 
 def _runtime_assistant_message(stored: Message) -> AssistantMessage:
     content = stored.content
+    metadata = _runtime_assistant_metadata(stored.metadata)
+    if stored.metadata.get('channel') and stored.metadata.get('channel') != 'desktop':
+        from .channels.conversation_context import source_header, with_source_block, message_source
+        header = source_header(stored)
+        metadata['conversationSource'] = message_source(stored.metadata, source_id=stored.id,
+            created_at=stored.createdAt, session_key=stored.sessionKey, role=stored.role)
+        content = header + '\n' + content
+        if isinstance(metadata.get('content_blocks'), list):
+            metadata['content_blocks'] = with_source_block(metadata['content_blocks'], header)
     if stored.messageType == "desktop_push":
         raw_attachments = stored.metadata.get("attachments", [])
         attachments = raw_attachments if isinstance(raw_attachments, list) else []
@@ -84,7 +94,7 @@ def _runtime_assistant_message(stored: Message) -> AssistantMessage:
                   for item in attachments if isinstance(item, dict) and item.get('id')]
         if labels:
             content = "\n".join(filter(None, (content, "已推送附件：" + "；".join(labels))))
-    return AssistantMessage(content, metadata=_runtime_assistant_metadata(stored.metadata),
+    return AssistantMessage(content, metadata=metadata,
                             timestamp=_timestamp(stored.metadata), source_message_ids=(stored.id,))
 
 
@@ -1019,11 +1029,14 @@ class SessionStore:
                 continue
             elif stored.messageType in {"text", "internal_completion", "desktop_push"} and stored.status == "completed":
                 if stored.role == "user":
+                    from .channels.conversation_context import message_source
                     messages.append(UserMessage(
                         _channel_user_content(stored),
                         attachments=attachment_loader(stored.metadata),
                         timestamp=_timestamp(stored.metadata),
                         source_message_ids=(stored.id,),
+                        source_context=message_source(stored.metadata, source_id=stored.id, created_at=stored.createdAt,
+                            session_key=stored.sessionKey) if stored.metadata.get('channel') not in {None, '', 'desktop'} else None,
                     ))
                 elif stored.role == "assistant":
                     if (stored.metadata.get("channel") not in {None, "", "desktop"}

@@ -165,7 +165,7 @@ class GroupListeningStore:
         if any(item["metadata"].get("platformMessageId") == external_message_id for item in window):
             return None
         account = self.store.get_account(thread.account_id)
-        source = {**metadata, "channel": thread.channel, "threadId": thread.thread_id, "accountId": thread.account_id, "direction": "inbound", "platformMessageId": external_message_id, "listening": True}
+        source = {**metadata, "roleId": thread.role_id, "channel": thread.channel, "threadId": thread.thread_id, "chatId": thread.chat_id, "chatType": thread.chat_type, "accountId": thread.account_id, "direction": "inbound", "platformMessageId": external_message_id, "listening": True}
         source.pop("viaAccount", None)
         if account:
             source["viaAccount"] = account.source_snapshot()
@@ -210,21 +210,31 @@ class GroupListeningStore:
 
     def recent(self, role_id: str, thread_id: str) -> list[dict[str, Any]]:
         records = self.page(role_id, thread_id, limit=self.RECENT_LIMIT)["messages"]
-        merged = [*records, *self._windows.get(thread_id, ())]
+        merged = list({item['id']: item for item in [*records, *self._windows.get(thread_id, ())]}.values())
         merged.sort(key=lambda item: datetime.fromisoformat(item["createdAt"]))
         return merged[-self.RECENT_LIMIT:]
 
+    def enrich_reply(self, thread, platform_message_id, updates, *, authorized):
+        """Keep verified host quote facts with the original hearing source."""
+        allowed = {'replyContextVerified', 'replyToSenderId', 'receivingPlatformId', 'receivingPlatformIdentityVerified',
+            'replyToSenderIsOwner', 'replyToSenderName', 'replyToContent', 'replyQuoteAttachmentsAvailable'}
+        enriched = {key: value for key, value in updates.items() if key in allowed}
+        with self._thread_lock(thread.thread_id):
+            if not authorized(): return
+            with self.store._connect() as db:
+                row = db.execute('SELECT id,metadata_json FROM channel_listening_records WHERE thread_id=? AND external_message_id=?',
+                    (thread.thread_id, platform_message_id)).fetchone()
+                if row:
+                    meta = {**json.loads(row['metadata_json']), **enriched}
+                    if not authorized(): return
+                    db.execute('UPDATE channel_listening_records SET metadata_json=? WHERE id=?', (json.dumps(meta, ensure_ascii=False), row['id']))
+            for item in self._windows.get(thread.thread_id, ()):
+                if str(item['metadata'].get('platformMessageId') or '') == str(platform_message_id):
+                    item['metadata'] = {**item['metadata'], **enriched}
+
     def context(self, role_id: str, thread_id: str) -> str:
-        lines, budget = [], 3000
-        for item in reversed(self.recent(role_id, thread_id)):
-            meta = item["metadata"]
-            speaker = "主人" if meta.get("senderIsOwner") else meta.get("senderName") or meta.get("senderId") or "成员"
-            line = f"[{item['createdAt']}] {speaker}（ID {meta.get('senderId', '')}）：{item['content'][:200]}"
-            if len(line) + 1 > budget:
-                break
-            budget -= len(line) + 1
-            lines.append(line)
-        return "群里最近的其他消息（旁听，未触发角色）：\n" + "\n".join(reversed(lines)) if lines else ""
+        from .conversation_context import hearing_block
+        return hearing_block(self.recent(role_id, thread_id))
 
     def clear(self, role_id: str, thread_id: str) -> int:
         thread = self.group(role_id, thread_id)

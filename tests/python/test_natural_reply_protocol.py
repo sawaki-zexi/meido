@@ -150,7 +150,7 @@ def test_cancel_during_format_correction_closes_stream_without_draft_or_final_re
 
 def test_business_call_replay_preserves_provider_signatures_without_draft_text():
     from backend.app.agent_runtime.meido_provider import MeidoProvider
-    from backend.app.ai.model_types import ModelToolCallBlock, ModelThinkingBlock
+    from backend.app.ai.model_types import ModelToolCallBlock, ModelThinkingBlock, ModelAssistantMessage
     class Provider:
         async def stream_response(self, **request):
             yield AssistantDoneEvent(AssistantMessage('private draft', (ToolCall('signed', 'lookup'),),
@@ -163,7 +163,8 @@ def test_business_call_replay_preserves_provider_signatures_without_draft_text()
         return [event async for event in NaturalReplyProvider(Provider()).stream_response(
             model='', system='', messages=(), tools=(), signal=CancellationToken())]
     message = asyncio.run(scenario())[0].message
-    replay = MeidoProvider(None, None, None)._rich_messages('test system', [message])[-1]
+    replay = next(item for item in MeidoProvider(None, None, None)._rich_messages('test system', [message])
+        if isinstance(item, ModelAssistantMessage))
     assert message.content == ''
     assert [type(block) for block in replay.content] == [ModelThinkingBlock, ModelToolCallBlock]
     assert replay.content[-1].thought_signature == 'required-signature'
