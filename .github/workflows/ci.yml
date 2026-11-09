@@ -119,6 +119,8 @@ jobs:
               tests/python/channels/test_attachment_turn.py
               tests/python/channels/test_owner_quoted_attachment.py
               tests/python/channels/test_media_binding_scope.py
+              tests/python/test_novelai_management.py
+              tests/python/test_novelai_channel.py::test_guest_qq_turn_can_generate_and_deliver_only_to_its_original_group
               tests/python/channels/test_shared_owner_runtime.py
               tests/python/channels/test_natural_media.py
           - group: drift
@@ -126,6 +128,7 @@ jobs:
           - group: chat-lifecycle
             args: >-
               tests/python/test_shell_cleanup.py
+              tests/python/test_novelai_background_faults.py::test_exact_background_stop_joins_runtime_and_seals_late_provider_delivery
               tests/python/test_shell_tool.py::test_shell_tool_runs_allowlisted_command_in_fixed_workspace
               tests/python/test_shell_tool.py::test_shell_tool_cancellation_terminates_process
               tests/python/test_shell_tool.py::test_shell_tool_timeout_returns_error_result

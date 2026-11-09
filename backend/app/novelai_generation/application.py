@@ -136,6 +136,11 @@ class NovelaiApplication:
         return bool(not self._closed and role is not None and not self.is_role_deleting(role.id)
                     and self.settings.public()['enabled'])
 
+    def management_enabled(self, role):
+        # Managing an accepted attempt does not require permission for a new
+        # paid request, a usable credential, or an unsealed publication.
+        return bool(not self._closed and role is not None and not self.is_role_deleting(role.id))
+
     def availability(self, role, *, include_usage=True, scene=False):
         config, _ = self._configuration()
         if self._closed or role is None or self.is_role_deleting(role.id):
@@ -514,6 +519,33 @@ class NovelaiApplication:
             raise KeyError('generation unavailable')
         return self.ledger.get(role_id, row[0], generation_id, attempt_id=attempt_id)
 
+    def _source_attempt(self, source, generation_id, attempt_id):
+        role = self.roles.get(source.origin.role_id)
+        if (not self.management_enabled(role) or source.denial(self.channels)
+                or source.channel_source is not None and not source.channel_source.owner_context):
+            raise PermissionError('generation unavailable in current source')
+        view = self.ledger.get(role.id, source.source_scope, generation_id, attempt_id=attempt_id)
+        row = self.ledger.attempt(view['attemptId'])
+        original = GenerationContext.from_dict(json.loads(row['origin']))
+        if original.denial(self.channels):
+            raise PermissionError('generation unavailable in current source')
+        return view, row, original
+
+    def source_generation(self, source, generation_id, *, attempt_id):
+        view, row, original = self._source_attempt(source, generation_id, attempt_id)
+        task = self._find_task(row, original)
+        # A pruned task is not evidence that generation or delivery succeeded;
+        # durable business facts remain available independently of task logs.
+        return {**view, 'taskStatus': task.status if task is not None else None}
+
+    async def cancel_from_source(self, source, generation_id, *, attempt_id):
+        _, row, original = self._source_attempt(source, generation_id, attempt_id)
+        # No await between the last source check and sealing publication.
+        await self._cancel_attempt(row, original)
+        # Cancellation already happened; loss of authority during cleanup must
+        # still prevent returning the original result to a revoked caller.
+        return self.source_generation(source, generation_id, attempt_id=attempt_id)
+
     def attachment_generation(self, role_id, attachment_id, message_id):
         """Resolve a real currently displayed image through the canonical outbox."""
         if self.roles.get(role_id) is None or self.is_role_deleting(role_id):
@@ -652,6 +684,10 @@ class NovelaiApplication:
         view = self.owner_generation(role_id, generation_id, attempt_id=attempt_id)
         row = self.ledger.attempt(view['attemptId'])
         source = GenerationContext.from_dict(json.loads(row['origin']))
+        await self._cancel_attempt(row, source)
+        return self.owner_generation(role_id, generation_id, attempt_id=row['attempt_id'])
+
+    async def _cancel_attempt(self, row, source):
         try:
             self.seal_request(source)
         finally:
@@ -659,7 +695,6 @@ class NovelaiApplication:
             if task is not None and task.ended_at is None:
                 await finish_io(asyncio.to_thread(self.tasks.stop, task.task_id, source.origin))
             self._reconcile_terminal(row['attempt_id'])
-        return self.owner_generation(role_id, generation_id, attempt_id=row['attempt_id'])
 
     async def attach_ui_completion(self, source: GenerationContext, attempt_id):
         return await self._publish_owned(source, attempt_id)
@@ -1066,6 +1101,11 @@ class NovelaiApplication:
         from .tools import GenerateImageTool
         return GenerateImageTool(self, role_id, is_owner=is_owner, source_thread_id=source_thread_id,
                                  source_account_id=source_account_id, frozen_role=frozen_role)
+
+    def management_tool_for(self, role_id, *, is_owner=True, source_thread_id=None, source_account_id=None):
+        from .tools import ManageImageTool
+        return ManageImageTool(self, role_id, is_owner=is_owner, source_thread_id=source_thread_id,
+                               source_account_id=source_account_id)
 
     def router(self):
         from .api import novelai_router

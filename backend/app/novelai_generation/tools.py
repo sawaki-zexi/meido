@@ -4,7 +4,7 @@ import json
 import sqlite3
 from dataclasses import replace
 
-from ..agent_runtime.tools import AgentToolResult, ToolDefinition
+from ..agent_runtime.tools import AgentToolResult, ToolDefinition, ToolRegistry
 from ..agent_runtime.provider import CancellationToken
 from ..agent_runtime.tools import ToolContext
 from ..agent_runtime.role_image_tool import role_image_catalog
@@ -40,7 +40,8 @@ class GenerateImageTool:
             'When asked to draw from your existing portrait, use mode=img2img and base_role_image_id from inspect_role_image (avatar, card, or an illustration ID). '
             'This sends the actual reference pixels; vision support is not required. Choose the relevant portrait, not an unrelated scene. '
             'The host supplies model, sampler, size, seed, limits, delivery and a one-image default, but does not add appearance tags. '
-            'Explicit advanced fields remain accepted for owner-directed parameter reuse within the same allowlist. Uses one finite paid attempt; unknown results are never retried.'),
+            'Explicit advanced fields remain accepted for owner-directed parameter reuse within the same allowlist. Uses one finite paid attempt; unknown results are never retried. '
+            'Accepted background work is not yet generated or delivered. When manage_image is available, use its generation_id and attempt_id from the result to query or cancel this exact attempt; do not use shell task tools for image management.'),
         input_schema=_SCHEMA, risk='external', source='builtin:novelai', exposure='direct',
         external_allowed=True, timeout_seconds=330, output_limit=4000, search_hint='生图 生成图片 NovelAI 立绘 场景图')
 
@@ -102,6 +103,9 @@ class GenerateImageTool:
             accepted = result['backgroundAccepted']
             if accepted:
                 details['status'] = 'accepted'
+                if self.is_owner:
+                    details['management'] = {'tool': 'manage_image', 'generation_id': result['generationId'],
+                                             'attempt_id': result['attemptId']}
             return AgentToolResult(json.dumps(details, ensure_ascii=False), details=details,
                 is_error=not accepted and (result['status'] != 'succeeded' or bool(result['errorCode'])))
         except (GenerationUnavailable, GenerationBudgetExceeded) as error:
@@ -110,3 +114,46 @@ class GenerateImageTool:
         except (ValueError, PermissionError, KeyError, OSError, RuntimeError, sqlite3.Error):
             return AgentToolResult('生图请求未完成；请检查当前来源、配置、参数与归属历史。设置改变后需刷新工具，已出网的请求可能计费，不会自动重试。',
                 details={'status': 'rejected', 'errorCode': 'generation_not_available'}, is_error=True)
+
+
+class ManageImageTool:
+    definition = ToolDefinition(name='manage_image',
+        description=('Query or stop an existing image generation attempt owned by the current owner and conversation. '
+            'Use the exact generation_id and attempt_id returned by generate_image. This never generates, retries, resends, or changes the destination. '
+            'A successful management call only confirms that its returned facts were read: accepted is not generated or delivered. '
+            'Cancellation stops local work and suppresses unpublished output; it cannot retract sent/uncertain media or promise provider cancellation or a refund. '
+            'Generation status, taskStatus, deliveryStatus and consumption are separate; a missing taskStatus means the runtime record is unavailable, not success.'),
+        input_schema={'type': 'object', 'properties': {
+            'action': {'type': 'string', 'enum': ['get', 'cancel']},
+            'generation_id': {'type': 'string', 'minLength': 1, 'maxLength': 128},
+            'attempt_id': {'type': 'string', 'minLength': 1, 'maxLength': 128},
+        }, 'required': ['action', 'generation_id', 'attempt_id'], 'additionalProperties': False},
+        risk='mutating', source='builtin:novelai', exposure='direct', external_allowed=False,
+        timeout_seconds=15, output_limit=4000, search_hint='生图 生成进度 查询图片 停止生图 取消任务 manage_image')
+
+    def __init__(self, application, role_id, *, is_owner, source_thread_id=None, source_account_id=None):
+        self.application, self.role_id, self.is_owner = application, role_id, is_owner
+        self.source_thread_id, self.source_account_id = source_thread_id, source_account_id
+
+    async def execute(self, arguments, context, on_update=None):
+        del on_update
+        try:
+            ToolRegistry.validate_definition(self.definition, arguments)
+            if not self.is_owner:
+                raise PermissionError('owner required')
+            source = capture_tool_context(self.application.sessions, self.application.channels, context,
+                role_id=self.role_id, is_owner=True, source_thread_id=self.source_thread_id,
+                source_account_id=self.source_account_id)
+            if arguments['action'] == 'cancel':
+                view = await self.application.cancel_from_source(source, arguments['generation_id'],
+                    attempt_id=arguments['attempt_id'])
+            else:
+                view = self.application.source_generation(source, arguments['generation_id'], attempt_id=arguments['attempt_id'])
+            context.signal.raise_if_cancelled()
+            details = {key: view[key] for key in ('generationId', 'attemptId', 'taskId', 'taskStatus', 'status',
+                'backgroundAccepted', 'deliveryStatus', 'consumption', 'attachments', 'errorCode')}
+            details['action'] = arguments['action']
+            return AgentToolResult(json.dumps(details, ensure_ascii=False), details=details)
+        except (ValueError, PermissionError, KeyError, OSError, RuntimeError, sqlite3.Error):
+            return AgentToolResult('当前来源无法管理这次生图；请确认当前主人身份、原会话及准确的生成和尝试编号。',
+                details={'status': 'unavailable', 'errorCode': 'generation_management_unavailable'}, is_error=True)
