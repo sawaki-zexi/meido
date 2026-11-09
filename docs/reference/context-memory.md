@@ -1,7 +1,7 @@
 # 上下文与记忆契约
 
-状态：当前。最后核验：2026-11-02。
-事实来源：[ContextWindowProvider](../../backend/app/agent_runtime/context_provider.py)、[维护](../../backend/app/memory_maintenance.py)、[默认引擎适配](../../backend/app/memory_retrieval.py)、[优化器](../../backend/app/host_memory_optimizer.py)、[生命周期测试](../../tests/python/test_context_memory_parity.py)。
+状态：当前。最后核验：2026-11-09。
+事实来源：[ContextWindowProvider](../../backend/app/agent_runtime/context_provider.py)、[维护](../../backend/app/memory_maintenance.py)、[默认引擎适配](../../backend/app/memory_retrieval.py)、[优化器](../../backend/app/host_memory_optimizer.py)、[生命周期测试](../../tests/python/test_context_memory_parity.py)、[完整来源覆盖回归](../../tests/python/test_compaction_memory_sources.py)。
 
 ## 请求与控制
 
@@ -10,6 +10,8 @@ SELF/MEMORY 全文进入稳定 system，历史和已保存工作摘要随后排�
 `GET /api/roles/{role_id}/context-status` 独立检查实际已保存输入，`canCompact` 表示存在可压缩的完整前缀，不取决于自动阈值。`POST /api/roles/{role_id}/context-compact` 返回新状态、`compacted` 与 `reason`。成功或失败后均重新准备持久状态，因为文档覆盖可能已提交而工作摘要失败。操作不接受草稿，不创建普通回合。桌面圆环和 `/compact`、获授权渠道命令使用同一控制器。
 
 自动维护默认保留20条已完成消息，待整理部分至少10条才后台运行；渠道旁听沿既有50条/30分钟扫描。窗口需要覆盖时可强制处理选中的完整前缀。会话进度分别保存文档版本、事件发布版本和关系版本。未成功消费者重试，已确认部分不重复发布。RECENT_CONTEXT 只记录紧凑归属，来源语义使用 SHA-256 前缀印记，游标不复制整段历史。
+
+2026-11-09 核验：压缩先核验同一冻结历史中待移出的全部来源，再把普通文本交给主人 Markdown 维护。工具调用、工具结果和已确认的后台完成记录仍由完整窗口指纹与授权复核保护，不要求它们出现在事实提取文本中；未知、未完成或不可见来源不会被过滤后当作成功。旧文本整理游标保持兼容，不迁移已有数据。终态失败或取消回合中已保存的合法用户输入仍可进入完整压缩前缀，不等同于正在进行的工具交换。
 
 ## 文档与引擎
 

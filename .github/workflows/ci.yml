@@ -149,6 +149,7 @@ jobs:
             args: >-
               tests/python/test_memory_review_regressions.py
               tests/python/test_context_memory_parity.py
+              tests/python/test_compaction_memory_sources.py
               tests/python/test_host_memory_optimizer.py
               tests/python/test_memory_runtime_parity.py
               tests/python/test_embeddings.py
