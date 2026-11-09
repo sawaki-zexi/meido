@@ -6710,6 +6710,9 @@ async def _deliver_natural_channel_reply(thread, metadata, run_id, first_id, seq
         _novelai_application().scenes.complete(thread.role_id, thread.session_key, run_id)
 
 
+QQ_REPLY_FAILURE_NOTICE = "这次回复没能完成。"
+
+
 async def _run_channel_message(thread, content: str, metadata: dict[str, object], owner: bool) -> None:
     """Run one isolated network thread through the shared role runtime."""
     ordinary_snapshot = advanced_settings.get()
@@ -6787,6 +6790,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
     capabilities: CapabilityResolution | None = None
     final_content = ""
     final_sequence = ()
+    terminal_reason = None
     streamed_content = ""
     stream_queue: asyncio.Queue[str | None] | None = None
     stream_task: asyncio.Task[object] | None = None
@@ -7090,12 +7094,26 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                     queue_latest(event.message.content)
             if isinstance(event, MessageEndEvent) and isinstance(event.message, AssistantMessage) and not event.message.tool_calls:
                 final_content = event.message.content
+            if isinstance(event, AgentEndEvent):
+                terminal_reason = event.reason
         if progress is not None:
             await progress.close()
+        failed_reply = thread.channel == "qq" and terminal_reason in {"failed", "max_turns"}
+        if failed_reply:
+            # The request was accepted and may already have executed tools.
+            # Project only a safe terminal notice, never an unfinished draft or
+            # a provider error. Keep the failed run/message out of success history.
+            final_content, final_sequence = QQ_REPLY_FAILURE_NOTICE, ()
+            if final_message_id is not None:
+                message = next(item for item in session_store.list_messages(thread.session_key) if item.id == final_message_id)
+                session_store.update_message(message.id, final_content, "failed",
+                    metadata={**message.metadata, "channelFailureFeedback": terminal_reason})
         delivery_metadata: dict[str, object] | None = None
+        # Successful foreground image work is repaired by its existing outbox
+        # worker when its parent failed; it cannot be claimed as a completed reply.
         generation_reply = await _novelai_application().claim_channel_reply(thread.role_id,
-            thread.session_key, run_id, final_message_id) if final_message_id is not None else None
-        reaction_attachment = await reaction.prepare() if reaction is not None and generation_reply is None else None
+            thread.session_key, run_id, final_message_id) if final_message_id is not None and not failed_reply else None
+        reaction_attachment = await reaction.prepare() if reaction is not None and generation_reply is None and not failed_reply else None
         if reaction_attachment is not None and final_message_id is not None:
             message = next(item for item in session_store.list_messages(thread.session_key) if item.id == final_message_id)
             session_store.update_message(message.id, message.content, message.status,
