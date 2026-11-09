@@ -111,13 +111,14 @@ def test_background_summary_failure_uses_original_model_guard_and_notifies_witho
     import asyncio
     import threading
     import time
+    from copy import deepcopy
     from backend.app import main
     from backend.app.models import ModelConfiguration
     from backend.app.task_runtime import TaskOrigin
 
     client, _roles, sessions, tasks = api
     release = threading.Event()
-    requests = []
+    requests, failures = [], []
     class Adapter:
         async def stream_structured_messages(self, messages, configuration, tools):
             system = str(messages[0])
@@ -126,11 +127,12 @@ def test_background_summary_failure_uses_original_model_guard_and_notifies_witho
                     await asyncio.sleep(.01)
                 yield ModelTextDelta('PRIVATE_CHILD_RESULT')
             elif 'internal spawn completion' in system:
-                requests.append(configuration.id)
-                assert not tools and 'PRIVATE_CHILD_RESULT' in str(messages)
+                requests.append((configuration.id, deepcopy(messages), deepcopy(tools)))
                 yield ModelTextDelta('PRIVATE_PARTIAL_SUMMARY')
-                failure = TimeoutError if scenario == 'provider_timeout' else RuntimeError
-                raise failure('PRIVATE_MODEL_CONNECTION_ERROR')
+                error_type = TimeoutError if scenario == 'provider_timeout' else RuntimeError
+                failure = error_type('PRIVATE_MODEL_CONNECTION_ERROR')
+                failures.append(failure)
+                raise failure
             elif not any(item['role'] == 'tool' for item in messages):
                 yield ModelToolCall('background', 'spawn', {'task': 'controlled background research', 'run_in_background': True})
                 yield ModelResponseDone('tool_use')
@@ -162,10 +164,15 @@ def test_background_summary_failure_uses_original_model_guard_and_notifies_witho
             assert tasks.query(task_id, origin).output == 'PRIVATE_CHILD_RESULT'
             messages = [item for item in sessions.list_messages(key) if item.messageType == 'internal_completion']
             if scenario.startswith('configuration_'):
-                assert not requests and not messages
+                assert not requests and not failures and not messages
                 assert completion['status'] == 'failed' and completion['error_type'] == 'PermissionError'
             else:
-                assert requests == [configuration.id]
+                assert len(requests) == 1
+                model_id, model_messages, model_tools = requests[0]
+                assert model_id == configuration.id
+                assert not model_tools and 'PRIVATE_CHILD_RESULT' in str(model_messages)
+                assert [type(error) for error in failures] == [TimeoutError if scenario == 'provider_timeout' else RuntimeError]
+                assert str(failures[0]) == 'PRIVATE_MODEL_CONNECTION_ERROR'
                 assert completion['status'] == 'sent' and len(messages) == 1
                 content = messages[0].content
                 assert f'查询任务 {task_id}' in content and 'succeeded' in content
