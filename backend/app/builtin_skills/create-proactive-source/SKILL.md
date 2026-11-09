@@ -1,7 +1,8 @@
 ---
 id: create-proactive-source
+name: 主动来源创作
 version: 1.0.0
-description: 创建或更新主动 alert/content/context 来源，准备角色私有 MCP 源码、合成夹具及许可草稿，完成主人信任和真实后续消费。
+description: 主人明确要求创建或更新主动 alert/content/context 来源时使用；普通查询、普通技能和自动连接新服务不使用，来源信任与执行许可须另行确认。
 tools: [tool_search, mcp_list, mcp_add, list_dir, read_file, write_file, edit_file]
 activation: explicit
 ---

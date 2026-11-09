@@ -125,6 +125,7 @@ class NapCatAdapter(ChannelAdapter):
             return None
         segments = self._segments(payload.get("message"))
         text_parts: list[str] = []
+        invocation_parts: list[str] = []
         mentions: list[str] = []
         attachments: list[Attachment] = []
         for segment in segments:
@@ -132,6 +133,7 @@ class NapCatAdapter(ChannelAdapter):
             data = segment.get("data") if isinstance(segment.get("data"), dict) else {}
             if kind == "text":
                 text_parts.append(str(data.get("text", "")))
+                invocation_parts.append(str(data.get("text", "")))
             elif kind == "at":
                 qq = str(data.get("qq", ""))
                 if qq:
@@ -180,7 +182,8 @@ class NapCatAdapter(ChannelAdapter):
             reply_to_sender_id=reply_to_sender_id or None,
             attachments=tuple(attachments),
             triggered=triggered,
-            metadata={"self_id": str(payload.get("self_id", "")), "raw_message": payload.get("raw_message", ""), "senderIsBot": sender.get("is_bot") is True or payload.get("sender_is_bot") is True},
+            metadata={"self_id": str(payload.get("self_id", "")), "raw_message": payload.get("raw_message", ""), "senderIsBot": sender.get("is_bot") is True or payload.get("sender_is_bot") is True,
+                "hostSkillInvocationText": ''.join(invocation_parts)},
         )
         kind = TargetKind.GROUP if chat_type is ChatType.GROUP else TargetKind.PRIVATE
         target = target_from_chat(account_id=self.account_id, chat_id=event.chat_id, kind=kind, display_name=event.group_name or event.sender_name)

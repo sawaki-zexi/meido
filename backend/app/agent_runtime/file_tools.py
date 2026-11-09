@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import difflib
+import hashlib
 import io
 import os
 import stat
@@ -96,12 +97,13 @@ def _binary(data: bytes) -> bool:
 class _FileTool:
     definition: ToolDefinition
     def __init__(self, role_id: str, workspace: str | Path, *, is_owner: bool = True,
-                 authorized=None, max_file_bytes: int | None = None, write_policy=None):
+                 authorized=None, max_file_bytes: int | None = None, write_policy=None, skill_versions=None):
         self.role_id = role_id
         self.workspace = Path(os.path.abspath(workspace))
         self.is_owner = is_owner
         self.authorized, self._max_file_bytes = authorized, max_file_bytes
         self.write_policy = write_policy
+        self.skill_versions = {} if skill_versions is None else skill_versions
         if max_file_bytes is not None and self.definition.name in {'write_file', 'edit_file'}:
             schema = copy.deepcopy(self.definition.input_schema)
             properties = cast(dict[str, dict[str, object]], schema['properties'])
@@ -119,6 +121,26 @@ class _FileTool:
         tool = copy.copy(self)
         tool.write_policy = policy
         return tool
+
+    def _skill_file(self, path):
+        parts = path.relative_to(self.workspace).parts
+        return bool(parts and parts[0].casefold() == 'skills' and
+            (len(parts) >= 3 or len(parts) == 2 and parts[1].casefold() == 'skill.md'))
+
+    def _skill_header(self, path):
+        return self._skill_file(path) and len(path.relative_to(self.workspace).parts) in {2, 3} and path.name.casefold() == 'skill.md'
+
+    def _skill_version_key(self, path, context):
+        return context.role_id, context.session_key, context.run_id, os.path.normcase(str(path))
+
+    def _check_skill_version(self, path, context):
+        from .skills import _hash_bounded_file
+        key = self._skill_version_key(path, context)
+        expected = self.skill_versions.get(key)
+        exists = path.exists()
+        if ((exists and (expected is None or _hash_bounded_file(path)[1] != expected))
+                or not exists and expected is not None):
+            raise _FileFailure('Skill file conflict: read_file the current file in this run before updating; preserve the newer version.', 'failed', error_code='conflict')
 
     def _check(self, context: ToolContext) -> None:
         if self.authorized is None and not self.is_owner:
@@ -190,9 +212,39 @@ class _FileTool:
             self._check(context)
             ToolRegistry.validate_definition(self.definition, dict(arguments))
             path = self._path(arguments["path"])
-            with nullcontext() if getattr(self.write_policy, 'short_publication', False) else _file_lock(path, context):
+            skill_transaction = nullcontext()
+            if self._skill_file(path):
+                from ..skill_library import skill_file_transaction
+                skill_transaction = skill_file_transaction(context.signal)
+            file_transaction = nullcontext() if getattr(self.write_policy, 'short_publication', False) else _file_lock(path, context)
+            with skill_transaction, file_transaction:
                 self._path(str(path))
-                return self._execute(path, arguments, context)
+                result = self._execute(path, arguments, context)
+                if (self.definition.name == 'read_file' and self._skill_file(path) and not result.is_error
+                        and isinstance(result.details.get('contentHash'), str)):
+                    self.skill_versions[self._skill_version_key(path, context)] = result.details['contentHash']
+                relative = path.relative_to(self.workspace)
+                if self.definition.name == 'read_file' and self._skill_header(path):
+                    from .skills import SkillRegistry
+                    registry = SkillRegistry.discover(self.workspace / relative.parts[0], source='role')
+                    identity = os.path.normcase(os.path.join(*relative.parts[1:]))
+                    skill = next((item for item in registry.skills if os.path.normcase(os.path.normpath(item.path)) == identity), None)
+                    problems = [item['error'] for item in registry.diagnostics if item.get('path') and Path(item['path']) == path]
+                    if skill is None:
+                        problems = problems or ['skill format validation failed']
+                    else:
+                        try:
+                            skill.materialize()
+                        except (ValueError, OSError, UnicodeError) as error:
+                            problems.append(str(error))
+                        if skill.content_hash != result.details.get('contentHash'):
+                            problems.append('skill changed during read; read_file again before verifying or updating')
+                    verified = not problems and not result.details.get('truncated')
+                    result = replace(result, content=result.content + ('\nSkill saved-file validation: verified.' if verified
+                        else '\nSkill saved-file validation incomplete: ' + '; '.join(problems or ['read all pages before claiming full review'])),
+                        details={**result.details, 'skillValidation': {'verified': verified,
+                            'contentHash': skill.content_hash if skill else None, 'problems': problems}})
+                return result
         except _FileFailure as error:
             return self._result(str(error), status=error.status, **error.details)
         except (OSError, ValueError, TypeError, RuntimeError) as error:
@@ -223,6 +275,13 @@ class _FileTool:
             raise _FileFailure(f"Content exceeds {self.max_file_bytes} byte write limit.", "denied", truncated=True, truncatedBy="file_limit")
         self._check(context)
         self._path(str(path))
+        relative = path.relative_to(self.workspace)
+        if self._skill_header(path):
+            from .skills import validate_skill_text
+            metadata = validate_skill_text(data.decode('utf-8-sig'))
+            directory_id = relative.parts[1].casefold() if os.name == 'nt' else relative.parts[1]
+            if len(relative.parts) == 3 and metadata['id'] != directory_id:
+                raise _FileFailure('Skill ID must match its skills/<skill-id>/SKILL.md directory.', 'failed')
         with self.write_policy(path, data, context) if self.write_policy is not None else nullcontext() as allocation:
             path.parent.mkdir(parents=True, exist_ok=True)
             self._path(str(path))
@@ -247,7 +306,11 @@ class _FileTool:
                     self._path(str(path))
                     if allocation is not None:
                         allocation.check()
+                    if self._skill_file(path):
+                        self._check_skill_version(path, context)
                     os.replace(temporary, path)
+                    if self._skill_file(path):
+                        self.skill_versions.pop(self._skill_version_key(path, context), None)
                     if allocation is not None:
                         allocation.committed()
             finally:
@@ -260,7 +323,7 @@ class _FileTool:
 
 class ReadFileTool(_FileTool):
     definition = ToolDefinition(
-        "read_file", "Read role-workspace text with 1-based line numbers, offset (0-based), and optional limit. Use limit=50 for a preview, then paginate relevant sections; independent files may be read together. Pages are bounded to 400 lines / 10 KB. Images are returned to vision models; binary files are rejected. Paths outside this role workspace are not accessible.",
+        "read_file", "Read role-workspace text with 1-based line numbers, offset (0-based), and optional limit. Use limit=50 for a preview, then paginate relevant sections; independent files may be read together. Pages are bounded to 400 lines / 10 KB. Read each existing ordinary skill file/resource in the current run before write_file or edit_file; the host holds its version and rejects stale updates. Images are returned to vision models; binary files are rejected. Paths outside this role workspace are not accessible.",
         {"type": "object", "properties": {
             "path": {"type": "string", "minLength": 1, "maxLength": 4096},
             "offset": {"type": "integer", "minimum": 0},
@@ -270,14 +333,15 @@ class ReadFileTool(_FileTool):
     )
 
     def __init__(self, role_id: str, workspace: str | Path, *, multimodal: bool = True, is_owner: bool = True,
-                 authorized=None, max_file_bytes: int | None = None, write_policy=None):
-        super().__init__(role_id, workspace, is_owner=is_owner, authorized=authorized, max_file_bytes=max_file_bytes, write_policy=write_policy)
+                 authorized=None, max_file_bytes: int | None = None, write_policy=None, skill_versions=None):
+        super().__init__(role_id, workspace, is_owner=is_owner, authorized=authorized, max_file_bytes=max_file_bytes, write_policy=write_policy, skill_versions=skill_versions)
         self.multimodal = multimodal
 
     def _image(self, path: Path, context: ToolContext, source: str) -> AgentToolResult:
         if not self.multimodal:
             raise _FileFailure("Image detected; a vision-capable model is required to inspect it.", "denied", path=source)
         raw = self._read_bytes(path, context, max_bytes=MAX_IMAGE_BYTES)
+        source_hash = hashlib.sha256(raw).hexdigest() if self._skill_file(path) else None
         try:
             with Image.open(io.BytesIO(raw)) as image:
                 if image.width * image.height > MAX_IMAGE_PIXELS:
@@ -302,7 +366,8 @@ class ReadFileTool(_FileTool):
                 raise _FileFailure("Image result exceeds 8 MB encoded output limit.", "denied", path=source, truncated=True)
             return AgentToolResult(
                 f"[{source}] Image provided to the vision model" + (" (compressed)." if compressed else "."),
-                {"status": "succeeded", "path": source, "truncated": False, "compressed": compressed, "mediaType": media_type},
+                {"status": "succeeded", "path": source, "truncated": False, "compressed": compressed, "mediaType": media_type,
+                 **({'contentHash': source_hash} if source_hash is not None else {})},
                 images=(ImageContent(media_type, encoded, "high"),),
             )
         except (UnidentifiedImageError, Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
@@ -316,6 +381,7 @@ class ReadFileTool(_FileTool):
         used = total_lines = scanned = 0
         had_errors = False
         reason = None
+        digest = hashlib.sha256() if self._skill_file(path) else None
         if not path.is_file():
             raise _FileFailure("Path is not a regular file.")
         with path.open("rb") as stream:
@@ -340,6 +406,8 @@ class ReadFileTool(_FileTool):
                         if not chunk:
                             break
                         scanned += len(chunk)
+                        if digest is not None:
+                            digest.update(chunk)
                         total_lines += chunk.count(b"\n")
                         tail = chunk[-1:]
                     if tail and tail != b"\n" and scanned >= info.st_size:
@@ -349,6 +417,8 @@ class ReadFileTool(_FileTool):
                 if not raw:
                     break
                 scanned += len(raw)
+                if digest is not None:
+                    digest.update(raw)
                 long_line = len(raw) > READ_MAX_BYTES or not raw.endswith(b"\n") and scanned < info.st_size
                 while not raw.endswith(b"\n") and scanned < min(info.st_size, MAX_SCAN_BYTES):
                     self._check(context)
@@ -356,6 +426,8 @@ class ReadFileTool(_FileTool):
                     if not chunk:
                         break
                     scanned += len(chunk)
+                    if digest is not None:
+                        digest.update(chunk)
                     if chunk.endswith(b"\n"):
                         break
                 total_lines += 1
@@ -399,12 +471,13 @@ class ReadFileTool(_FileTool):
             totalLines=None if scan_limited else total_lines, totalBytes=info.st_size,
             outputLines=len(selected), outputBytes=used, nextOffset=next_offset,
             truncatedBy=reason, hadDecodeErrors=had_errors,
+            **({'contentHash': digest.hexdigest()} if digest is not None and not scan_limited and not had_errors else {}),
         )
 
 
 class WriteFileTool(_FileTool):
     definition = ToolDefinition(
-        "write_file", "Create or fully overwrite a UTF-8 file in this role workspace, creating missing parent directories. Prefer edit_file for precise changes and read existing files before overwriting. Do not proactively create documentation or README files unless requested. Maximum 4 MiB.",
+        "write_file", "Create or fully overwrite a UTF-8 file in this role workspace, creating missing parent directories. Prefer edit_file for precise changes and read existing files before overwriting. Existing ordinary skills and supporting files require read_file in this run; a conflict requires a fresh read and reconciliation. Do not proactively create documentation or README files unless requested. Maximum 4 MiB.",
         {"type": "object", "properties": {
             "path": {"type": "string", "minLength": 1, "maxLength": 4096},
             "content": {"type": "string", "maxLength": MAX_FILE_BYTES},
@@ -422,7 +495,7 @@ class WriteFileTool(_FileTool):
 
 class EditFileTool(_FileTool):
     definition = ToolDefinition(
-        "edit_file", "Precisely replace raw old_text with new_text in a role-workspace UTF-8 file and return a unified diff. Do not include read_file line-number prefixes. Missing or ambiguous matches are refused; replace_all explicitly permits multiple matches. Preserves BOM and pure CRLF files.",
+        "edit_file", "Precisely replace raw old_text with new_text in a role-workspace UTF-8 file and return a unified diff. Do not include read_file line-number prefixes. Existing ordinary skills and supporting files require read_file in this run; stale versions are refused. Missing or ambiguous matches are refused; replace_all explicitly permits multiple matches. Preserves BOM and pure CRLF files.",
         {"type": "object", "properties": {
             "path": {"type": "string", "minLength": 1, "maxLength": 4096},
             "old_text": {"type": "string", "minLength": 1, "maxLength": MAX_FILE_BYTES},
@@ -520,9 +593,10 @@ FILE_TOOL_NAMES = frozenset({"read_file", "list_dir", "write_file", "edit_file"}
 
 def build_file_tools(role_id: str, workspace: str | Path, *, multimodal: bool = True, is_owner: bool = True,
                      authorized=None, max_file_bytes: int | None = None, write_policy=None):
+    skill_versions = {}
     return (
-        ReadFileTool(role_id, workspace, multimodal=multimodal, is_owner=is_owner, authorized=authorized, max_file_bytes=max_file_bytes, write_policy=write_policy),
-        ListDirTool(role_id, workspace, is_owner=is_owner, authorized=authorized, max_file_bytes=max_file_bytes, write_policy=write_policy),
-        WriteFileTool(role_id, workspace, is_owner=is_owner, authorized=authorized, max_file_bytes=max_file_bytes, write_policy=write_policy),
-        EditFileTool(role_id, workspace, is_owner=is_owner, authorized=authorized, max_file_bytes=max_file_bytes, write_policy=write_policy),
+        ReadFileTool(role_id, workspace, multimodal=multimodal, is_owner=is_owner, authorized=authorized, max_file_bytes=max_file_bytes, write_policy=write_policy, skill_versions=skill_versions),
+        ListDirTool(role_id, workspace, is_owner=is_owner, authorized=authorized, max_file_bytes=max_file_bytes, write_policy=write_policy, skill_versions=skill_versions),
+        WriteFileTool(role_id, workspace, is_owner=is_owner, authorized=authorized, max_file_bytes=max_file_bytes, write_policy=write_policy, skill_versions=skill_versions),
+        EditFileTool(role_id, workspace, is_owner=is_owner, authorized=authorized, max_file_bytes=max_file_bytes, write_policy=write_policy, skill_versions=skill_versions),
     )

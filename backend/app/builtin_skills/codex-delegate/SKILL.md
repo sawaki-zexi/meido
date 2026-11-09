@@ -1,7 +1,8 @@
 ---
 id: codex-delegate
+name: 编程任务委托
 version: "1"
-description: 将完整编程需求交给已获准的 Codex exec，在独立 worktree 后台执行并回到原会话。
+description: 主人要把完整编程需求交给已获准的 Codex exec 后台完成并回传原会话时使用；解释代码、一般软件讨论和未获准仓库不使用。
 activation: explicit
 tools: [spawn, spawn_manage]
 requires.bins: [codex]

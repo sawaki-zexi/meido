@@ -1,7 +1,8 @@
 ---
 id: summarize
+name: 材料摘要
 version: 1.0.0
-description: 使用 summarize CLI 摘要网页、URL、本地文件、YouTube 视频或提取正文与字幕。
+description: 需要从网页 URL、本地文件或 YouTube 视频提取正文、字幕和摘要时使用；一句话解释或已经提供的短文本不需要 CLI。
 tools: [shell, read_file]
 activation: explicit
 requires.bins: [node, summarize]

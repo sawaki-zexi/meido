@@ -47,7 +47,7 @@ export function ChatToolCalls({ calls, streaming, closing }: { calls: ToolEntry[
         const runningCall = call.status === 'running';
         const failed = !runningCall && call.status !== 'succeeded';
         const StatusIcon = runningCall ? CircleNotch : failed ? Warning : toolIcon(call.name);
-        const status = labels[call.status] ?? labels.unknown;
+        const status = call.name === 'skill_read' && call.status === 'succeeded' ? '已读取技能' : labels[call.status] ?? labels.unknown;
         const detailId = `${id}-${index}`;
         const argumentsPreview = call.argumentsPreview || '参数未记录';
         return <div className="chat-tool-call" key={call.id}>

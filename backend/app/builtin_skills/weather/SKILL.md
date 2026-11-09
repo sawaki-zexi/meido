@@ -1,7 +1,8 @@
 ---
 id: weather
+name: 天气查询
 version: 1.0.0
-description: 查询当前天气和预报。触发词：天气、温度、weather、forecast。
+description: 主人询问具体地点当前天气、温度或未来预报时使用；解释气象概念和普通闲聊不使用。支持 weather 与 forecast。
 tools: [shell]
 activation: explicit
 requires.bins: [curl]

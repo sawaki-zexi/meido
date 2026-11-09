@@ -1,7 +1,8 @@
 ---
 id: create-drift-skill
+name: 长期任务创作
 version: 1.0.0
-description: 在当前角色的 Drift 专用目录创建或更新可被后续空闲运行执行的长期小任务和工作文件。
+description: 主人明确要创建或更新由后续空闲 Drift 推进的长期小任务时使用；普通一次性任务与普通技能保存不使用，作者与执行许可仍须单独检查。
 tools: [read_file, list_dir, write_file, edit_file]
 activation: explicit
 ---
@@ -11,8 +12,8 @@ activation: explicit
 
 1. 用 list_dir/read_file 检查 `drift/skills/<id>/SKILL.md` 和 `drift/work/<id>`；更新已有任务时保留原工作文件与进度。
 2. 确认任务有一个有限、可重复的小步骤。只使用小写字母、数字、点、下划线或连字符的合法 id；下面三个模板中的 id 和路径必须一起改。
-3. 先写 `references/drift.json` 和工作文件，最后写 SKILL.md。SKILL header 使用 Meido 的 id/version/description/tools/activation，不把 requiresMCP 写入 header。
-4. 依赖写在 `references/drift.json`：只声明已有或等待主人配置的 serverId、所需远端工具名，以及可选的精确 definitionHash。Shell 只声明宿主提供的规则 ID。不要写 command/env/凭据/安装指令，不自己计算 SHA 或写 trust=true。宿主登记实际文件 hash、作者来源与待补依赖，缺依赖不表示生成失败。
+3. 先写产物目录下的 `drift/skills/<skill-id>/references/drift.json` 和工作文件，最后写 SKILL.md。SKILL header 使用 Meido 的 id/version/description/tools/activation，不把 requiresMCP 写入 header。
+4. 依赖写在产物的 `drift/skills/<skill-id>/references/drift.json`：只声明已有或等待主人配置的 serverId、所需远端工具名，以及可选的精确 definitionHash。Shell 只声明宿主提供的规则 ID。不要写 command/env/凭据/安装指令，不自己计算 SHA 或写 trust=true。宿主登记实际文件 hash、作者来源与待补依赖，缺依赖不表示生成失败。
 5. 用 read_file 核验保存结果。作者当下只有 FileTools 不妨碍声明后续获准的 MCP/Shell；执行须再满足作者声明范围和后续运行的精确许可。报告真实保存文件、依赖状态和下一步，不能把保存说成已运行或已发送。
 
 以下三份小模板可直接通过 write_file 写入，都是当前角色 workspace 的相对路径。工作文件放在 work 下，不改变技能不可变支持文件 hash；宿主 state 目录不能由模型写入。

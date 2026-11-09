@@ -16,6 +16,7 @@ from .tools import AgentTool, AgentToolResult, ToolContext, ToolDefinition, Tool
 
 if TYPE_CHECKING:
     from .discovery import DiscoveryState, ServiceGrant
+    from .skill_discovery import SkillRun
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,10 +113,14 @@ class CapabilityResolution:
     _prepare_tools: Callable | None = field(default=None, repr=False, compare=False)
     _resource_close: Callable[[], Awaitable[None]] | None = field(default=None, repr=False, compare=False)
     source_scope: str = ""
+    _skill_state: SkillRun | None = field(default=None, repr=False, compare=False)
 
     def call_record(self, name: str) -> dict[str, object]:
         """Used declaration and minimal author evidence, never unused candidates."""
         definition = self.candidate_definition(name)
+        author_evidence = (self._skill_state.author_evidence() if self._skill_state is not None else
+            [{"id": item.skill_id, "source": item.source, "contentHash": item.content_hash}
+             for item in self.snapshot.skills if item.skill_id == "create-drift-skill"])
         return {"format": "tool-call-v1", "snapshotId": self.snapshot.snapshot_id,
                 "runId": self.snapshot.run_id, "roleId": self.snapshot.role_id,
                 "sessionKey": self.snapshot.session_key, "sourceScope": self.source_scope,
@@ -123,8 +128,7 @@ class CapabilityResolution:
                 "tools": [_definition_payload(definition)] if definition is not None else [],
                 "active": self.definition(name) is not None,
                 "definitionFingerprint": definition_fingerprint(definition) if definition is not None else None,
-                "skills": [{"id": item.skill_id, "source": item.source, "contentHash": item.content_hash}
-                    for item in self.snapshot.skills if item.skill_id == "create-drift-skill"]}
+                "skills": author_evidence}
 
     def selected_subset(self, names: frozenset[str] | set[str]) -> CapabilityResolution:
         """Keep a child's explicit tool names and original host scope."""
@@ -134,7 +138,7 @@ class CapabilityResolution:
             skills=(), prompt_sections=(), plugins=(), service_grants=(),
             policy_decisions=MappingProxyType({name: "allowed" for name in selected})),
             tools=tuple(tool for name in selected if (tool := self.get(name)) is not None), plugin_resolution=None,
-            _discovery=None, _resource_close=None, denied_tools=MappingProxyType({}),
+            _discovery=None, _resource_close=None, _skill_state=None, denied_tools=MappingProxyType({}),
             _restricted_names=frozenset(selected), _search_tool=None)
 
     def run_metadata(self) -> dict[str, object]:
@@ -145,7 +149,11 @@ class CapabilityResolution:
                 "skills": [item.to_dict() for item in self.snapshot.skills],
                 "skillDiagnostics": [_thaw_json(item) for item in self.snapshot.skill_diagnostics],
                 "plugins": [item.to_dict() for item in self.snapshot.plugins],
-                "pluginDiagnostics": [dict(item) for item in self.snapshot.plugin_diagnostics]}
+                "pluginDiagnostics": [dict(item) for item in self.snapshot.plugin_diagnostics],
+                **({"skillReads": list(self._skill_state.facts), "skillCatalog": [
+                    {"ref": row["ref"], "id": row["id"], "source": row["source"], "policy": row["policy"],
+                     "contentHash": row["contentHash"]} for row in self._skill_state.rows if row["effective"]]}
+                   if self._skill_state is not None else {})}
 
     def stage_service_tools(self, context: ToolContext, *, grant_id: str, parent_snapshot_id: str,
                             tools: tuple[AgentTool, ...], activate: bool = False, rebind: bool = False) -> tuple[str, ...]:
@@ -370,7 +378,7 @@ class CapabilityResolution:
         return str(reason) if reason is not None else None
 
     def prompt_context(self) -> str:
-        return "\n\n".join(self.snapshot.prompt_sections)
+        return "" if self._skill_state is not None else "\n\n".join(self.snapshot.prompt_sections)
 
     def validate_arguments(self, name: str, arguments: dict[str, object]) -> None:
         definition = self.definition(name)
@@ -580,6 +588,7 @@ class CapabilityRegistry:
         service_grants: tuple[ServiceGrant, ...] = (),
         resource_close: Callable[[], Awaitable[None]] | None = None,
         skill_dependency_check=None,
+        skill_model_selection: bool = False,
     ) -> CapabilityResolution:
         registered_tools = [tool for tool in self._tools.values() if tool is not None]
         if plugin_resolution is not None:
@@ -697,6 +706,7 @@ class CapabilityRegistry:
             available_tools={tool.definition.name for tool in registered_tools},
             enabled_tools=set(tool.definition.name for tool in selected),
             dependency_check=skill_dependency_check,
+            model_selection=skill_model_selection,
         )
         snapshot = CapabilitySnapshot(
             snapshot_id=f"cap-{run_id}",
@@ -768,6 +778,7 @@ class CapabilityRegistry:
         service_grants: tuple[ServiceGrant, ...] = (),
         resource_close: Callable[[], Awaitable[None]] | None = None,
         skill_dependency_check=None,
+        skill_model_selection: bool = False,
     ) -> CapabilityResolution:
         plugin_resolution = await self.plugins.load(
             enabled_ids=enabled_plugin_ids,
@@ -800,6 +811,7 @@ class CapabilityRegistry:
                 service_grants=service_grants,
                 resource_close=resource_close,
                 skill_dependency_check=skill_dependency_check,
+                skill_model_selection=skill_model_selection,
             )
         except BaseException:
             try:

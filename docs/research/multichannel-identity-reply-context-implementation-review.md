@@ -7,7 +7,7 @@
 
 ## 核验版本
 
-Meido 从 main 的 98d6a31 开始实施；实施结束时远端 main 仍为该提交。Tulpa main 仍为 6753a28。Shiori main 已从方案基线 249043d 前进至 467a97d；[两者差异](https://github.com/YinFengWindy/Shiori-Agent/compare/249043d653cd707d6556b737db445ec80495094a...467a97d1749b6f5aa7929f80c4304bc3732e989b)只有 Fish Audio 相关文件，下表引用的来源、输入保护及回复代码未变。
+Meido 从 main 的 98d6a31 开始实施。发布 [PR #339](https://github.com/sawaki-zexi/meido/pull/339) 时，main 合入 [857333d / #337](https://github.com/sawaki-zexi/meido/commit/857333dbb72e7b8ea12ede8f043015c694c37b0c) 的按需技能能力，本分支已整合该主线；模型提供层保留技能窗口与来源观察两条路径，受影响链路另做定向验证。Tulpa 的复核版本仍为 6753a28。Shiori 复核时 main 已从方案基线 249043d 前进至 467a97d；[两者差异](https://github.com/YinFengWindy/Shiori-Agent/compare/249043d653cd707d6556b737db445ec80495094a...467a97d1749b6f5aa7929f80c4304bc3732e989b)只有 Fish Audio 相关文件，下表引用的来源、输入保护及回复代码未变。
 
 ## 核验结论
 
@@ -72,6 +72,8 @@ Meido 继续使用现有线程、角色模型、调度和投递运行时。Tulpa
 | quote-followup-green.log | 45 passed；授权回放、附件/空正文引用、显示与真实平台目标。 |
 | private-memory-quote.log | 14 passed；私聊整理窗口、群/主人整理及摘要来源。 |
 | natural-quote-followup.log | 31 passed；自然规划/表达、媒体与引用回归。 |
+| main-integration-provider-skills.log | 110 passed；整合 #337 后的技能发现/生命周期、上下文准备/检查及签名回放。 |
+| main-integration-group-natural.log | 37 passed；整合后的显式发送、自然两阶段、主人身份与回复协议。 |
 | git diff --check | 通过。 |
 
 最后三组的准确命令：
