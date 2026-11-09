@@ -198,7 +198,9 @@ def test_authorized_quote_content_and_identity_reach_actual_request_without_cach
     if source == 'pre-pair': pair(channels, thread)
     current_meta = {'channel':'qq', 'accountId':'qq', 'threadId':thread.thread_id,
         'chatId':thread.chat_id, 'chatType':'private', 'direction':'inbound', 'platformMessageId':'current',
-        'senderId':'owner', 'senderIsOwner':True, 'replyTo':'original', 'replyToContent':'CACHED_QUOTE_MUST_NOT_LEAK'}
+        'senderId':'owner', 'senderIsOwner':True, 'replyTo':'original', 'replyToContent':'CACHED_QUOTE_MUST_NOT_LEAK',
+        'replyContextVerified':True, 'replyToSenderId':'CACHED_QUOTE_AUTHOR_ID',
+        'replyToSenderName':'CACHED_QUOTE_AUTHOR_NAME', 'replyToSenderIsOwner':False}
     current = sessions.append_message(thread.session_key, 'user', 'CURRENT_QUESTION', metadata=current_meta)
     view = ConversationHistoryView(channels, role_id='r1', thread_id=thread.thread_id, through_message_id=current.id)
     projected = view.runtime_messages()
@@ -219,16 +221,24 @@ def test_authorized_quote_content_and_identity_reach_actual_request_without_cach
     facts = json.loads(next(line for line in text.splitlines() if line.startswith('[消息来源] ')).removeprefix('[消息来源] '))
     if source in {'allowed', 'legacy'}:
         assert facts['replyToContent'] == original.content and facts['replyMissing'] is False
+        assert facts['replyContextVerified'] is True
         if source == 'allowed':
             assert facts['replyToSenderId'] == 'owner' and facts['replyToSenderIdentity'] == '已配对主人'
+            assert facts['replyToSenderName'] == 'Saved name'
         else:
             assert facts['replyToSenderId'] is None and facts['replyToSenderIdentity'] == '未知发送者'
+            assert facts['replyToSenderName'] is None
             assert '引用主人' not in text
     else:
         assert facts['replyToContent'] == '' and facts['replyMissing'] is True
+        assert facts['replyContextVerified'] is False
+        assert facts['replyToSenderId'] is None and facts['replyToSenderName'] is None
+        assert facts['replyToSenderIdentity'] == '未知发送者'
         assert 'AUTHORIZED_ORIGINAL_TEXT' not in str(requests)
-    assert 'CACHED_QUOTE_MUST_NOT_LEAK' not in str(requests)
+    assert all(marker not in str(requests) for marker in (
+        'CACHED_QUOTE_MUST_NOT_LEAK', 'CACHED_QUOTE_AUTHOR_ID', 'CACHED_QUOTE_AUTHOR_NAME'))
     assert sessions.list_messages(thread.session_key)[-1].metadata['replyToContent'] == 'CACHED_QUOTE_MUST_NOT_LEAK'
+    assert sessions.list_messages(thread.session_key)[-1].metadata['replyToSenderName'] == 'CACHED_QUOTE_AUTHOR_NAME'
 
 
 def test_media_and_tool_wait_recheck_the_same_frozen_grant(tmp_path, monkeypatch):

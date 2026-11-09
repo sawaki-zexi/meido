@@ -49,6 +49,11 @@ def _user_projection(message, quotes):
     # Only the frozen, same-session lookup below can supply this body/media.
     metadata.pop('replyToContent', None)
     if metadata.get("replyTo"):
+        if metadata.get('chatType') != 'group':
+            # Private cached author facts obey the same source grant as the
+            # quoted body. A platform fetch cannot fill a gap in this view.
+            metadata.update(replyContextVerified=False, replyToSenderId=None,
+                replyToSenderName=None, replyToSenderIsOwner=None)
         quoted = quotes.get((message.sessionKey, str(metadata["replyTo"])))
         if quoted is not None:
             source = message_source(quoted.metadata, source_id=quoted.id,

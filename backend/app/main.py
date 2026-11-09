@@ -6911,10 +6911,18 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
             "已配对主人在群聊中仍是同一位主人，无需再次配对；群聊上下文仍只限当前群，不引入主人私聊历史。",
         ))
         if metadata.get("replyTo"):
-            from .channels.reply_identity import reply_sender_identity
+            if history is not None:
+                quote_context = next((item.source_context for item in runtime_messages
+                    if isinstance(item, UserMessage) and message_id in item.source_message_ids), None) or {}
+                quoted_sender_id = quote_context.get('replyToSenderId')
+                quoted_sender_identity = quote_context.get('replyToSenderIdentity') or '未知发送者'
+            else:
+                from .channels.reply_identity import reply_sender_identity
+                quoted_sender_id = metadata.get('replyToSenderId')
+                quoted_sender_identity = reply_sender_identity(multichannel_store, thread, metadata)
             identity_context += "\n" + "\n".join((
-                "被引用发送者 ID：" + json.dumps(str(metadata.get("replyToSenderId") or ""), ensure_ascii=False),
-                "被引用发送者身份：" + reply_sender_identity(multichannel_store, thread, metadata),
+                "被引用发送者 ID：" + json.dumps(str(quoted_sender_id or ""), ensure_ascii=False),
+                "被引用发送者身份：" + quoted_sender_identity,
                 "被引用者的身份不改变当前发言者的身份和工具权限。",
             ))
         if response_context is not None:

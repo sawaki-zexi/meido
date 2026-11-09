@@ -53,7 +53,7 @@ Meido 继续使用现有线程、角色模型、调度和投递运行时。Tulpa
 | A14 | 部分确认正文可选且可复验，未知尾部不入模型；原回显与[分段投递](../../tests/python/channels/test_natural_reply_delivery.py)回归保持不补发。 |
 | A15 | 实际外部整理、主人事实提取、私聊整理窗口和工作摘要请求保留来源、引用和回应关系。 |
 | A16 | 最低来源包无法完整容纳时零请求、零投递；[摘要裁剪](../../tests/python/test_context_windows.py)保留宿主来源，旧身份保持未知。 |
-| A17 | [授权历史 API](../../tests/python/test_owner_history_view_api.py)、[引用附件](../../tests/python/channels/test_owner_quoted_attachment.py)、Telegram 实际 @/引用降级及群上下文检查保持原范围。 |
+| A17 | [授权历史 API](../../tests/python/test_owner_history_view_api.py)、[图片引用范围](../../tests/python/channels/test_qq_image_receiving.py)、[引用附件](../../tests/python/channels/test_owner_quoted_attachment.py)、Telegram 实际 @/引用降级及群上下文检查保持原范围；不可读私聊引用的缓存正文与作者资料均不进入请求。 |
 | A18 | 关闭分条聊天仍能回应另一成员；未单独入库的文本、附件和空正文引用可合法派发；明确 null / [] 不被默认覆盖。 |
 | A19 | 运行和回应记录分别保存真实触发者、所选对象与执行来源；原普通分段/补充及自然与显式交错回归保持原归属。 |
 | A20 | 最小请求不因正文旧编号放行未展示候选；工具续接、签名回放及引用附件仍保留真实归属。 |
@@ -74,6 +74,7 @@ Meido 继续使用现有线程、角色模型、调度和投递运行时。Tulpa
 | natural-quote-followup.log | 31 passed；自然规划/表达、媒体与引用回归。 |
 | main-integration-provider-skills.log | 110 passed；整合 #337 后的技能发现/生命周期、上下文准备/检查及签名回放。 |
 | main-integration-group-natural.log | 37 passed；整合后的显式发送、自然两阶段、主人身份与回复协议。 |
+| private-quote-author-regression.log | 76 passed；私聊不可读引用的作者资料/正文统一降级，覆盖图片、授权回放、资料整理与同群合法引用。 |
 | git diff --check | 通过。 |
 
 最后三组的准确命令：

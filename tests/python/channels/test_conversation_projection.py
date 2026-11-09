@@ -284,10 +284,11 @@ def test_private_memory_request_resolves_quotes_only_inside_its_admitted_window(
     other = s.channels.ensure_channel_thread(s.role.id, 'qq', s.adapter.account_id, 'other', 'private')
     _, original = s.channels.append_event(thread if origin != 'other-chat' else other,
         direction='inbound', content='SAVED_ORIGINAL_BODY', external_message_id='origin',
-        metadata={'senderId':'11', 'senderIsOwner':True})
+        metadata={'senderId':'11', 'senderName':'SAVED_ORIGINAL_NAME', 'senderIsOwner':True})
     _, current = s.channels.append_event(thread, direction='inbound', content='CURRENT_PRIVATE_INPUT',
         external_message_id='current', metadata={'senderId':'11', 'senderIsOwner':True,
-            'replyTo':'origin', 'replyContextVerified':True, 'replyToSenderId':'22',
+            'replyTo':'origin', 'replyContextVerified':True, 'replyToSenderId':'CACHED_PRIVATE_AUTHOR_ID',
+            'replyToSenderName':'CACHED_PRIVATE_AUTHOR_NAME',
             'replyToSenderIsOwner':False, 'replyToContent':'CACHED_PRIVATE_QUOTE_OUTSIDE_WINDOW'})
     _, reply = s.channels.append_event(thread, direction='outbound', content='CONFIRMED_ASSISTANT',
         external_message_id='reply', role='assistant', metadata={'deliveryStatus':'sent'})
@@ -303,11 +304,17 @@ def test_private_memory_request_resolves_quotes_only_inside_its_admitted_window(
     draft = main._consolidation_provider(f'consolidation:{s.role.id}:window', window)
     records = [json.loads(line) for line in draft['conversation'].splitlines() if line.startswith('{')]
     facts = next(item for item in records if item['sourceMessageId'] == current.id)
-    assert 'CACHED_PRIVATE_QUOTE_OUTSIDE_WINDOW' not in str(requests)
+    assert all(marker not in str(requests) for marker in (
+        'CACHED_PRIVATE_QUOTE_OUTSIDE_WINDOW', 'CACHED_PRIVATE_AUTHOR_ID', 'CACHED_PRIVATE_AUTHOR_NAME'))
     assert current.id in str(requests) and 'CURRENT_PRIVATE_INPUT' in str(requests)
     if origin == 'allowed':
         assert facts['replyToContent'] == 'SAVED_ORIGINAL_BODY' and facts['replyMissing'] is False
+        assert facts['replyContextVerified'] is True and facts['replyToSenderName'] == 'SAVED_ORIGINAL_NAME'
         assert facts['replyToSenderId'] == '11' and facts['replyToSenderIdentity'] == '已配对主人'
     else:
         assert facts['replyToContent'] == '' and facts['replyMissing'] is True
+        assert facts['replyContextVerified'] is False
+        assert facts['replyToSenderId'] is None and facts['replyToSenderName'] is None
+        assert facts['replyToSenderIdentity'] == '未知发送者'
     assert s.sessions.list_messages(thread.session_key)[-2].metadata['replyToContent'] == 'CACHED_PRIVATE_QUOTE_OUTSIDE_WINDOW'
+    assert s.sessions.list_messages(thread.session_key)[-2].metadata['replyToSenderName'] == 'CACHED_PRIVATE_AUTHOR_NAME'
