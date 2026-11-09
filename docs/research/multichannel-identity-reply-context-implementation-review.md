@@ -9,6 +9,8 @@
 
 Meido 从 main 的 98d6a31 开始实施。发布 [PR #339](https://github.com/sawaki-zexi/meido/pull/339) 时，main 合入 [857333d / #337](https://github.com/sawaki-zexi/meido/commit/857333dbb72e7b8ea12ede8f043015c694c37b0c) 的按需技能能力，本分支已整合该主线；模型提供层保留技能窗口与来源观察两条路径，受影响链路另做定向验证。Tulpa 的复核版本仍为 6753a28。Shiori 复核时 main 已从方案基线 249043d 前进至 467a97d；[两者差异](https://github.com/YinFengWindy/Shiori-Agent/compare/249043d653cd707d6556b737db445ec80495094a...467a97d1749b6f5aa7929f80c4304bc3732e989b)只有 Fish Audio 相关文件，下表引用的来源、输入保护及回复代码未变。
 
+最终交付核对又整合了 [5f78982 / #340](https://github.com/sawaki-zexi/meido/commit/5f78982ff079ec2e59759404c4e119e656f7bb16)。该主线仅调整前台 Shell 撤权后的资源清理、相应回归和 CI / 参考文档；本期来源与应答源码没有新增改动，沿用已完成的两轴审查，对整合后的候选运行 CI。
+
 ## 核验结论
 
 本期将实际输入来源、模型选择的回应关系和实际投递分别保存。主人 @ 角色请她回答群友时，模型可以选择群友的消息、成员或话题；宿主核验可见范围与执行一致性，不要求回应对象等于触发者，也不按“回答了别人的问题”直接判错。

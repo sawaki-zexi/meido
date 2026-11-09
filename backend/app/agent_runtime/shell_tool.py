@@ -151,7 +151,8 @@ class ShellTool:
             self.tasks = TaskRuntime(self.workspace.parent / ".meido-tasks" / hashlib.sha256(str(self.workspace).encode()).hexdigest())
         try:
             tasks, origin = self.tasks, self.origin_resolver(context)
-            task_id = tasks.submit(origin, ProcessExecutor(argv, self.workspace, clean_env),
+            executor = ProcessExecutor(argv, self.workspace, clean_env)
+            task_id = tasks.submit(origin, executor,
                                    budget=TaskBudget(timeout, self.max_output_chars, tasks.max_log_bytes), kind="shell",
                                    description=str(arguments.get("description", "")),
                                    authorized=authority)
@@ -160,25 +161,38 @@ class ShellTool:
         detached = False
         started = time.monotonic()
         try:
-            while True:
-                if not authority():
-                    return _error("Shell authorization has been revoked")
-                snapshot = tasks.query(task_id, origin)
-                if snapshot.ended_at is not None:
-                    return _result(snapshot)
-                if context.signal.is_cancelled():
-                    return _result(await asyncio.to_thread(tasks.stop, task_id, origin))
-                if arguments.get("run_in_background", False) or (
-                    arguments.get("auto_promote", True) and time.monotonic() - started >= self.promote_after_seconds
-                ):
-                    detached = True
-                    return _result(snapshot, background=True)
-                await asyncio.sleep(.01)
-        except asyncio.CancelledError:
-            if not detached:
-                stopping = asyncio.create_task(asyncio.to_thread(tasks.stop, task_id, origin))
-                await asyncio.shield(stopping)
-            raise
+            try:
+                while True:
+                    if not authority():
+                        return _error("Shell authorization has been revoked")
+                    snapshot = tasks.query(task_id, origin)
+                    if snapshot.ended_at is not None or context.signal.is_cancelled():
+                        break
+                    if arguments.get("run_in_background", False) or (
+                        arguments.get("auto_promote", True) and time.monotonic() - started >= self.promote_after_seconds
+                    ):
+                        detached = True
+                        return _result(snapshot, background=True)
+                    await asyncio.sleep(.01)
+            finally:
+                if not detached:
+                    # One owned wait covers every foreground exit. Repeated
+                    # cancellation shields that same wait, never starts another.
+                    cleanup = asyncio.create_task(asyncio.to_thread(tasks.cancel_owned_execution, task_id, executor))
+                    interrupted = None
+                    while not cleanup.done():
+                        try:
+                            await asyncio.shield(cleanup)
+                        except asyncio.CancelledError as error:
+                            interrupted = error
+                    cleanup.result()
+                    if interrupted is not None:
+                        raise interrupted
+            if not authority():
+                return _error("Shell authorization has been revoked")
+            return _result(tasks.query(task_id, origin))
+        except (KeyError, PermissionError):
+            return _error("Shell task is unavailable in this role and original context")
 
 
     def allows_restricted(self, context: ToolContext, command: str | None = None) -> bool:
