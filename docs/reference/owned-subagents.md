@@ -2,7 +2,7 @@
 
 状态：当前；独立子任务与完成交付已在主线提供。本文记录该能力的现行契约，不代表全部 Shiori 复刻完成。
 
-最后核验：2026-11-02。
+最后核验：2026-11-09。
 
 事实来源：[ADR-0012](../adr/0012-owned-task-runtime.md)、[子任务工具](../../backend/app/agent_runtime/spawn_tool.py)、[受管任务](../../backend/app/task_runtime/runtime.py)、[完成 worker](../../backend/app/task_runtime/completion.py)、[会话追加](../../backend/app/session_store.py)、[行为测试](../../tests/python/test_spawn.py)、[HTTP 与渠道测试](../../tests/python/test_spawn_api.py)、[网页测试](../../web/src/features/role-management/SpawnSettings.test.tsx)。行为参考固定 Shiori `4f266aeaf42fcd611362e2456417b91f659341cf` 的 `spawn.py`、`subagent_profiles.py`、`subagent_manager.py` 和完成流。
 
@@ -39,6 +39,8 @@
 渠道 origin 从宿主真实 run、入站消息、角色账号和 FrozenChannelSource 捕获，包含发言者、绑定身份、绑定时间、账号创建代际和原线程。每次管理、子工具调用、watchdog、完成整理及进入发送 lease 后重验；跨角色、群、发言者、重新绑定、账号重建、平台暂停或来源失效均不获得旧任务权限。
 
 后台终态与完成 outbox 持久化在同一任务 SQLite 中。完成 worker 等待原角色正常回合释放锁，再以原角色进行一次最多 15 秒、8000 字符、无工具模型整理；它不触发主人记忆或待办维护。整理使用原模型连接身份；连接定义变化或被删除时标记交付失败，避免把已有结果发到新服务。
+
+辅助整理出现模型运行错误或超时，仍通过同一 outbox 回报真实终态、任务 ID，并提示在原会话回复“查询任务 <任务 ID>”；后续查询沿用 `spawn_manage`。不发送原始私有结果、异常或连接信息，不更换模型或重新执行任务。原角色、父运行或模型连接失效的权限拒绝继续封存；来源撤销仍阻止通知，取消继续传播，SQLite 临时锁仍按本地恢复处理。通知降级不改变任务执行状态，原结果可由原来源查询。相关边界见[完成整理回归](../../tests/python/test_spawn_completion_summary.py)与[应用入口回归](../../tests/python/test_spawn_api.py)。
 
 内部完成消息明确标注任务 ID 和真实终态，以确定性消息 ID 追加到已存在的原桌面会话或渠道线程。它是 `assistant / internal_completion`，不是主人发言，不创建新会话。SQLite 追加事务保证 outbox 在会话追加后崩溃、重启时也不重复追加。
 
