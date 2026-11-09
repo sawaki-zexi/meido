@@ -25,6 +25,7 @@ SKILL_GUIDANCE = (
     "目录不完整时用 skill_list 分页查询。Skill 不增加工具、MCP、环境凭据或脚本执行权限。\n"
     "主人明确要求导入附件或保存方法时：先查已有相近技能，读取附件或已有方法，"
     "通过文件工具保存到 skills/<skill-id>/SKILL.md，再 read_file 读回检查格式、正文和资源，"
+    "更新已有技能或支持文件前，本轮先逐文件 read_file；宿主持有实际读到的版本，冲突后重新读取并协调，不能盲目覆盖。"
     "只有真实保存并核验后才报告保存成功；单独上传附件不安装。名称相同先确认更新对象，保留已有资源。"
     "新的简单格式为 --- 后的 name: lowercase-id 与 description: 适用场景和排除条件，"
     "再 --- 后写输入、步骤、核验与失败处理。可写 allow_implicit_invocation: false 限制手动使用。"
@@ -38,6 +39,12 @@ class SkillInput:
     # Only bodies actually selected this run; not a directory version chain.
     guidance: tuple[tuple[str, str, str], ...] = ()
     diagnostics: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class SkillReceipt:
+    text: str
+    image: bool = False
 
 
 class SkillRun:
@@ -79,9 +86,9 @@ class SkillRun:
             except (ValueError, OSError, UnicodeError) as error:
                 self.diagnostics.append({"skillId": skill_id, "status": "unavailable", "error": str(error)})
 
-    def _fact(self, ref, resource, digest, mode="read"):
+    def _fact(self, ref, resource, digest, mode="read", *, image=False):
         return {"ref": ref, "resource": resource, "contentHash": digest, "mode": mode, "runId": self.run_id,
-            "roleId": self.role_id, "sessionKey": self.session_key}
+            "roleId": self.role_id, "sessionKey": self.session_key, 'representation': 'image' if image else 'text'}
 
     def _budget(self, text):
         # Complete instructions or a bounded error, never half an instruction.
@@ -194,13 +201,47 @@ class SkillRun:
                     and fact.get('sessionKey') == self.session_key and fact.get("complete") is True
                     and isinstance(fact.get('ref'), str)):
                 identity = fact['ref'] + ("/" + fact["resource"] if fact.get("resource") else "")
-                visible[identity, fact.get('contentHash')] = message.content
+                image = (fact.get('representation') == 'image' or bool(message.images)
+                    or fact.get('representation') is None and message.content.startswith('[Skill image resource '))
+                if image:
+                    # SQLite intentionally keeps only the receipt, not pixels.
+                    # An old marker or an unrelated image is not live guidance.
+                    actual_image = False
+                    for block in message.images:
+                        if len(block.data_base64) <= 360000:
+                            try:
+                                raw = base64.b64decode(block.data_base64, validate=True)
+                            except ValueError:
+                                continue
+                            if hashlib.sha256(raw).hexdigest() == fact.get('contentHash'):
+                                actual_image = True
+                                break
+                    if not actual_image:
+                        continue
+                visible[identity, fact.get('contentHash')] = SkillReceipt(message.content, image)
         return visible
 
     def commit_window(self, messages):
         # Called only for the request that will actually be sent. Candidate
         # budget probes cannot turn a hidden historical body into loaded state.
         self.visible = self._window_receipts(messages)
+
+    def author_evidence(self, *, require_current=False):
+        """Minimal actual builtin author reads; permission is checked by Drift."""
+        result = []
+        for ref, skill in self.entries.items():
+            loaded = self.loaded.get((ref, ''))
+            if (skill.skill_id != 'create-drift-skill' or skill.source != 'builtin'
+                    or loaded is None or loaded[0] != skill.content_hash):
+                continue
+            if require_current:
+                try:
+                    if self._denial(ref):
+                        continue
+                except (KeyError, OSError, ValueError):
+                    continue
+            result.append({'id': skill.skill_id, 'source': skill.source, 'contentHash': skill.content_hash})
+        return result
 
     def read(self, ref, resource=""):
         denial = self._denial(ref)
@@ -219,12 +260,15 @@ class SkillRun:
         if key in self.image_resources and (identity, digest) not in self.visible:
             self.loaded.pop(key, None)  # an image removed by compaction must be read again
         if key not in self.loaded and (identity, digest) in self.visible:
-            self.loaded[key] = digest, self.visible[identity, digest]
-            self.facts.append(self._fact(ref, resource, digest, 'reused'))
+            receipt = self.visible[identity, digest]
+            self.loaded[key] = digest, receipt.text
+            if receipt.image:
+                self.image_resources.add(key)
+            self.facts.append(self._fact(ref, resource, digest, 'reused', image=receipt.image))
         if key in self.loaded:
             digest, _ = self.loaded[key]
             return {"status": "succeeded", "alreadyLoaded": True,
-                "skillRead": {**self._fact(ref, resource, digest), "complete": False},
+                "skillRead": {**self._fact(ref, resource, digest, image=key in self.image_resources), "complete": False},
                 "content": "Skill guidance already loaded in this run; continue using its existing instructions."}
         if resource:
             if (ref, "") not in self.loaded:
@@ -267,7 +311,7 @@ class SkillRun:
         if not self.authorized():
             raise ValueError("skill source authorization was revoked")
         self.loaded[key] = digest, text
-        fact = self._fact(ref, resource, digest)
+        fact = self._fact(ref, resource, digest, image=bool(images))
         self.facts.append(fact)
         return {"status": "succeeded", "skillRead": {**fact, "complete": True}, "content": text, 'images': images}
 

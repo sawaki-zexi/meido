@@ -674,7 +674,41 @@ def _is_active(skill: SkillDescriptor, *, prompt: str, explicit_ids: set[str] | 
 
 def explicit_skill_ids(prompt: str) -> set[str]:
     """Only direct invocation text, never Markdown quotations or code samples."""
-    direct = re.sub(r'(?ms)^\s*(```|~~~).*?^\s*\1[^\n]*$', '', prompt)
+    lines = []
+    fence = None
+    for line in prompt.splitlines(keepends=True):
+        marker = re.match(r' {0,3}(`{3,}|~{3,})([^\r\n]*)', line)
+        if fence is not None:
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= fence[1] and not marker[2].strip():
+                fence = None
+            lines.append('\n')
+        elif marker and (marker[1][0] != '`' or '`' not in marker[2]):
+            fence = marker[1][0], len(marker[1])
+            lines.append('\n')
+        elif len(line.expandtabs(4)) - len(line.expandtabs(4).lstrip(' ')) >= 4:
+            lines.append('\n')
+        else:
+            lines.append(line)
+    direct = ''.join(lines)
+    # CommonMark code spans close with a run of exactly the opening length.
+    # Precompute matches so long descriptions with many runs remain linear.
+    runs = list(re.finditer(r'`+', direct))
+    following, latest = {}, {}
+    for index in range(len(runs) - 1, -1, -1):
+        length = len(runs[index][0])
+        following[index] = latest.get(length)
+        latest[length] = index
+    pieces, cursor, index = [], 0, 0
+    while index < len(runs):
+        closing = following[index]
+        if closing is None:
+            index += 1
+            continue
+        pieces.append(direct[cursor:runs[index].start()])
+        pieces.append(' ')
+        cursor, index = runs[closing].end(), closing + 1
+    pieces.append(direct[cursor:])
+    direct = ''.join(pieces)
     direct = re.sub(r'(?m)^\s*>.*$', '', direct)
     direct = re.sub(r'"[^"\n]*"|“[^”\n]*”|「[^」\n]*」|\'[\w\W]*?\'', '', direct)
     return set(re.findall(r'(?<![\w$])\$([a-z0-9][a-z0-9._-]*)', direct))

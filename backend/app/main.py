@@ -3487,6 +3487,10 @@ async def _handle_channel_event_locked(event):
     if event.chat_type is ChatType.GROUP and not event.triggered:
         return
     turn_metadata = {**metadata, "messageId": stored.id}
+    # Keep only the actual direct input for skill invocation. This in-process
+    # fact is captured before quote enrichment and is not stored on the event.
+    invocation_text = original_event.metadata.get('hostSkillInvocationText', original_event.content)
+    turn_metadata['_skillInvocationText'] = invocation_text if isinstance(invocation_text, str) else ''
     if history is not None:
         history.include_current(stored.id)
         turn_metadata["ownerHistory"] = history.snapshot()
@@ -6942,7 +6946,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
             session_key=thread.session_key,
             run_id=run_id,
             available_tools=available,
-            prompt_text=content,
+            prompt_text=str(metadata.get('_skillInvocationText', content)),
             external_only=not owner,
             advanced_snapshot=ordinary_snapshot,
         )
@@ -7552,7 +7556,7 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                     session_key=session.sessionKey,
                     run_id=run_id,
                     available_tools=available_runtime_tools,
-                    prompt_text=data.content,
+                    prompt_text=data.invocation_text,
                     explicit_skill_ids=data.skillIds,
                     advanced_snapshot=ordinary_snapshot,
                 )

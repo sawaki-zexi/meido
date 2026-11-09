@@ -12,11 +12,25 @@ import os
 import shutil
 import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from .agent_runtime.skills import SkillRegistry, _path_has_link, _validate_relative_path, validate_skill_text
 
 _LOCK = threading.RLock()
+
+
+@contextmanager
+def skill_file_transaction(signal):
+    """Share management's commit lock with ordinary chat skill file I/O."""
+    while not _LOCK.acquire(timeout=.05):
+        signal.raise_if_cancelled()
+    try:
+        signal.raise_if_cancelled()
+        yield
+    finally:
+        _LOCK.release()
+
 # Explicitly reviewed built-in methods. Old user-authored explicit skills never
 # inherit this migration choice. Original activation survives rollback.
 BUILTIN_AUTOMATIC = frozenset({"skill-creater", "weather", "summarize", "feed-manage", "meme-manage",

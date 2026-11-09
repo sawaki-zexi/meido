@@ -118,6 +118,9 @@ class CapabilityResolution:
     def call_record(self, name: str) -> dict[str, object]:
         """Used declaration and minimal author evidence, never unused candidates."""
         definition = self.candidate_definition(name)
+        author_evidence = (self._skill_state.author_evidence() if self._skill_state is not None else
+            [{"id": item.skill_id, "source": item.source, "contentHash": item.content_hash}
+             for item in self.snapshot.skills if item.skill_id == "create-drift-skill"])
         return {"format": "tool-call-v1", "snapshotId": self.snapshot.snapshot_id,
                 "runId": self.snapshot.run_id, "roleId": self.snapshot.role_id,
                 "sessionKey": self.snapshot.session_key, "sourceScope": self.source_scope,
@@ -125,8 +128,7 @@ class CapabilityResolution:
                 "tools": [_definition_payload(definition)] if definition is not None else [],
                 "active": self.definition(name) is not None,
                 "definitionFingerprint": definition_fingerprint(definition) if definition is not None else None,
-                "skills": [{"id": item.skill_id, "source": item.source, "contentHash": item.content_hash}
-                    for item in self.snapshot.skills if item.skill_id == "create-drift-skill"]}
+                "skills": author_evidence}
 
     def selected_subset(self, names: frozenset[str] | set[str]) -> CapabilityResolution:
         """Keep a child's explicit tool names and original host scope."""

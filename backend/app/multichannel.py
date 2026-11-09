@@ -1941,7 +1941,7 @@ class TelegramChannelService:
         if not accepted:
             return False
         if self.on_message is not None:
-            metadata = {**metadata, "messageId": getattr(stored_message, "id", None)}
+            metadata = {**metadata, "messageId": getattr(stored_message, "id", None), '_skillInvocationText': raw_content}
             if history is not None:
                 history.include_current(stored_message.id)
                 metadata["ownerHistory"] = history.snapshot()

@@ -81,7 +81,8 @@ class QQBotAdapter(ChannelAdapter):
         aliases = (sender_name, author.get("username"), author.get("nick"), author.get("nickname"), author.get("display_name"))
         if not sender_id or not message_id or is_blocked_identity(self.config.blocked_sender_ids, sender_ids=(sender_id,), aliases=aliases):
             return None
-        content = str(data.get("content", "")).strip()
+        invocation_text = str(data.get("content", ""))
+        content = invocation_text.strip()
         attachments = tuple(Attachment(kind="image", url=str(item.get("url"))) for item in data.get("attachments", []) if isinstance(item, dict) and item.get("url"))
         event = InboundEvent(
             channel=self.channel,
@@ -95,7 +96,7 @@ class QQBotAdapter(ChannelAdapter):
             content=content,
             attachments=attachments,
             reply_to_message_id=str(data.get("msg_id")) if data.get("msg_id") else None,
-            metadata={"app_id": self.config.app_id, "event_type": payload.get("t")},
+            metadata={"app_id": self.config.app_id, "event_type": payload.get("t"), "hostSkillInvocationText": invocation_text},
         )
         self._targets[event.chat_id] = target_from_chat(
             account_id=self.account_id,

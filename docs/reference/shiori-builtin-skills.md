@@ -69,3 +69,5 @@ Feed 的服务依赖通过真实 MCP 目录/连接诊断，不要求服务 Pytho
 引用固定角色、来源和文件身份；读取和恢复同时检查初始策略与当前授权。正文与资源完整返回或明确拒绝超预算，资源须来自正文读取后返回的索引，不开放宿主路径。真实读取记录在工具结果 `details.skillRead` 和运行 `capabilities.skillReads` 中；已存在有效窗口的同 hash 正文不重复插入，压缩后只恢复本轮实际加载且仍合法的指导。工具授权与业务动作不恢复或重放。
 
 管理接口为 `/api/roles/{roleId}/skills`：GET 列来源、覆盖、状态与迁移预览；POST 保存并读回核验；`GET /document?ref=...` 读取正文；`PUT /settings` 保存角色开关和单项策略（必须携带 `expectedRevision`）；`POST /remove` 与 `/publish` 必须携带 `ref/expectedHash`。编辑正文同样需要当前 hash，冲突 409 保留草稿。公共发布只写数据目录，资源保留，内置与项目文件只读。无共享发布模型工具。操作见[手册](../handbook/ordinary-skills.md)。
+
+聊天 `read_file` 对普通技能正文/资源返回实际读取字节的 `contentHash`，并由宿主按当前 role/session/run 保存版本；`write_file`/`edit_file` 更新已有普通技能文件必须匹配该本轮版本，冲突为失败回执 `error_code: conflict`。最终比较和提交与管理保存共用事务锁；新建文件及非技能文件兼容原行为。图片资源的回执只持久保存类型和 hash，只有当前窗口存在匹配的真实图片块时才能复用，历史文字标记不表示图片仍可见。

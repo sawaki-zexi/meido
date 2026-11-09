@@ -176,6 +176,7 @@ jobs:
               tests/python/test_builtin_skills_api.py
               tests/python/test_skill_discovery.py
               tests/python/test_skill_lifecycle.py
+              tests/python/test_skill_review_regressions.py
               tests/python/test_skill_trigger_eval.py
               tests/python/test_input_usage_calibration.py
               tests/python/test_batched_summary.py
