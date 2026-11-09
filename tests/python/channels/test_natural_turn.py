@@ -172,19 +172,29 @@ def test_disabling_group_invalidates_pending_natural_reply_and_keeps_listening(n
 def test_natural_reply_scoped_real_message_and_no_tools(natural):
     s=natural
     async def run():
-        await s.receive('1'); await s.clock.advance(1)
-        assert len(s.calls)==2
-        assert s.calls[0][1]==[] or s.calls[0][1]==()
-        assert len(s.operations)==1
-        op,params=s.operations[0]
-        assert op=='send_group_msg' and params['group_id']==100
-        assert [item['type'] for item in params['message']]==['text']
-        messages=s.sessions.list_messages(s.thread.session_key)
-        assert len(messages)==1 and messages[0].role=='assistant'
-        assert messages[0].metadata['naturalReply'] is True
-        assert messages[0].metadata['deliveryStatus']=='sent'
-        assert messages[0].metadata['relatedInputIds']==['1']
-        assert len(s.channels.listening.page(s.role.id,s.thread.thread_id)['messages'])==1
+        try:
+            await s.receive('1')
+            task = s.scheduler.tasks[s.thread.thread_id]
+            await s.clock.advance(1)
+            # Virtual time releases coalescing; real worker I/O and delivery
+            # finish on the scheduler's owned task.
+            await asyncio.wait_for(asyncio.shield(task), 5)
+            assert len(s.calls)==2
+            assert all(not tools for _, tools in s.calls)
+            assert len(s.operations)==1
+            op,params=s.operations[0]
+            assert op=='send_group_msg' and params['group_id']==100
+            assert [item['type'] for item in params['message']]==['text']
+            messages=s.sessions.list_messages(s.thread.session_key)
+            assert len(messages)==1 and messages[0].role=='assistant'
+            assert messages[0].metadata['naturalReply'] is True
+            assert messages[0].metadata['deliveryStatus']=='sent'
+            assert messages[0].metadata['relatedInputIds']==['1']
+            assert len(s.channels.listening.page(s.role.id,s.thread.thread_id)['messages'])==1
+        finally:
+            await s.scheduler.close()
+            if main._proactive is not None:
+                await main._proactive.close()
     asyncio.run(run())
 
 @pytest.mark.parametrize('action',['wait','silence'])
@@ -234,9 +244,17 @@ def test_quota_overflow_window_and_echo_guards(natural):
 def test_forged_tool_call_never_executes_or_sends(natural):
     s=natural; s.tool=True
     async def run():
-        await s.receive('1'); await s.clock.advance(1)
-        assert len(s.calls)==1 and not s.operations
-        assert not s.sessions.list_messages(s.thread.session_key)
+        try:
+            await s.receive('1')
+            task = s.scheduler.tasks[s.thread.thread_id]
+            await s.clock.advance(1)
+            await asyncio.wait_for(asyncio.shield(task), 5)
+            assert len(s.calls)==1 and not s.operations
+            assert not s.sessions.list_messages(s.thread.session_key)
+        finally:
+            await s.scheduler.close()
+            if main._proactive is not None:
+                await main._proactive.close()
     asyncio.run(run())
 
 @pytest.mark.parametrize('outcome',['sent','failed','uncertain'])
@@ -275,19 +293,39 @@ def test_explicit_at_or_quote_preempts_natural_and_preserves_tools(natural,quote
     s=natural
     async def run():
         s.block=asyncio.Event()
-        await s.receive('1'); await s.clock.advance(1)
-        assert len(s.calls)==1
-        event=await main.channel_host.accept_event(s.adapter.account_id,payload('explicit',image=False,triggered=True,quoted=quoted))
-        task=asyncio.create_task(main._handle_channel_event(event))
-        for _ in range(20): await asyncio.sleep(0)
-        s.block.set()
-        await task
-        assert len(s.calls)==2 and s.calls[1][1]
-        messages=s.sessions.list_messages(s.thread.session_key)
-        assert [m for m in messages if m.role=='user']
-        assert not any(m.metadata.get('naturalReply') for m in messages)
-        assert len([op for op,_ in s.operations if op.startswith('send_')])==1
-        assert not s.scheduler.batches
+        explicit = None
+        try:
+            await s.receive('1')
+            natural_task = s.scheduler.tasks[s.thread.thread_id]
+            await s.clock.advance(1)
+            async def model_entered():
+                while not s.calls:
+                    await asyncio.sleep(.01)
+            await asyncio.wait_for(model_entered(), 5)
+            assert len(s.calls)==1
+            event=await main.channel_host.accept_event(s.adapter.account_id,payload('explicit',image=False,triggered=True,quoted=quoted))
+            explicit=asyncio.create_task(main._handle_channel_event(event))
+            # The natural model is still blocked. The explicit event must
+            # cancel it before the shared adapter can release its next call.
+            await asyncio.wait_for(asyncio.gather(natural_task, return_exceptions=True), 5)
+            assert natural_task.cancelled()
+            s.block.set()
+            await asyncio.wait_for(asyncio.shield(explicit), 5)
+            assert len(s.calls)==2 and s.calls[1][1]
+            messages=s.sessions.list_messages(s.thread.session_key)
+            assert [m for m in messages if m.role=='user']
+            assert not any(m.metadata.get('naturalReply') for m in messages)
+            assert len([op for op,_ in s.operations if op.startswith('send_')])==1
+            assert not s.scheduler.batches
+        finally:
+            s.block.set()
+            if explicit is not None:
+                if not explicit.done():
+                    explicit.cancel()
+                await asyncio.gather(explicit, return_exceptions=True)
+            await s.scheduler.close()
+            if main._proactive is not None:
+                await main._proactive.close()
     asyncio.run(run())
 
 

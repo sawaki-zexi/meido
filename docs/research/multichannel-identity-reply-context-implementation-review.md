@@ -9,7 +9,7 @@
 
 Meido 从 main 的 98d6a31 开始实施。发布 [PR #339](https://github.com/sawaki-zexi/meido/pull/339) 时，main 合入 [857333d / #337](https://github.com/sawaki-zexi/meido/commit/857333dbb72e7b8ea12ede8f043015c694c37b0c) 的按需技能能力，本分支已整合该主线；模型提供层保留技能窗口与来源观察两条路径，受影响链路另做定向验证。Tulpa 的复核版本仍为 6753a28。Shiori 复核时 main 已从方案基线 249043d 前进至 467a97d；[两者差异](https://github.com/YinFengWindy/Shiori-Agent/compare/249043d653cd707d6556b737db445ec80495094a...467a97d1749b6f5aa7929f80c4304bc3732e989b)只有 Fish Audio 相关文件，下表引用的来源、输入保护及回复代码未变。
 
-最终交付核对又整合了 [5f78982 / #340](https://github.com/sawaki-zexi/meido/commit/5f78982ff079ec2e59759404c4e119e656f7bb16)。该主线仅调整前台 Shell 撤权后的资源清理、相应回归和 CI / 参考文档；本期来源与应答源码没有新增改动，沿用已完成的两轴审查，对整合后的候选运行 CI。
+最终交付核对又整合了 [5f78982 / #340](https://github.com/sawaki-zexi/meido/commit/5f78982ff079ec2e59759404c4e119e656f7bb16) 的前台 Shell 撤权清理，以及 [fd551e9 / #342](https://github.com/sawaki-zexi/meido/commit/fd551e96d560b54260e6f6246c7fbe43a0144076) 的本轮工具与长期能力表述。后者保留已确认历史事实，但不由过去声明授予本轮权限；本分支将其自然回归接入规划和表达两个阶段，保留双方检查。原来源与应答实现沿用已完成的两轴审查，另核验整合增量并对最终候选运行 CI。
 
 ## 核验结论
 
@@ -78,9 +78,10 @@ Meido 继续使用现有线程、角色模型、调度和投递运行时。Tulpa
 | main-integration-group-natural.log | 37 passed；整合后的显式发送、自然两阶段、主人身份与回复协议。 |
 | private-quote-author-regression.log | 76 passed；私聊不可读引用的作者资料/正文统一降级，覆盖图片、授权回放、资料整理与同群合法引用。 |
 | final-review-boundaries-regression.log | 70 passed；逻辑对象与目录显示分离、非触发来源失效、Telegram 真实 HTTP 分段/降级及回执重放。 |
+| capability-main-integration-regression.log | 55 passed；整合 #342 后，规划和表达均保留已确认历史与本轮工具限制；两个阶段分别伪造业务调用均不执行、不投递，保留抢占和生命周期断言。 |
 | git diff --check | 通过。 |
 
-最后三组的准确命令：
+以下为相关定向检查的准确命令；其余检查按上表日志核验：
 
 ```powershell
 python -m pytest -q tests/python/test_owner_history_view.py tests/python/test_owner_history_view_api.py tests/python/channels/test_conversation_relations.py tests/python/channels/test_conversation_projection.py tests/python/channels/test_owner_quoted_attachment.py --tb=short
@@ -88,6 +89,8 @@ python -m pytest -q tests/python/test_owner_history_view.py tests/python/test_ow
 python -m pytest -q tests/python/channels/test_conversation_projection.py::test_private_memory_request_resolves_quotes_only_inside_its_admitted_window tests/python/channels/test_conversation_projection.py::test_actual_external_maintenance_request_keeps_sources_quotes_and_response_relations tests/python/channels/test_conversation_projection.py::test_owner_statement_extractor_receives_only_owner_inputs_with_quote_attribution tests/python/channels/test_consolidation_parity.py tests/python/channels/test_owner_memory_progress.py tests/python/test_context_windows.py::test_summary_shrinking_preserves_host_source_without_trusting_body_labels --tb=short
 
 python -m pytest -q tests/python/channels/test_natural_conversation.py tests/python/channels/test_natural_media_turn.py tests/python/channels/test_natural_turn.py::test_natural_quote_names_owner_separately_from_guest --tb=short
+
+python -m pytest -q tests/python/test_capability_scope.py tests/python/channels/test_natural_capability_scope.py tests/python/channels/test_natural_turn.py tests/python/channels/test_natural_conversation.py --tb=short
 ```
 
 两项兼容用例的修正保留原验收要求：固定基线 98d6a31 的 rich 消息本来就可能以 user 背景帧结束，签名测试改为选择实际 assistant，完整块类型、签名和 namespace 断言不变；36 条历史的投影用例隔离既有 Markdown 后台维护，仍断言一次对话请求、全部历史与原记录不变，未修改 memory_service.py。

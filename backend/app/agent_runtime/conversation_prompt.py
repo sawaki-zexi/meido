@@ -20,7 +20,8 @@ def tool_use_prompt(names: list[str], request_time: str) -> str:
     if not set(names) - {"finish_reply"}:
         return (
             "[查证与工具使用]\n" + (f"本轮时间：{request_time}。\n" if request_time else "") +
-            "本次请求没有业务工具可用。依据提供的材料回答，历史不是现况；缺证据就说明不能确认或简短澄清。"
+            "本次请求没有业务工具可用。需要操作时说明本轮不能执行，不把当前模式限制说成永久没有该能力；"
+            "承接已提供的历史事实，但历史不是当前权限或依赖现况。缺证据就说明不能确认或简短澄清。"
             "无实际结果或回执，不声称已查询或完成。"
         )
     parts = [

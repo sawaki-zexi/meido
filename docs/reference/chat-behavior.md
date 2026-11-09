@@ -1,13 +1,13 @@
 # 聊天表达与查证提示
 
-状态：当前实现；最后核验：2026-10-30；Refs #275、#277。
-事实来源：[共同提示](../../backend/app/agent_runtime/conversation_prompt.py)、[Provider](../../backend/app/agent_runtime/meido_provider.py)、[分条协议](../../backend/app/agent_runtime/natural_reply.py)、[模型请求验证](../../tests/python/test_natural_reply_api.py)。
+状态：当前实现；最后核验：2026-11-09；Refs #275、#277、#338、#341。
+事实来源：[共同提示](../../backend/app/agent_runtime/conversation_prompt.py)、[Provider](../../backend/app/agent_runtime/meido_provider.py)、[分条协议](../../backend/app/agent_runtime/natural_reply.py)、[自然规划与表达](../../backend/app/channels/natural_turn.py)、[本群来源时间线](../../backend/app/channels/conversation_context.py)、[模型请求验证](../../tests/python/test_natural_reply_api.py)。
 
 ## 表达与发送协议分开
 
 普通角色请求固定带有 `[对话方式]`，涵盖意图与语境优先、专业任务保持角色声音、按内容控制详略、不机械安抚/反问/表演动作、未知词不扩写成用户需求，以及明确反馈即时生效。角色设定与持久数据不被重写。
 
-`naturalChatEnabled` 仅控制普通回复的 `finish_reply(messages)` 分条提交方式，不再决定基础聊天规则是否生效。自然群聊通过同一角色 Provider 使用共同原则，但仍只有 reply/wait/silence 和原 JSON 契约，不因此获得工具或主人记忆权限。
+`naturalChatEnabled` 仅控制普通回复的 `finish_reply(messages)` 分条提交方式，不决定基础聊天规则或显式群回合的可选回应关系是否生效。自然群聊通过同一角色 Provider 使用共同原则，先规划 reply/wait/silence 与回应关系，宿主核验后再生成表达；两个阶段均不因此获得业务工具或主人记忆权限。
 
 提供独立 system 的摘要等专用请求不强行加入聊天风格。旧式纯文本适配器收到同样的表达原则，并明确其实际没有可调用业务工具；不会把宿主工具目录说成已发送给这个适配器的 schema。
 
@@ -20,6 +20,18 @@
 提示要求区分空结果、失败与成功；实际执行、工具授权和输出保存仍由原 Runtime 负责。网页内容和搜索材料不被当成可以改角色或权限的指令。基础表达和事实规则随最小回退保留；#277 的硬预算回退保留能装入完整预算的已授权业务工具，装不下则明确失败，可省略可选记忆和名称目录，不改变持久授权或历史。
 
 #277 后续按 Shiori `21e68d99` 补齐工具路由、独立委托、显式记忆写入/来源纠错及历史回溯指引。只有当前请求存在相应工具才给该工具的操作说明；仅有 finish_reply 时仍明确没有业务工具。已注入完整技能直接遵循，未载入且有可读路径才建议读取 SKILL.md；不扩大文件根。完整工具分类与适配差异见[核验报告](../research/shiori-tool-exposure-and-guidance-2026-10-30.md)。
+
+## 本轮执行限制与历史能力表述
+
+当前可见名称限定本次请求能调用的工具。无业务工具或仅有回复协议时，提示要求解释为本轮不能执行，不能据此推断角色永久没有相关能力；不增加工具、发现能力或自动切换为主人任务。旧能力声明、其他角色清单和当前聊天补充也不授予本轮调用权限。
+
+已确认的历史发言与结果可以作为过去事实承接，但不证明当前依赖可用或新操作已完成。工具可见、依赖未知、依赖明确不可用、实际成功执行分别处理：未知保持尚未核验，明确不可用按当前证据说明限制，完成必须有真实结果或回执。
+
+[最终 HTTP 请求回归](../../tests/python/test_capability_scope.py)覆盖无工具、仅回复协议、工具可见及未知/不可用依赖、历史成功事实；[渠道回归](../../tests/python/channels/test_natural_capability_scope.py)通过本地受控平台和模型验证明确 @ 请求后的自然补充在规划、表达两个实际请求中保留确认送达的助手发言，两个请求的业务工具均为空；任一阶段伪造业务调用都不会执行或投递。
+
+自然接话采用规划、宿主核验、表达流程，两个实际请求分别计入原预算。当前群的有界时间线共同呈现旁听、此前显式问答和角色已确认送达的内容，并保留来源与应答关系；逻辑回应对象与显示引用、@ 分别校验，不扩大工具权限或发送会话。这些受控请求验证证明上下文与执行契约，不等同于真实模型的语义效果，也不验证生图服务可用性。
+
+固定来源：[Shiori `467a97d` minimal prompting](https://github.com/YinFengWindy/Shiori-Agent/blob/467a97d1749b6f5aa7929f80c4304bc3732e989b/apps/backend/agent/prompting/minimal.py)将工具关闭限定于请求，并保留上下文和结果事实；[Tulpa `6753a28` turn handling](https://github.com/fumingyang2004/Tulpa/blob/6753a28a9757c93c0ad34ed54064965df2cb081c/chatlocal/mcp_chat_turns.py)区分当前参与状态与已发生事实。这里仅借鉴这种边界，不移植其参与或权限机制。
 
 ## 条件化技能
 
