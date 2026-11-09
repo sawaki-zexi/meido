@@ -77,7 +77,14 @@ class TaskCompletionWorker:
             retained = self.tasks.completion(task_id, origin)
             content = str(retained["content"]) if retained and retained["content"] else ""
             if not content:
-                content = await asyncio.wait_for(self.summarize(snapshot), timeout=20)
+                try:
+                    content = await asyncio.wait_for(self.summarize(snapshot), timeout=20)
+                except (RuntimeError, TimeoutError):
+                    # Reporting is optional; the real terminal state is not.
+                    # Permission, cancellation and storage failures retain
+                    # their existing sealing, propagation or retry behavior.
+                    content = ("结果整理暂时不可用，任务记录已保留。"
+                               f"可在原会话回复“查询任务 {task_id}”查看结果。")
                 content = f"[内部子任务完成 / {task_id} / {snapshot.status}]\n{content[:8000]}"
                 self.tasks.update_completion(task_id, status="pending", content=content)
             if not self.authorized(origin):

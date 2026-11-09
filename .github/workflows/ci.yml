@@ -143,6 +143,9 @@ jobs:
               tests/python/test_spawn.py::test_provider_local_deadline_is_distinct_from_provider_error_text
               tests/python/test_spawn.py::test_management_seals_content_and_stop_from_other_roles_and_sessions
               tests/python/test_spawn_api.py::test_background_completion_survives_parent_and_is_appended_once
+              tests/python/test_spawn_api.py::test_background_summary_failure_uses_original_model_guard_and_notifies_without_private_result
+              tests/python/test_spawn_completion_summary.py
+              tests/python/test_spawn_completion_recovery.py
               tests/python/test_spawn_api.py::test_channel_management_and_watchdog_preserve_frozen_actual_source[unbind]
               tests/python/test_coding_spawn.py::test_coding_spawn_uses_owned_task_before_chat_provider_and_continues_same_job
               tests/python/test_coding_spawn.py::test_coding_requires_explicit_background_zero_retry_and_exclusive_schema
