@@ -147,6 +147,10 @@ class DriftSkillCatalog:
         if snapshot is None or snapshot.get('snapshotId') != context.capability_snapshot_id:
             return None
         author = next((item for item in snapshot.get('skills', []) if item.get('id') == 'create-drift-skill'), None)
+        binding = context.capability_binding
+        skill_state = binding._skill_state if binding is not None else None
+        if skill_state is not None and author not in skill_state.author_evidence(require_current=True):
+            return None
         expected = next((skill for skill in SkillRegistry.discover(BUILTIN_ROOT, source='builtin').skills
             if skill.skill_id == 'create-drift-skill'), None)
         if author is None or author.get('source') != 'builtin' or expected is None:

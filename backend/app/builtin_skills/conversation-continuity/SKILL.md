@@ -1,7 +1,8 @@
 ---
 id: conversation-continuity
+name: 互动连续性
 version: 1.0.0
-description: 处理互动转折与明确反馈。线索：生气、道歉、对不起、别这样、别叫、称呼、不喜欢、开玩笑、逗你、误会、sorry。
+description: 处理互动转折与明确反馈，普通问候和没有反馈的闲聊不需要读取。线索：生气、道歉、对不起、别这样、别叫、称呼、不喜欢、开玩笑、逗你、误会、sorry。
 tools: []
 activation: keyword
 ---

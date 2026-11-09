@@ -198,7 +198,8 @@ class FeishuAdapter(ChannelAdapter):
             content=content,
             attachments=attachments,
             reply_to_message_id=str(message.get("parent_id")) if message.get("parent_id") else None,
-            metadata={"open_id": sender_id, "event_type": header.get("event_type"), "messageType": msg_type},
+            metadata={"open_id": sender_id, "event_type": header.get("event_type"), "messageType": msg_type,
+                "hostSkillInvocationText": content if msg_type in {'text', 'post'} else ''},
         )
         self._targets[chat_id] = target_from_chat(account_id=self.account_id, chat_id=chat_id, kind=TargetKind.PRIVATE, display_name=parsed_event.sender_name)
         return parsed_event

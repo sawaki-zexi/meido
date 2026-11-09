@@ -171,6 +171,7 @@ def _provider_call_ids(message: AssistantMessage) -> dict[str, str]:
 class RequestContext:
     namespace: str = ''
     blocks: tuple[str, ...] = ()
+    skills: object | None = None
 
 
 @dataclass(frozen=True)
@@ -204,6 +205,7 @@ class MeidoProvider:
         usage_anchors: UsageAnchors | None = None, usage_context: tuple | None = None,
         readonly_usage: bool = False,
         stable_memory: str = '',
+        skill_state=None,
     ) -> None:
         self.adapter = adapter
         self.role = role
@@ -212,6 +214,7 @@ class MeidoProvider:
         self.stable_memory = stable_memory
         self.current_input = _CURRENT_INPUT
         self.capability_prompt = capability_prompt
+        self.skill_state = skill_state
         # Host-verified sender/scope facts survive optional-context degradation.
         self.required_context = required_context
         self.namespace_context = namespace_context
@@ -269,6 +272,7 @@ class MeidoProvider:
             return RequestContext(
                 namespace,
                 tuple(self.context_blocks()) if self.context_blocks else (),
+                self.skill_state.capture() if self.skill_state is not None else None,
             )
         result = await asyncio.to_thread(read)
         signal.raise_if_cancelled()
@@ -281,6 +285,8 @@ class MeidoProvider:
             yield event
 
     def stream_prepared(self, request, *, system, messages, signal):
+        if self.skill_state is not None:
+            self.skill_state.commit_window(messages)
         rich = getattr(self.adapter, 'stream_rich_messages', None)
         if rich is not None:
             return self._stream_rich_structured(system, messages, request.tools, signal, rich, request)
@@ -314,7 +320,8 @@ class MeidoProvider:
         # Legacy text adapters do not receive executable schemas.
         if not callable(getattr(self.adapter, 'stream_rich_messages', None)) and not callable(getattr(self.adapter, 'stream_structured_messages', None)):
             prompt = self._tool_prompt_for(())
-        current = ''
+        current = (self.skill_state.prompt_for(messages, context.skills)
+                   if self.skill_state is not None and context.skills is not None else '')
         capacity = (configuration.contextWindowTokens if configuration else None) or 32768
         available = capacity - (max_tokens or 2048) - self.context_safety_margin
         for block in context.blocks:

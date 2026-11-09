@@ -146,7 +146,8 @@ async def _prepare(host, role_id, *, compact, thread=None, sender_id=''):
                 required_context=identity, max_response_tokens=settings.maxTokens,
                 context_blocks=lambda: host._channel_memory_blocks(role_id, thread.thread_id, sender_id),
                 context_safety_margin=settings.contextSafetyMarginTokens,
-                stable_memory=host._role_memory_context(role_id, include_recent=False, external=not private))
+                stable_memory=host._role_memory_context(role_id, include_recent=False, external=not private),
+                skill_state=capabilities._skill_state)
         window = await asyncio.to_thread(host._ordinary_context_provider, provider, settings,
             role_id=role_id, session_key=history.session_key, run_id='', history=history, readonly=not compact,
             owner=owner, source_authority=source)

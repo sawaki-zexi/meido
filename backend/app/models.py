@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any, Literal
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 from .novelai_generation.config import NovelaiRoleConfig
 
 from .coding_tasks.config import CodingRoleConfig
@@ -261,6 +261,21 @@ class SendMessageInput(BaseModel):
     attachments: list[str] = Field(default_factory=list)
     toolMemoryIds: list[str] = Field(default_factory=list)
     skillIds: list[str] = Field(default_factory=list)
+    _invocation_text: str | None = PrivateAttr(default=None)
+
+    @model_validator(mode='wrap')
+    @classmethod
+    def preserve_invocation_text(cls, value, handler):
+        result = handler(value)
+        if isinstance(value, dict) and isinstance(value.get('content'), str):
+            result._invocation_text = value['content']
+        return result
+
+    @property
+    def invocation_text(self) -> str:
+        # Display/storage still use the normalized content. Authorization must
+        # retain Markdown indentation from the owner's actual submitted input.
+        return self.content if self._invocation_text is None else self._invocation_text
 
     @field_validator("content")
     @classmethod

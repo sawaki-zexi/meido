@@ -403,6 +403,11 @@ class RuntimeManager:
                 else:
                     self.sessions.append_agent_message(run.sessionKey, message, run_id=run.runId)
                 persisted_tool_calls.add(message.tool_call_id)
+                if capabilities is not None and capabilities._skill_state is not None:
+                    current_run = self.sessions.get_run(run.runId)
+                    if current_run is not None:
+                        self.sessions.update_run(run.runId, status=current_run.status,
+                            model_snapshot={**current_run.modelSnapshot, 'capabilities': capabilities.run_metadata()})
 
             async with aclosing(run_agent_loop(
                 provider=provider,
