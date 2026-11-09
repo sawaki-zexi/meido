@@ -109,6 +109,8 @@ jobs:
               tests/python/channels/test_adapters.py::test_napcat_group_event_is_normalized_for_host_listener_policy
               tests/python/channels/test_adapters.py::test_napcat_group_member_target_uses_private_message_shape
               tests/python/channels/test_runtime_delivery.py::test_real_channel_runtime_commits_reply_only_after_confirmed_delivery
+              tests/python/channels/test_qq_failure_feedback.py
+              tests/python/test_novelai_background_channel.py::test_background_owner_channel_returns_text_then_one_original_media_receipt[fallback_journal_failure]
               tests/python/channels/test_natural_turn.py::test_natural_model_receives_host_verified_sender_identity
               tests/python/channels/test_natural_turn.py::test_natural_reply_scoped_real_message_and_no_tools
               tests/python/channels/test_natural_turn.py::test_forged_tool_call_never_executes_or_sends

@@ -121,9 +121,11 @@ def test_background_owner_channel_returns_text_then_one_original_media_receipt(n
                 await transport.start(inbound)
                 await transport.wait_connected()
                 await asyncio.wait_for(parent_done.wait(), 5)
-                assert len(sends) == (0 if foreground_fallback else 1)
-                if not foreground_fallback:
-                    assert not any(part.get('type') == 'image' for part in sends[0]['message'])
+                assert len(sends) == 1
+                assert not any(part.get('type') == 'image' for part in sends[0]['message'])
+                if foreground_fallback:
+                    assert any(part.get('type') == 'text' and part['data']['text'] == main.QQ_REPLY_FAILURE_NOTICE
+                        for part in sends[0]['message'])
                 thread = channels.list_threads(service.role.id)[0]
                 before = service.sessions.list_messages(thread.session_key)
                 if not foreground_fallback:
@@ -212,7 +214,7 @@ def test_background_owner_channel_returns_text_then_one_original_media_receipt(n
                         break
                     await asyncio.sleep(.01)
                 assert history[0]['status'] == 'succeeded' and history[0]['deliveryStatus'] == expected
-                send_count = 1 if foreground_fallback else 2
+                send_count = 2
                 assert len(service.peer.requests) == 1 and len(sends) == send_count
                 media_send = sends[-1]
                 image = next(part for part in media_send['message'] if part.get('type') == 'image')
@@ -233,6 +235,9 @@ def test_background_owner_channel_returns_text_then_one_original_media_receipt(n
                     assert rows[-1].metadata['platformMessageId'] == actual_media_receipts[0].platform_message_id
                 if foreground_fallback:
                     assert history[0]['deliveryMode'] == 'source_completion'
+                    failed = next(row for row in rows if row.metadata.get('channelFailureFeedback'))
+                    assert failed.status == 'failed' and service.sessions.get_run(failed.runId).status == 'failed'
+                    assert failed.metadata['deliveryStatus'] == 'sent'
                 if receipt_case == 'sent':
                     import httpx
                     original = history[0]
