@@ -1,7 +1,8 @@
 ---
 id: conversation-recall
+name: 按需回忆
 version: 1.0.0
-description: 按需回忆和核对旧事。线索：之前、上次、还记得、记错、当时、回忆、earlier、remember。
+description: 主人要求回忆或核对过去的具体事实时使用；当前信息足够的普通闲聊不主动检索。线索：之前、上次、还记得、记错、当时、回忆、earlier、remember。
 tools: []
 activation: keyword
 ---

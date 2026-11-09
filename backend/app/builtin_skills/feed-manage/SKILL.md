@@ -1,7 +1,8 @@
 ---
 id: feed-manage
+name: 订阅与文章
 version: 1.0.0
-description: 管理 RSS/Atom 订阅并查询文章。用于询问信息来源、当前订阅、最新动态、订阅概况、搜索或文章目录。
+description: 主人要管理 RSS/Atom 订阅、查看已订阅来源的最新动态或搜索文章时使用；泛泛聊天、普通网页搜索与未授权订阅操作不使用。
 tools: [tool_search, mcp_list, mcp_add]
 activation: explicit
 ---

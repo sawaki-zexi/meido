@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import shutil
+import yaml
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -11,7 +12,7 @@ from typing import Callable, Iterable
 
 
 _SKILL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
-_ACTIVATIONS = frozenset({"explicit", "role_default", "keyword"})
+_ACTIVATIONS = frozenset({"explicit", "role_default", "keyword", "model"})
 _TRUST_LEVELS = frozenset({"builtin", "project", "installed", "external"})
 _IMPLICIT_ACTIVATION_TRUST_LEVELS = frozenset({"installed", "external"})
 _TRUST_RANK = {"external": 0, "installed": 1, "project": 2, "builtin": 3}
@@ -21,6 +22,7 @@ _SOURCE_TRUST_LEVELS = {
     "builtin": "builtin",
     "role": "project",
     "project": "project",
+    "shared": "project",
     "installed": "installed",
     "external": "external",
 }
@@ -69,6 +71,9 @@ class SkillDescriptor:
     supporting_files: tuple[SkillResourceDescriptor, ...] = ()
     required_bins: tuple[str, ...] = ()
     required_env: tuple[str, ...] = ()
+    name: str = ""
+    allow_implicit_invocation: bool | None = None
+    ignored_metadata: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "required_bins", _dependencies(self.required_bins, environment=False))
@@ -97,6 +102,9 @@ class SkillDescriptor:
             "contentHash": self.content_hash or None,
             "supportingFiles": [item.to_dict() for item in self.supporting_files],
             "requires": {"bins": list(self.required_bins), "env": list(self.required_env)},
+            "name": self.name or self.skill_id,
+            "allowImplicitInvocation": self.allow_implicit_invocation,
+            "ignoredMetadata": list(self.ignored_metadata),
         }
 
     def materialize(self) -> SkillDescriptor:
@@ -128,6 +136,7 @@ class SkillDescriptor:
             current_size, current_hash = _hash_bounded_file(resolved_resource)
             if current_size != resource.size or current_hash != resource.content_hash:
                 raise ValueError("skill supporting file changed after discovery")
+        _check_referenced_resources(body, self)
         return replace(
             self,
             body=body,
@@ -153,11 +162,13 @@ class SkillRegistry:
         skills: Iterable[SkillDescriptor] = (),
         *,
         diagnostics: Iterable[dict[str, object]] = (),
+        all_skills: Iterable[SkillDescriptor] | None = None,
     ) -> None:
         self._skills: dict[str, SkillDescriptor] = {}
         for skill in skills:
             self.register(skill)
         self.diagnostics = tuple(dict(item) for item in diagnostics)
+        self.all_skills = tuple(all_skills) if all_skills is not None else self.skills
 
     @property
     def skills(self) -> tuple[SkillDescriptor, ...]:
@@ -182,7 +193,7 @@ class SkillRegistry:
         candidates = (
             [root_path / "SKILL.md"]
             if root_path.name.lower() == "skills" and (root_path / "SKILL.md").is_file()
-            else sorted(path / "SKILL.md" for path in root_path.iterdir() if path.is_dir())
+            else sorted(path / "SKILL.md" for path in root_path.iterdir() if path.is_dir() and not path.name.startswith('.'))
         )
         loaded: list[SkillDescriptor] = []
         diagnostics: list[dict[str, object]] = []
@@ -233,7 +244,7 @@ class SkillRegistry:
             diagnostics.extend(registry.diagnostics)
         # Root order breaks ties within one source (workspace before legacy).
         # A role's customization takes precedence over project and bundled text.
-        priority = {"role": 0, "project": 1, "installed": 2, "external": 3, "builtin": 4}
+        priority = {"role": 0, "shared": 1, "project": 2, "installed": 3, "external": 4, "builtin": 5}
         unique: dict[str, SkillDescriptor] = {}
         for skill in sorted(loaded, key=lambda item: priority[item.source]):
             if skill.skill_id in unique:
@@ -241,7 +252,7 @@ class SkillRegistry:
                                     "version": skill.version, "selectedSource": unique[skill.skill_id].source})
             else:
                 unique[skill.skill_id] = skill
-        return cls(unique.values(), diagnostics=diagnostics)
+        return cls(unique.values(), diagnostics=diagnostics, all_skills=loaded)
 
     def resolve(
         self,
@@ -252,8 +263,9 @@ class SkillRegistry:
         enabled_tools: set[str] | frozenset[str] | None = None,
         available_env: set[str] | frozenset[str] = frozenset(),
         dependency_check: Callable[[SkillDescriptor, str], str | None] | None = None,
+        model_selection: bool = False,
     ) -> SkillResolution:
-        explicit_ids = set(explicit_ids) | set(re.findall(r"(?<![\w$])\$([a-z0-9][a-z0-9._-]*)", prompt))
+        explicit_ids = set(explicit_ids) | explicit_skill_ids(prompt)
         selected: list[SkillDescriptor] = []
         dependency_sections: list[str] = []
         diagnostics = [dict(item) for item in self.diagnostics]
@@ -278,7 +290,8 @@ class SkillRegistry:
                     "error": "skill requires explicit activation for its trust level",
                 })
                 continue
-            if not _is_active(skill, prompt=prompt, explicit_ids=explicit_ids):
+            if not (skill.skill_id in explicit_ids or skill.activation == "role_default"
+                    or not model_selection and _is_active(skill, prompt=prompt, explicit_ids=explicit_ids)):
                 continue
             reasons = {name: dependency_check(skill, name) if dependency_check is not None
                        else None if shutil.which(name) is not None else 'command is unavailable'
@@ -350,14 +363,8 @@ def _parse_skill(path: Path, *, root_path: Path, source: str, trust_level: str, 
     except OSError:
         raise
     front_matter = _read_skill_front_matter(path)
-    skill_id = _required_text(front_matter, "id")
-    version = _required_text(front_matter, "version")
+    skill_id, version, name, activation, implicit, ignored = validate_skill_metadata(front_matter)
     description = _required_text(front_matter, "description")
-    activation = str(front_matter.get("activation", "explicit")).strip()
-    if not _SKILL_ID.fullmatch(skill_id):
-        raise ValueError("id must contain only lowercase letters, digits, '.', '_' or '-'")
-    if activation not in _ACTIVATIONS:
-        raise ValueError(f"unsupported activation: {activation}")
     tools = _tools(front_matter.get("tools", []))
     digest = _hash_skill(path)
     supporting_files = _discover_supporting_files(
@@ -381,6 +388,7 @@ def _parse_skill(path: Path, *, root_path: Path, source: str, trust_level: str, 
         supporting_files=supporting_files,
         required_bins=_dependencies(front_matter.get("requires.bins", []), environment=False),
         required_env=_dependencies(front_matter.get("requires.env", []), environment=True),
+        name=name, allow_implicit_invocation=implicit, ignored_metadata=ignored,
     )
 
 
@@ -418,6 +426,8 @@ def _read_skill_body(path: Path) -> tuple[str, str]:
         raise ValueError("skill exceeds 256 KiB")
     text = raw.decode("utf-8")
     _, body = _split_front_matter(text)
+    if not body:
+        raise ValueError('skill body is required')
     return body, hashlib.sha256(raw).hexdigest()
 
 
@@ -472,12 +482,14 @@ def _discover_supporting_files(
 
 def _validate_relative_path(value: str, label: str) -> None:
     path = Path(value)
-    if not value.strip() or path.is_absolute() or ".." in path.parts:
+    reserved = {'CON', 'PRN', 'AUX', 'NUL', *(f'COM{i}' for i in range(1, 10)), *(f'LPT{i}' for i in range(1, 10))}
+    if (not value.strip() or path.is_absolute() or ".." in path.parts or '\\' in value or ':' in value or '\0' in value
+            or any(part.rstrip(' .') != part or part.split('.')[0].upper() in reserved for part in path.parts)):
         raise ValueError(f"{label} must stay within the discovery root")
 
 
 def _is_link(path: Path) -> bool:
-    return path.is_symlink() or path.is_junction()
+    return path.is_symlink() or path.is_junction() or path.is_file() and path.stat().st_nlink > 1
 
 
 def _path_has_link(path: Path) -> bool:
@@ -504,75 +516,102 @@ def _split_front_matter(raw: str) -> tuple[dict[str, object], str]:
 
 
 def _parse_front_matter(lines: list[str]) -> dict[str, object]:
-    values: dict[str, object] = {}
-    current_list: str | None = None
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("- "):
-            if current_list is None:
-                raise ValueError("list item has no field")
-            current_value = values.setdefault(current_list, [])
-            if not isinstance(current_value, list):
-                raise ValueError(f"{current_list} must be a list")
-            current_value.append(_scalar(line[2:].strip()))
-            continue
-        if ":" not in line:
-            raise ValueError(f"invalid front matter line: {raw_line}")
-        key, raw_value = line.split(":", 1)
-        key = key.strip()
-        if key not in {"id", "version", "description", "tools", "activation", "requires.bins", "requires.env"}:
-            raise ValueError(f"unsupported front matter field: {key}")
-        if key in values:
-            raise ValueError(f"duplicate front matter field: {key}")
-        if key in {"tools", "requires.bins", "requires.env"}:
-            inline = raw_value.strip()
-            if not inline:
-                values[key] = []
-                current_list = key
-            elif inline.startswith("[") and inline.endswith("]"):
-                values[key] = [_scalar(item) for item in _inline_items(inline[1:-1])]
-                current_list = None
-            else:
-                values[key] = _scalar(inline)
-                current_list = None
-        else:
-            values[key] = _scalar(raw_value.strip())
-            current_list = None
-    return values
+    raw = "\n".join(lines)
+    # SafeLoader rejects executable tags. Aliases are unnecessary in this small
+    # interchange format and can expand a bounded header into unbounded data.
+    try:
+        if any(isinstance(token, yaml.tokens.AliasToken) for token in yaml.scan(raw)):
+            raise ValueError("front matter aliases are not supported")
+        class UniqueLoader(yaml.SafeLoader):
+            pass
+        def unique_mapping(loader, node):
+            mapping = {}
+            for key_node, value_node in node.value:
+                key = loader.construct_object(key_node)
+                if not isinstance(key, str) or key in mapping:
+                    raise ValueError(f"duplicate front matter field: {key}")
+                mapping[key] = loader.construct_object(value_node)
+            return mapping
+        UniqueLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, unique_mapping)
+        parsed = yaml.load(raw, Loader=UniqueLoader)
+    except yaml.YAMLError as error:
+        raise ValueError("invalid YAML front matter") from error
+    if not isinstance(parsed, dict):
+        raise ValueError("front matter must be a mapping")
+    for key in ("id", "name", "description", "activation"):
+        if key in parsed and not isinstance(parsed[key], str):
+            raise ValueError(f"{key} must be text")
+    # Existing Meido versions were unquoted and could be numeric YAML scalars.
+    if "version" in parsed and isinstance(parsed["version"], (int, float)) and not isinstance(parsed["version"], bool):
+        parsed["version"] = str(parsed["version"])
+    requires = parsed.get("requires")
+    if requires is not None:
+        if not isinstance(requires, dict) or set(requires) - {"bins", "env"}:
+            raise ValueError("requires supports only bins and env")
+        for key, value in requires.items():
+            if f"requires.{key}" in parsed:
+                raise ValueError(f"duplicate dependency field: {key}")
+            parsed[f"requires.{key}"] = value
+    policy = parsed.get("policy")
+    if policy is not None:
+        if not isinstance(policy, dict):
+            raise ValueError("policy must be a mapping")
+        if "allow_implicit_invocation" in policy:
+            if "allow_implicit_invocation" in parsed:
+                raise ValueError("duplicate invocation policy")
+            parsed["allow_implicit_invocation"] = policy["allow_implicit_invocation"]
+    return parsed
 
 
-def _scalar(value: str) -> str:
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        return value[1:-1]
-    return value
+def validate_skill_metadata(values: dict[str, object]):
+    name = str(values.get("name", values.get("id", ""))).strip()
+    if not name or len(name) > 120:
+        raise ValueError("name or id is required (at most 120 characters)")
+    skill_id = values.get("id", name)
+    if not isinstance(skill_id, str) or not _SKILL_ID.fullmatch(skill_id):
+        raise ValueError("id/name must contain only lowercase letters, digits, '.', '_' or '-'")
+    version = values.get("version", "1.0.0")
+    if not isinstance(version, str) or not version.strip():
+        raise ValueError("version must be non-empty text")
+    description = _required_text(values, "description")
+    if len(description) > 2000:
+        raise ValueError("description exceeds 2000 characters; put steps in the body")
+    implicit = values.get("allow_implicit_invocation")
+    if implicit is not None and not isinstance(implicit, bool):
+        raise ValueError("allow_implicit_invocation must be boolean")
+    activation = values.get("activation", "model" if "name" in values or implicit is True else "explicit")
+    if activation not in _ACTIVATIONS:
+        raise ValueError(f"unsupported activation: {activation}")
+    if implicit is True and activation == "explicit" or implicit is False and activation in {"keyword", "role_default"}:
+        raise ValueError("activation conflicts with allow_implicit_invocation")
+    _tools(values.get("tools", []))
+    _dependencies(values.get("requires.bins", []), environment=False)
+    _dependencies(values.get("requires.env", []), environment=True)
+    supported = {"id", "name", "version", "description", "tools", "activation", "allow_implicit_invocation", "policy", "requires", "requires.bins", "requires.env"}
+    ignored = tuple(sorted(set(values) - supported))
+    if isinstance(values.get("policy"), dict):
+        ignored += tuple(f"policy.{key}" for key in values["policy"] if key != "allow_implicit_invocation")
+    return skill_id, version.strip(), name, activation, implicit, ignored
 
 
-def _inline_items(value: str) -> list[str]:
-    items: list[str] = []
-    current: list[str] = []
-    quote: str | None = None
-    for character in value:
-        if character in {"'", '"'}:
-            if quote == character:
-                quote = None
-            elif quote is None:
-                quote = character
-            current.append(character)
-        elif character == "," and quote is None:
-            item = "".join(current).strip()
-            if item:
-                items.append(item)
-            current = []
-        else:
-            current.append(character)
-    if quote is not None:
-        raise ValueError("unterminated quoted front matter value")
-    item = "".join(current).strip()
-    if item:
-        items.append(item)
-    return items
+def validate_skill_text(raw: str) -> dict[str, object]:
+    if len(raw.encode("utf-8")) > _MAX_SKILL_BYTES:
+        raise ValueError("skill exceeds 256 KiB")
+    values, body = _split_front_matter(raw)
+    skill_id, version, name, activation, implicit, ignored = validate_skill_metadata(values)
+    if not body:
+        raise ValueError("skill body is required")
+    return {"id": skill_id, "version": version, "name": name, "activation": activation,
+            "allowImplicitInvocation": implicit, "ignoredMetadata": list(ignored)}
+
+
+def _check_referenced_resources(body: str, skill: SkillDescriptor) -> None:
+    available = {item.path for item in skill.supporting_files}
+    base = Path(skill.path).parent
+    references = set(re.findall(r"(?<![\w/])((?:references|assets|scripts)/[\w./-]+\.[\w-]+)", body))
+    missing = sorted(value for value in references if (base / value).as_posix() not in available)
+    if missing:
+        raise ValueError("missing supporting resources: " + ", ".join(missing[:16]))
 
 
 def _required_text(values: dict[str, object], key: str) -> str:
@@ -613,7 +652,7 @@ def _front_matter_metadata(path: Path) -> tuple[str | None, str | None]:
             raw = stream.read(_FRONT_MATTER_DIAGNOSTIC_BYTES).decode("utf-8", errors="ignore")
     except OSError:
         return None, None
-    id_match = re.search(r"(?m)^id:\s*([^\s#]+)", raw)
+    id_match = re.search(r"(?m)^id:\s*([^\s#]+)", raw) or re.search(r"(?m)^name:\s*([^\s#]+)", raw)
     version_match = re.search(r"(?m)^version:\s*([^\s#]+)", raw)
     return (
         id_match.group(1) if id_match else None,
@@ -631,6 +670,14 @@ def _is_active(skill: SkillDescriptor, *, prompt: str, explicit_ids: set[str] | 
     prompt_tokens = _keywords(prompt)
     description_tokens = _keywords(f"{skill.skill_id} {skill.description}")
     return bool(prompt_tokens & description_tokens)
+
+
+def explicit_skill_ids(prompt: str) -> set[str]:
+    """Only direct invocation text, never Markdown quotations or code samples."""
+    direct = re.sub(r'(?ms)^\s*(```|~~~).*?^\s*\1[^\n]*$', '', prompt)
+    direct = re.sub(r'(?m)^\s*>.*$', '', direct)
+    direct = re.sub(r'"[^"\n]*"|“[^”\n]*”|「[^」\n]*」|\'[\w\W]*?\'', '', direct)
+    return set(re.findall(r'(?<![\w$])\$([a-z0-9][a-z0-9._-]*)', direct))
 
 
 def _keywords(text: str) -> set[str]:

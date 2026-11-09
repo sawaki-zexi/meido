@@ -172,6 +172,11 @@ jobs:
               tests/python/test_tool_exposure_contract.py
               tests/python/channels/test_group_owner_identity.py
               tests/python/test_role_capabilities.py
+              tests/python/test_capability_skills.py
+              tests/python/test_builtin_skills_api.py
+              tests/python/test_skill_discovery.py
+              tests/python/test_skill_lifecycle.py
+              tests/python/test_skill_trigger_eval.py
               tests/python/test_input_usage_calibration.py
               tests/python/test_batched_summary.py
               tests/python/test_summary_accounting.py

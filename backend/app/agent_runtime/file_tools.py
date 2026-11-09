@@ -192,7 +192,27 @@ class _FileTool:
             path = self._path(arguments["path"])
             with nullcontext() if getattr(self.write_policy, 'short_publication', False) else _file_lock(path, context):
                 self._path(str(path))
-                return self._execute(path, arguments, context)
+                result = self._execute(path, arguments, context)
+                relative = path.relative_to(self.workspace)
+                if (self.definition.name == 'read_file' and len(relative.parts) == 3
+                        and relative.parts[0] == 'skills' and relative.name == 'SKILL.md'):
+                    from .skills import SkillRegistry
+                    registry = SkillRegistry.discover(self.workspace / 'skills', source='role')
+                    skill = next((item for item in registry.skills if item.path == '/'.join(relative.parts[1:])), None)
+                    problems = [item['error'] for item in registry.diagnostics if item.get('skillId') == relative.parts[1]]
+                    if skill is None:
+                        problems = problems or ['skill format validation failed']
+                    else:
+                        try:
+                            skill.materialize()
+                        except (ValueError, OSError, UnicodeError) as error:
+                            problems.append(str(error))
+                    verified = not problems and not result.details.get('truncated')
+                    result = replace(result, content=result.content + ('\nSkill saved-file validation: verified.' if verified
+                        else '\nSkill saved-file validation incomplete: ' + '; '.join(problems or ['read all pages before claiming full review'])),
+                        details={**result.details, 'skillValidation': {'verified': verified,
+                            'contentHash': skill.content_hash if skill else None, 'problems': problems}})
+                return result
         except _FileFailure as error:
             return self._result(str(error), status=error.status, **error.details)
         except (OSError, ValueError, TypeError, RuntimeError) as error:
@@ -223,6 +243,12 @@ class _FileTool:
             raise _FileFailure(f"Content exceeds {self.max_file_bytes} byte write limit.", "denied", truncated=True, truncatedBy="file_limit")
         self._check(context)
         self._path(str(path))
+        relative = path.relative_to(self.workspace)
+        if len(relative.parts) == 3 and relative.parts[0] == 'skills' and relative.name == 'SKILL.md':
+            from .skills import validate_skill_text
+            metadata = validate_skill_text(data.decode('utf-8-sig'))
+            if metadata['id'] != relative.parts[1]:
+                raise _FileFailure('Skill ID must match its skills/<skill-id>/SKILL.md directory.', 'failed')
         with self.write_policy(path, data, context) if self.write_policy is not None else nullcontext() as allocation:
             path.parent.mkdir(parents=True, exist_ok=True)
             self._path(str(path))

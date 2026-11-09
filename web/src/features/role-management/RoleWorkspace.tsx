@@ -9,11 +9,12 @@ import { RoleMaterialLibrary } from "../materials/RoleMaterialLibrary";
 import { RoleIllustrationLibrary } from './RoleIllustrationLibrary';
 import { RoleEditor } from "./RoleEditor";
 import { RoleCardExport } from './RoleCardExport';
+import { SkillLibrary } from '../skills/SkillLibrary';
 import { RoleCapabilitiesPanel } from "./RoleCapabilitiesPanel";
 import type { RolesState } from "./useRoles";
 import type { SettingsSectionId } from '../settings/navigation';
 
-export type RoleWorkspaceTab = "profile" | "memory" | "capabilities" | "accounts" | "materials";
+export type RoleWorkspaceTab = "profile" | "memory" | "capabilities" | "accounts" | "materials" | "skills";
 
 type Props = {
   role: Role;
@@ -38,6 +39,7 @@ const tabs: Array<{ id: RoleWorkspaceTab; label: string }> = [
   { id: "profile", label: "资料" },
   { id: "memory", label: "记忆" },
   { id: "materials", label: "素材库" },
+  { id: "skills", label: "技能" },
   { id: "capabilities", label: "能力" },
   { id: "accounts", label: "账号" },
 ];
@@ -89,6 +91,7 @@ export function RoleWorkspace({ role, state, tab, onTabChange, onBack, backLabel
         <RoleEditor state={state} onSubmit={onSubmit} onCancel={onCancel} onDelete={onDelete} hideHeaderFields workspace formId={profileFormId} mediaOpen={mediaOpen} />
       </div>}
       {tab === "materials" && <div role="tabpanel" aria-label="素材库"><RoleIllustrationLibrary role={role} onRoleSaved={state.receiveRole} /><RoleMaterialLibrary roleId={role.id} roleName={role.name} /></div>}
+      {tab === "skills" && <div role="tabpanel" aria-label="技能"><SkillLibrary key={role.id} roleId={role.id} roleName={role.name} /></div>}
       {tab === "memory" && <div className="role-workspace-memory" role="tabpanel" aria-label="记忆"><MemoryPanel role={role} embedded onBack={onBack} onOpenSource={onOpenMemorySource} /></div>}
       {(tab === 'capabilities' || capabilitiesOpened) && <div hidden={tab !== 'capabilities'} role="tabpanel" aria-label="能力">
         <RoleCapabilitiesPanel role={role} onRoleSaved={state.receiveRole} actionTarget={tab === 'capabilities' ? actionTarget : null} onOpenSettings={onOpenSettings} settingsVersion={settingsVersion} />

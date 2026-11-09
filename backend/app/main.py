@@ -126,7 +126,10 @@ from .channels.source_authority import FrozenChannelSource, capture_channel_sour
 from .channels.group_access import GroupToolAccess
 from .channels.tools import ChannelDirectoryAccess
 from .channels.consolidation import ChannelMemoryMaintenance, finish_io
-from .agent_runtime.skills import SkillRegistry
+from .agent_runtime.skills import SkillRegistry, explicit_skill_ids as direct_skill_invocations
+from .skill_library import SkillLibrary
+from .skill_routes import skill_router
+from .agent_runtime.skill_discovery import SkillRun, SkillListTool, SkillReadTool, SKILL_TOOL_NAMES
 from .agent_runtime.memory_write_tools import MemorizeTool, ForgetMemoryTool, RoleMemoryAccess
 from .agent_runtime.memory_io import run_memory_io
 from .todo import TodoPlugin, TodoStore
@@ -1112,6 +1115,27 @@ async def role_validation_error(request: Request, error: RequestValidationError)
 app.state.before_server_drain = _prepare_chat_shutdown
 app.include_router(mail_router)
 app.include_router(mcp_router(lambda: mcp_host, lambda: store))
+
+
+def _skill_library(role_id):
+    return SkillLibrary(store, role_id, data_root / 'shared-skills', project_root / '.agents' / 'skills',
+        Path(__file__).parent / 'builtin_skills',
+        dependency_check=lambda skill, name: _skill_dependency_check(store.get(role_id), skill, name))
+
+
+def _skill_dependency_check(role, skill, name):
+    if role is None:
+        return '角色许可已撤销'
+    if skill.skill_id == 'codex-delegate' and name == 'codex':
+        if not role.agentConfig.coding.enabled:
+            return '编程委托尚未启用'
+        status = _coding_application().config.availability(role.id, role.agentConfig.coding, executor='codex_exec')
+        return None if status['status'] == 'available' else status['reason']
+    import shutil
+    return None if shutil.which(name) is not None else 'command is unavailable'
+
+
+app.include_router(skill_router(_skill_library))
 
 
 @app.get('/api/settings/advanced')
@@ -5420,6 +5444,7 @@ async def _runtime_capabilities(
     inspection: bool = False,
 ) -> CapabilityResolution:
     role = await asyncio.to_thread(_effective_plugin_role, role)
+    skill_state = None
     include_channel = session_key.startswith("thread:") or (
         session_key.startswith("role:") and await asyncio.to_thread(_role_has_usable_channel_account, role.id)
     )
@@ -5495,6 +5520,10 @@ async def _runtime_capabilities(
             mcp_run.preparation_denials(mcp_definitions) if preparing and mcp_run is not None and mcp_definitions else {})
         denied = {}
         for definition in definitions:
+            if definition.name in SKILL_TOOL_NAMES:
+                if skill_state is None or not skill_source_authorized():
+                    denied[definition.name] = 'skill source permission was revoked'
+                continue
             plugin_id = ('browser' if definition.name in BROWSER_USE_TOOL_NAMES
                          else 'herdr' if definition.name in HERDR_AGENT_TOOL_NAMES
                          else 'computer' if definition.name in COMPUTER_USE_TOOL_NAMES
@@ -5569,25 +5598,45 @@ async def _runtime_capabilities(
     elif mcp_inspection is not None:
         candidates = tuple(tool for tool in candidates if tool.definition.name not in MCP_MANAGEMENT_NAMES) + mcp_inspection[0]
     def skill_dependency_check(skill, name):
-        if skill.skill_id == 'codex-delegate' and name == 'codex':
-            if not role.agentConfig.coding.enabled:
-                return '编程委托尚未启用'
-            status = _coding_application().config.availability(role.id, role.agentConfig.coding, executor='codex_exec')
-            return None if status['status'] == 'available' else status['reason']
-        import shutil
-        return None if shutil.which(name) is not None else 'command is unavailable'
+        return _skill_dependency_check(store.get(role.id), skill, name)
     registry_enabled_tools = policy.enabled_tools
     if mcp_run is not None:
         registry_enabled_tools = registry_enabled_tools | {tool.definition.name for items in mcp_run.remote_tools.values() for tool in items}
     elif mcp_inspection is not None:
         registry_enabled_tools = registry_enabled_tools | {tool.definition.name for tool in mcp_inspection[0] if tool.definition.source.startswith('mcp:')}
     try:
-        skills = await asyncio.to_thread(SkillRegistry.discover_many, (
-            (store.root / role.id / "workspace" / "skills", "role"),
-            (roles_root / role.id / "skills", "role"),
-            (project_root / ".agents" / "skills", "project"),
-            (Path(__file__).parent / "builtin_skills", "builtin"),
-        ))
+        library = _skill_library(role.id)
+        def skill_source_authorized():
+            current_role = store.get(role.id)
+            if current_role is None or role.id in _channel_roles_deleting or external_only:
+                return False
+            if source_authority is not None and source_authority.authorization_denial(multichannel_store):
+                return False
+            if not library.settings()['enabled']:
+                return False
+            if inspection:
+                return True
+            current_run = session_store.get_run(run_id)
+            return current_run is not None and current_run.status in {'created', 'running'}
+        skill_settings, skills, skill_rows = await asyncio.to_thread(library.view)
+        # Guest and untriggered group turns keep their existing tool boundary.
+        skill_mode = bool(skill_settings['enabled'] and not external_only and 'read_file' in policy.enabled_tools
+            and any(tool.definition.name == 'read_file' for tool in candidates))
+        if skill_mode:
+            current_configuration = _role_model_configuration(role.id)
+            direct_skill_ids = set(explicit_skill_ids or ()) | direct_skill_invocations(prompt_text)
+            skill_state = await asyncio.to_thread(SkillRun, library, role_id=role.id, session_key=session_key,
+                run_id=run_id, prompt=prompt_text, explicit_ids=direct_skill_ids,
+                capacity=current_configuration.contextWindowTokens if current_configuration else None,
+                max_output=frozen_advanced['values']['maxTokens'], safety_margin=frozen_advanced['values']['contextSafetyMarginTokens'],
+                authorized=skill_source_authorized, dependency_check=skill_dependency_check)
+            candidates = (*candidates, SkillListTool(skill_state), SkillReadTool(skill_state))
+            registry_enabled_tools = registry_enabled_tools | SKILL_TOOL_NAMES
+            # New selection replaces keyword forcing; role_default remains a
+            # compatible constant until the owner changes that individual item.
+            skills = SkillRegistry((replace(item, activation={
+                'automatic': 'model', 'manual': 'explicit', 'constant': 'role_default'}[library.policy(item, skill_settings)])
+                for item in skills.skills), diagnostics=skills.diagnostics)
         resolution = await CapabilityRegistry(
             candidates,
             skills=skills,
@@ -5603,6 +5652,7 @@ async def _runtime_capabilities(
             prompt_text=prompt_text,
             explicit_skill_ids=set(explicit_skill_ids or ()),
             skill_dependency_check=skill_dependency_check,
+            skill_model_selection=skill_mode,
             enabled_plugin_ids=policy.enabled_plugins,
             granted_capabilities=policy.granted_capabilities,
             host_services=host_services,
@@ -5616,6 +5666,12 @@ async def _runtime_capabilities(
             service_grants=mcp_run.grants if mcp_run is not None else mcp_inspection[1] if mcp_inspection is not None else (),
             resource_close=mcp_run.close if mcp_run is not None else None,
         )
+        if skill_state is not None:
+            loaded_ids = {skill_state.entries[ref].skill_id for ref in skill_state.preloaded}
+            resolution = replace(resolution, _skill_state=skill_state, snapshot=replace(resolution.snapshot,
+                skills=tuple(item for item in resolution.snapshot.skills if item.skill_id in loaded_ids)))
+            if resolution._discovery is not None:
+                resolution._discovery._current = resolution
         if mcp_run is not None:
             mcp_run.bind(resolution, direct_exposure=direct_exposure)
         return resolution
@@ -6939,6 +6995,7 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                                  context_blocks=lambda: _channel_memory_blocks(thread.role_id, thread.thread_id, str(metadata.get("senderId") or ""), trigger_metadata=metadata),
                                  context_safety_margin=ordinary_settings.contextSafetyMarginTokens,
                                  stable_memory=_role_memory_context(thread.role_id, include_recent=False, external=not owner_memory),
+                                 skill_state=capabilities._skill_state,
                                  )
         _bind_spawn_runtime(capabilities, provider, max_iterations=ordinary_settings.maxIterations)
         provider = _ordinary_context_provider(provider, ordinary_settings, role_id=thread.role_id,
@@ -7215,7 +7272,8 @@ def _desktop_provider(role, configuration, settings, capabilities, memory_contex
         context_blocks=lambda: _external_activity_blocks(role.id),
         context_safety_margin=settings.contextSafetyMarginTokens,
         readonly_usage=readonly,
-        stable_memory=_role_memory_context(role.id, include_recent=False, readonly=True))
+        stable_memory=_role_memory_context(role.id, include_recent=False, readonly=True),
+        skill_state=capabilities._skill_state)
 
 
 @app.get('/api/roles/{role_id}/context-status')
