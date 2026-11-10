@@ -28,12 +28,15 @@ def natural_chat_enabled(role) -> bool:
     return role is not None and getattr(role.agentConfig, 'naturalChatEnabled', False) is True
 
 
-def finish_reply_schema():
+def finish_reply_schema(*, response_context=False):
+    properties = {'messages': {'type': 'array', 'items': {'type': 'string'}}}
+    if response_context:
+        from ..channels.conversation_context import response_schema
+        properties['response'] = response_schema()
     return {'type': 'function', 'function': {
         'name': FINISH_REPLY,
         'description': '完成本轮对话回复。每项是一条独立聊天消息，内容和分条位置由你决定。需要业务工具时先使用工具，获得结果后单独调用本工具。',
-        'parameters': {'type': 'object', 'properties': {
-            'messages': {'type': 'array', 'items': {'type': 'string'}}},
+        'parameters': {'type': 'object', 'properties': properties,
             'required': ['messages'], 'additionalProperties': False},
     }}
 
@@ -74,12 +77,15 @@ def private_reply(message):
 class NaturalReplyProvider:
     """Keep prose private until one valid finish_reply; correct format once.
 
+    Ordinary group turns can use the optional response relation with natural
+    chat disabled; legacy prose keeps the existing default display strategy.
     Business tools remain in the ordinary loop. A finish call in a business
     batch is a premature draft and never executes or produces a visible reply.
     The wrapped ContextWindowProvider budgets every correction request.
     """
-    def __init__(self, provider, *, authorized=lambda: True):
+    def __init__(self, provider, *, authorized=lambda: True, response_context=None, optional=False):
         self.provider, self.authorized = provider, authorized
+        self.response_context, self.optional = response_context, optional
         self.corrected = False
 
     def __getattr__(self, name):
@@ -126,22 +132,24 @@ class NaturalReplyProvider:
             raise ValueError('自然聊天模型未完整返回')
         yield AssistantDoneEvent(replace(done, content=done.content or text, tool_calls=done.tool_calls or tuple(calls)))
 
-    @staticmethod
-    def _validate(message):
+    def _validate(self, message):
         if message.stop_reason not in {'stop', 'tool_use'}:
             raise ValueError('回复被拒绝或截断，尚未形成完整消息列表')
         if len(message.tool_calls) != 1 or message.tool_calls[0].name != FINISH_REPLY:
             raise ValueError('请单独调用 finish_reply 完成本轮回复')
         call = message.tool_calls[0]
-        if not call.arguments_complete or set(call.arguments) != {'messages'}:
-            raise ValueError('finish_reply 只能包含有效的 messages 字段')
+        allowed = {'messages', 'response'} if self.response_context is not None else {'messages'}
+        if not call.arguments_complete or 'messages' not in call.arguments or set(call.arguments) - allowed:
+            raise ValueError('finish_reply 需要有效的 messages 和可选 response 字段')
         values = call.arguments['messages']
         if not isinstance(values, list) or not values or any(not isinstance(item, str) or not item.strip() for item in values):
             raise ValueError('messages 必须是非空字符串列表')
+        if self.response_context is not None:
+            self.response_context.choose(call.arguments.get('response'))
         return tuple(values)
 
     async def stream_response(self, **kwargs):
-        schema = finish_reply_schema()
+        schema = finish_reply_schema(response_context=self.response_context is not None)
         if any(item.get('function', {}).get('name') == FINISH_REPLY for item in kwargs['tools']):
             raise ValueError('finish_reply 是保留的回复协议，不能注册为业务工具')
         request = {**kwargs, 'tools': (*kwargs['tools'], schema)}
@@ -164,6 +172,13 @@ class NaturalReplyProvider:
                         or block.get('type') == 'tool_call' and block.get('name') != FINISH_REPLY)]
             yield AssistantDoneEvent(replace(message, content='', tool_calls=business, metadata=metadata))
             return
+        if self.optional and not message.tool_calls and message.stop_reason == 'stop' and message.content.strip():
+            if self.response_context is not None:
+                selection = self.response_context.choose()
+                message = replace(message, metadata={**message.metadata, 'responseRelation': selection.relation})
+            yield TextDeltaEvent(message.content)
+            yield AssistantDoneEvent(message)
+            return
         try:
             sequence = self._validate(message)
         except ValueError as error:
@@ -185,5 +200,7 @@ class NaturalReplyProvider:
                         yield event
             sequence = self._validate(message)
         metadata = {key: value for key, value in message.metadata.items() if key != 'content_blocks'}
+        if self.response_context is not None:
+            metadata['responseRelation'] = self.response_context.selection.relation
         yield AssistantDoneEvent(AssistantMessage('\n\n'.join(sequence), metadata={
             **metadata, 'replySequence': list(sequence), 'naturalReplyCorrected': self.corrected}))

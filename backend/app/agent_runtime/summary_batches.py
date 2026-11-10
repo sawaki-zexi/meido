@@ -38,6 +38,9 @@ def summary_source(message: AgentMessage) -> Record:
     """Only original text, attachment references and tool facts; never images."""
     record: Record = {'role': message.role, 'content': message.content,
                       'source_message_ids': message.source_message_ids}
+    source = message.source_context if isinstance(message, UserMessage) else message.metadata.get('conversationSource') if isinstance(message, AssistantMessage) else None
+    if isinstance(source, dict) and source.get('sourceMessageId') in message.source_message_ids:
+        record['conversation_source'] = source
     if isinstance(message, UserMessage):
         record['attachments'] = [{'name': item.name, 'media_type': item.media_type, 'text': item.text}
                                  for item in message.attachments]
@@ -56,7 +59,7 @@ def shrink_summary_source(value: Any, limit: int) -> Any:
     if isinstance(value, str):
         return truncate_summary_text(value, limit)
     if isinstance(value, dict):
-        return {key: item if key in {'source_message_ids', 'id', 'tool_call_id'}
+        return {key: item if key in {'source_message_ids', 'conversation_source', 'id', 'tool_call_id'}
                 else shrink_summary_source(item, limit) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [shrink_summary_source(item, limit) for item in value]

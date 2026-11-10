@@ -50,9 +50,10 @@ def _channel_user_content(stored: Message) -> str:
                   for item in metadata.get('attachments', []) if isinstance(item, dict) and item.get('id')]
         return "\n".join(filter(None, (stored.content, '本消息附件：' + '；'.join(labels) if labels else '')))
     kind = "群友" if metadata.get("chatType") == "group" else "访客"
-    sender = "主人" if metadata.get("senderIsOwner") is True else kind
+    sender = "主人" if metadata.get("senderIsOwner") is True else kind if metadata.get('senderIsOwner') is False else '身份未知的成员'
     name = str(metadata.get("senderName") or metadata.get("senderId") or "")
-    lines = [f"[渠道 {metadata['channel']}；chat_id={metadata.get('chatId', '')}；{sender} {name}（ID {metadata.get('senderId', '')}）]"]
+    from .channels.conversation_context import source_header
+    lines = [source_header(stored), f"[渠道 {metadata['channel']}；chat_id={metadata.get('chatId', '')}；{sender} {name}（ID {metadata.get('senderId', '')}）]"]
     if metadata.get("groupName"):
         lines.append(f"群名：{metadata['groupName']}")
     if metadata.get("mentionedIds"):
@@ -77,6 +78,15 @@ def _runtime_assistant_metadata(metadata: dict[str, Any]) -> dict[str, object]:
 
 def _runtime_assistant_message(stored: Message) -> AssistantMessage:
     content = stored.content
+    metadata = _runtime_assistant_metadata(stored.metadata)
+    if stored.metadata.get('channel') and stored.metadata.get('channel') != 'desktop':
+        from .channels.conversation_context import source_header, with_source_block, message_source
+        header = source_header(stored)
+        metadata['conversationSource'] = message_source(stored.metadata, source_id=stored.id,
+            created_at=stored.createdAt, session_key=stored.sessionKey, role=stored.role)
+        content = header + '\n' + content
+        if isinstance(metadata.get('content_blocks'), list):
+            metadata['content_blocks'] = with_source_block(metadata['content_blocks'], header)
     if stored.messageType == "desktop_push":
         raw_attachments = stored.metadata.get("attachments", [])
         attachments = raw_attachments if isinstance(raw_attachments, list) else []
@@ -84,7 +94,7 @@ def _runtime_assistant_message(stored: Message) -> AssistantMessage:
                   for item in attachments if isinstance(item, dict) and item.get('id')]
         if labels:
             content = "\n".join(filter(None, (content, "已推送附件：" + "；".join(labels))))
-    return AssistantMessage(content, metadata=_runtime_assistant_metadata(stored.metadata),
+    return AssistantMessage(content, metadata=metadata,
                             timestamp=_timestamp(stored.metadata), source_message_ids=(stored.id,))
 
 
@@ -1019,11 +1029,14 @@ class SessionStore:
                 continue
             elif stored.messageType in {"text", "internal_completion", "desktop_push"} and stored.status == "completed":
                 if stored.role == "user":
+                    from .channels.conversation_context import message_source
                     messages.append(UserMessage(
                         _channel_user_content(stored),
                         attachments=attachment_loader(stored.metadata),
                         timestamp=_timestamp(stored.metadata),
                         source_message_ids=(stored.id,),
+                        source_context=message_source(stored.metadata, source_id=stored.id, created_at=stored.createdAt,
+                            session_key=stored.sessionKey) if stored.metadata.get('channel') not in {None, '', 'desktop'} else None,
                     ))
                 elif stored.role == "assistant":
                     if (stored.metadata.get("channel") not in {None, "", "desktop"}
@@ -1121,6 +1134,8 @@ class SessionStore:
             ).fetchone()
             if source is None or source[3] != "user" or source[5] != "completed":
                 raise KeyError(message_id)
+            if source[13] is not None and source[13] != run.runId:
+                raise ValueError("inbound message already belongs to a run")
             connection.execute("UPDATE messages SET run_id=? WHERE message_id=?", (run.runId, message_id))
             assistant_sequence = int(source[2]) + 1
             next_sequence = connection.execute(
@@ -1147,6 +1162,46 @@ class SessionStore:
             metadata={"runtimePlaceholder": True},
         )
         return run, user_message, assistant_message
+
+    def admit_natural_run(self, run: AgentRun, record: dict) -> AgentRun:
+        """Atomically bind the original hearing record, without a synthetic input.
+
+        The same physical input remains claimed after expiry/restart. Only its
+        owning batch can resume expression; it keeps the run and tool facts.
+        """
+        metadata = record['metadata']
+        if (not record['id'].startswith('listen:') or record['role'] != 'user'
+                or record['status'] != 'completed' or metadata.get('triggered') is not False
+                or metadata.get('direction') != 'inbound' or metadata.get('internalEvent')
+                or run.sessionKey != 'thread:' + str(metadata.get('threadId'))):
+            raise PermissionError('natural execution requires its original hearing record')
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            prior = connection.execute(
+                "SELECT run_id,message_id,content,created_at,metadata_json FROM messages WHERE session_key=? AND role='user' "
+                "AND json_extract(metadata_json,'$.accountId')=? "
+                "AND json_extract(metadata_json,'$.platformMessageId')=?",
+                (run.sessionKey, metadata['accountId'], metadata['platformMessageId'])).fetchone()
+            if prior:
+                existing = connection.execute('SELECT model_snapshot_json,status FROM agent_runs WHERE run_id=?', (prior[0],)).fetchone()
+                if (prior[0] != run.runId or not existing or existing[1] != 'running'
+                        or json.loads(existing[0]).get('batchId') != run.modelSnapshot['batchId']
+                        or (prior[1], prior[2], prior[3], json.loads(prior[4])) != (
+                            record['id'], record['content'], record['createdAt'], metadata)):
+                    raise PermissionError('natural input was already admitted; do not replay it')
+                return run.model_copy(update={'modelSnapshot': {**json.loads(existing[0]), **run.modelSnapshot}})
+            connection.execute(
+                'INSERT INTO agent_runs (run_id,role_id,session_key,status,model_configuration_id,model_snapshot_json,turn_count,started_at) VALUES(?,?,?,?,?,?,?,?)',
+                (run.runId,run.roleId,run.sessionKey,run.status,run.modelConfigurationId,
+                 json.dumps(run.modelSnapshot, ensure_ascii=False),run.turnCount,run.startedAt.isoformat()))
+            sequence = connection.execute('SELECT COALESCE(MAX(sequence),0)+1 FROM messages WHERE session_key=?', (run.sessionKey,)).fetchone()[0]
+            connection.execute(
+                "INSERT INTO messages (message_id,session_key,sequence,role,content,status,created_at,message_type,run_id,metadata_json) VALUES(?,?,?,'user',?,'completed',?,'text',?,?)",
+                (record['id'],run.sessionKey,sequence,record['content'],record['createdAt'],run.runId,_dump(metadata)))
+            connection.execute(
+                "INSERT INTO channel_events(event_id,thread_id,direction,external_message_id,created_at,metadata_json) VALUES(?,?,'inbound',?,?,?)",
+                ('event-' + uuid.uuid4().hex,metadata['threadId'],metadata['platformMessageId'],record['createdAt'],_dump(metadata)))
+        return run
 
     def delete_role_session(self, role_id: str) -> None:
         session_key = f"role:{role_id}"

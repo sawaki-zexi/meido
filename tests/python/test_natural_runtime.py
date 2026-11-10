@@ -118,10 +118,25 @@ def test_timeout_fails_without_empty_transcript(runtime):
     assert not runtime.lock_for('role').locked()
 
 
+def test_keep_open_consumer_close_cancels_instead_of_creating_a_continuation(runtime):
+    async def scenario():
+        value = run().model_copy(update={'modelSnapshot': {'natural':True}})
+        stream = runtime.run(value, provider=Provider([AssistantDoneEvent(AssistantMessage('{}'))]),
+            model='test', system='', messages=[], keep_open=True, defer_reply=True)
+        await anext(stream)
+        await stream.aclose()
+        assert runtime.sessions.get_run(value.runId).status == 'cancelled'
+        assert not runtime.lock_for(value.roleId).locked()
+        assert not runtime.sessions.list_messages(value.sessionKey)
+        assert not runtime._tokens and not runtime._tasks
+    asyncio.run(scenario())
+
+
 def test_natural_yields_to_explicit_fifo_handoff(runtime):
     async def exercise():
         first, user, _ = await runtime.reserve_run(run('first'), 'real explicit input')
-        queued = asyncio.create_task(runtime.reserve_existing_user_message(run('queued'), user.id))
+        inbound = runtime.sessions.append_message(run().sessionKey, 'user', 'new explicit input', 'completed')
+        queued = asyncio.create_task(runtime.reserve_existing_user_message(run('queued'), inbound.id))
         await asyncio.sleep(0)
         runtime.cancel_unstarted_run(first.runId)
         # The lock is briefly unlocked before asyncio resumes its FIFO waiter.

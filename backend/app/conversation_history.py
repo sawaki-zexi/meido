@@ -23,6 +23,9 @@ def _history_value(message):
     # media. Invalidation is filtered by read(); other queue states carry no
     # transcript content or authority and must not cancel a valid read.
     value["metadata"].pop("channelTurnState", None)
+    if message.metadata.get('channel') not in {None, '', 'desktop'}:
+        from .channels.conversation_context import PROJECTION_VERSION
+        value['conversationProjection'] = PROJECTION_VERSION
     return value
 
 
@@ -38,19 +41,36 @@ def _quote_lookup(messages):
 
 
 def _user_projection(message, quotes):
+    from .channels.conversation_context import message_source
     metadata = dict(message.metadata)
     content = message.content
     attachments = list(metadata.get("attachments") or [])
+    # A saved platform quote is not a license to replay private original text.
+    # Only the frozen, same-session lookup below can supply this body/media.
+    metadata.pop('replyToContent', None)
     if metadata.get("replyTo"):
+        if metadata.get('chatType') != 'group':
+            # Private cached author facts obey the same source grant as the
+            # quoted body. A platform fetch cannot fill a gap in this view.
+            metadata.update(replyContextVerified=False, replyToSenderId=None,
+                replyToSenderName=None, replyToSenderIsOwner=None)
         quoted = quotes.get((message.sessionKey, str(metadata["replyTo"])))
         if quoted is not None:
-            content = f"引用{'主人' if quoted.role == 'user' else '角色'}：\n{quoted.content}\n\n{content}"
+            source = message_source(quoted.metadata, source_id=quoted.id,
+                created_at=quoted.createdAt, session_key=quoted.sessionKey, role=quoted.role)
+            speaker = ('角色' if quoted.role == 'assistant' else '主人' if source['senderIsOwner'] is True
+                else '成员' if source['senderIsOwner'] is False else '发言者（历史身份未记录）')
+            content = f"引用{speaker}：\n{quoted.content}\n\n{content}"
             attachments.extend(quoted.metadata.get("attachments") or [])
+            metadata.update(replyToContent=quoted.content, replyContextVerified=True,
+                replyToSenderId=source['senderId'], replyToSenderName=source['senderName'],
+                replyToSenderIsOwner=source['senderIsOwner'], replyOriginalVisible=True,
+                replyQuoteAttachmentsAvailable=bool(quoted.metadata.get('attachments')))
         else:
             content = "[引用原文不在当前授权历史中或已缺失]\n" + content
+            metadata.update(replyOriginalVisible=False, replyQuoteAttachmentsAvailable=False)
     metadata["attachments"] = attachments
     metadata.pop("quotedAttachments", None)
-    metadata.pop("replyToContent", None)
     return content, metadata
 
 
@@ -266,8 +286,9 @@ class ConversationHistoryView:
                 content = f"[回复来源：{label}]\n" + content
                 blocks = metadata.get("content_blocks")
                 if isinstance(blocks, list):
-                    metadata["content_blocks"] = [{"type": "text", "text": f"[回复来源：{label}]"},
-                        *(block for block in blocks if isinstance(block, dict) and block.get("type") != "image")]
+                    from .channels.conversation_context import with_source_block
+                    metadata["content_blocks"] = with_source_block(
+                        [block for block in blocks if isinstance(block, dict) and block.get("type") != "image"], f"[回复来源：{label}]")
                 media = self._attachments(metadata)
                 if media:
                     blocks = metadata.setdefault("content_blocks", [{"type": "text", "text": content}])

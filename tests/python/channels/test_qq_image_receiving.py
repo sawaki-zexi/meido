@@ -197,7 +197,8 @@ def test_private_owner_quote_uses_authorized_history_and_current_receipt_only(me
     if known:
         historical = save_attachment(state.roles.workspace_path(state.role.id), "historical.png", "image/png", image_bytes("PNG"))
         state.sessions.append_message(thread.session_key, "user", "AUTHORIZED_ORIGINAL", metadata={
-            "platformMessageId": "quoted-message", "senderIsOwner": True, "attachments": [historical],
+            "platformMessageId": "quoted-message", "senderId": "11", "senderName": "SAVED_QUOTE_NAME",
+            "senderIsOwner": True, "attachments": [historical],
         })
     async def transport(operation, params):
         if operation == "get_msg":
@@ -225,10 +226,24 @@ def test_private_owner_quote_uses_authorized_history_and_current_receipt_only(me
     }]
     for marker in ("FETCHED_QUOTE_SECRET", "FETCHED_NAME_SECRET", SECRET_NAME, SECRET_URL, SECRET_ERROR):
         assert marker not in str(requests)
+    user_text = user["content"] if isinstance(user["content"], str) else "\n".join(
+        block.get("text", "") for block in user["content"] if isinstance(block, dict))
+    facts = json.loads(next(line for line in user_text.splitlines()
+        if line.startswith("[消息来源] ")).removeprefix("[消息来源] "))
+    system = "\n".join(item["content"] for item in requests[0] if item["role"] == "system")
     if known:
         assert "AUTHORIZED_ORIGINAL" in str(user) and images(user) == 1
+        assert facts["replyContextVerified"] is True
+        assert facts["replyToSenderId"] == "11" and facts["replyToSenderName"] == "SAVED_QUOTE_NAME"
+        assert facts["replyToSenderIdentity"] == "已配对主人"
+        assert '被引用发送者 ID："11"' in system and "被引用发送者身份：已配对主人" in system
     else:
         assert "引用原文不在当前授权历史中或已缺失" in str(user) and images(user) == 0
+        assert facts["replyContextVerified"] is False
+        assert facts["replyToSenderId"] is None and facts["replyToSenderName"] is None
+        assert facts["replyToSenderIdentity"] == "未知发送者"
+        assert '被引用发送者 ID：""' in system and "被引用发送者身份：未知发送者" in system
+    assert current["metadata"]["replyToSenderName"] == "FETCHED_NAME_SECRET"
 
 
 @pytest.mark.parametrize("data,reason", [

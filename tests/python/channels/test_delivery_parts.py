@@ -44,7 +44,8 @@ def test_each_confirmed_part_is_durable_before_next_send_and_unknown_stops_tail(
     original = sessions.list_messages(thread.session_key)[0]
     assert original.content == 'x' * 10000
     context = sessions.runtime_messages(thread.session_key)
-    assert len(context) == 1 and context[0].content == calls[0]
+    assert len(context) == 1 and context[0].content.split('\n', 1)[-1] == calls[0]
+    assert context[0].metadata['conversationSource']['sourceKind'] == 'role_sent'
     store.mark_interrupted_deliveries_uncertain()
     assert len(calls) == 2
 
@@ -65,7 +66,7 @@ def test_restart_preserves_confirmed_part_and_marks_only_inflight_unknown(tmp_pa
     assert saved['status'] == 'uncertain'
     assert [part['status'] for part in saved['parts']] == ['sent', 'uncertain', 'pending']
     assert saved['platformMessageId'] == 'actual'
-    assert sessions.runtime_messages(thread.session_key)[0].content == 'confirmed'
+    assert sessions.runtime_messages(thread.session_key)[0].content.split('\n', 1)[-1] == 'confirmed'
 
 
 @pytest.mark.parametrize('during_request,expected', [(False, 'failed'), (True, 'uncertain')])

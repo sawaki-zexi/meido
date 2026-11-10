@@ -224,7 +224,9 @@ class MeidoProvider:
         self.context_safety_margin = context_safety_margin
         self._request_time = datetime.now().astimezone().isoformat(timespec="seconds")
         self.request_guard = None
+        self.request_start = None
         self.snapshot_guard = None
+        self.request_observer = None
         # One-off providers (including spawn) get a temporary store. The host
         # explicitly shares a bounded store only for ordinary conversation views.
         self.usage_anchors = usage_anchors if usage_anchors is not None else UsageAnchors()
@@ -260,7 +262,9 @@ class MeidoProvider:
             context_safety_margin=self.context_safety_margin, required_context=self.required_context,
             usage_anchors=self.usage_anchors, usage_context=self.usage_context)
         provider.request_guard = self.request_guard
+        provider.request_start = self.request_start
         provider.snapshot_guard = self.snapshot_guard
+        provider.request_observer = self.request_observer
         provider._request_time = self._request_time
         return provider
 
@@ -278,6 +282,16 @@ class MeidoProvider:
         signal.raise_if_cancelled()
         return result
 
+    async def _start_request(self, signal, prepared):
+        """One host accounting boundary per adapter request, never per SSE check."""
+        await self._check_boundary(signal)
+        if self.request_start is not None:
+            commit = await self.request_start(prepared, signal)
+            # A synchronous child may wait for its parent's quota slot on a
+            # different loop. Commit only here, with no await before adapter entry.
+            if commit is not None:
+                commit()
+
     async def stream_response(self, *, model, system, messages, tools, signal, session_id=None):
         context = await self.prepare_context(signal)
         request = self.prepare_request(system, messages, tools, context=context)
@@ -287,6 +301,8 @@ class MeidoProvider:
     def stream_prepared(self, request, *, system, messages, signal):
         if self.skill_state is not None:
             self.skill_state.commit_window(messages)
+        if self.request_observer is not None:
+            self.request_observer(request, messages)
         rich = getattr(self.adapter, 'stream_rich_messages', None)
         if rich is not None:
             return self._stream_rich_structured(system, messages, request.tools, signal, rich, request)
@@ -398,7 +414,7 @@ class MeidoProvider:
                 options: dict[str, object] = {"cancel_check": lambda: self._check_request(signal)} if accepts_cancel_check else {}
                 if max_tokens is not None and "max_tokens" in inspect.signature(rich).parameters:
                     options["max_tokens"] = max_tokens
-                await self._check_boundary(signal)
+                await self._start_request(signal, prepared)
                 source = rich(runtime_messages, configuration, request_tools, **options)
                 async for event in source:
                     signal.raise_if_cancelled()
@@ -494,7 +510,7 @@ class MeidoProvider:
             try:
                 options = ({'max_tokens': prepared.max_tokens} if prepared.max_tokens is not None
                            and 'max_tokens' in inspect.signature(structured).parameters else {})
-                await self._check_boundary(signal)
+                await self._start_request(signal, prepared)
                 source = structured(runtime_messages, prepared.configuration, prepared.tools, **options)
                 async for event in source:
                     await asyncio.to_thread(self._check_request, signal)
@@ -747,7 +763,7 @@ class MeidoProvider:
         options = {'memory_context': self._combined_memory_context(tool_prompt=tool_prompt, request_context=request_context)} if accepts_memory else {}
         if prepared.max_tokens is not None and 'max_tokens' in inspect.signature(stream_reply).parameters:
             options['max_tokens'] = prepared.max_tokens
-        await self._check_boundary(signal)
+        await self._start_request(signal, prepared)
         source: object = stream_reply(role, history, prepared.configuration, **options)
         content = ""
         async for delta in cast(AsyncIterator[str], source):
@@ -772,7 +788,7 @@ class MeidoProvider:
         try:
             options = ({'max_tokens': prepared.max_tokens} if prepared.max_tokens is not None
                        and 'max_tokens' in inspect.signature(self.adapter.stream_messages).parameters else {})
-            await self._check_boundary(signal)
+            await self._start_request(signal, prepared)
             source = self.adapter.stream_messages(wire_messages, prepared.configuration, **options)
             async for delta in source:
                 await asyncio.to_thread(self._check_request, signal)

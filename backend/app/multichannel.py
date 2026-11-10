@@ -859,6 +859,22 @@ class MultichannelStore:
                 self.external_memory.members.observe_in(db, thread, {"senderId": event.sender_id,
                     "senderName": event.sender_name, "viaAccount": account.source_snapshot()}, _now())
 
+    def remember_quoted_member(self, thread, metadata) -> None:
+        """A verified same-group quote is an observation for group @ only.
+
+        No private/member target is created, and no owner binding is changed.
+        """
+        if (thread.chat_type != 'group' or thread.channel not in {'qq', 'telegram'}
+                or metadata.get('replyContextVerified') is not True or not metadata.get('replyToSenderId')):
+            return
+        from .channels.models import TargetKind, target_from_chat
+        identifier = target_from_chat(account_id=thread.account_id, chat_id=thread.chat_id, kind=TargetKind.GROUP).id
+        target = self.get_target(thread.role_id, thread.account_id, identifier)
+        if target is None: return
+        members = {str(item) for item in target.metadata.get('member_ids', [])}
+        members.add(str(metadata['replyToSenderId']))
+        self.remember_targets(thread.role_id, [replace(target, metadata={**target.metadata, 'member_ids':sorted(members)})])
+
     def remember_targets(self, role_id: str, targets: list[Any], *, authorized: Callable[[], bool] | None = None) -> None:
         """Persist an adapter's observed/reachable target directory."""
 
@@ -1374,7 +1390,9 @@ class MultichannelStore:
         event_id = f"event-{uuid.uuid4().hex}"
         now = _now()
         message_id = f"{thread.session_key}:{uuid.uuid4().hex}"
-        message_metadata = {**(metadata or {}), "channel": thread.channel, "accountId": thread.account_id or None, "threadId": thread.thread_id, "direction": direction, "chatId": thread.chat_id, "groupName": thread.title if thread.chat_type == "group" else ""}
+        message_metadata = {**(metadata or {}), "roleId": thread.role_id, "channel": thread.channel, "accountId": thread.account_id or None, "threadId": thread.thread_id, "direction": direction, "chatId": thread.chat_id, "chatType": thread.chat_type, "groupName": thread.title if thread.chat_type == "group" else ""}
+        if external_message_id is not None:
+            message_metadata['platformMessageId'] = external_message_id
         # Adapter metadata is never authoritative about the account that
         # carried a message. Persist the host's snapshot once, at ingress or
         # after an outbound receipt, and keep it when the account is removed.

@@ -16,18 +16,46 @@ def natural(meme_turn,monkeypatch):
     async def inline_worker(function,*args): return function(*args)
     monkeypatch.setattr(natural_media,'_owned_worker',inline_worker)
     s.clock=Clock(); s.calls=[]; s.result={'action':'reply','text':'你好'}; s.block=None
+    advance = s.clock.advance
+    async def advance_and_settle(seconds):
+        before_calls, before_sends = len(s.calls), len(s.operations)
+        await advance(seconds)
+        # Real provider preparation uses worker I/O; a virtual clock alone
+        # cannot settle those requests. Do not advance the batch's deadline.
+        async def settled():
+            while True:
+                await asyncio.sleep(.002)
+                batches = getattr(s, 'scheduler', None).batches if getattr(s, 'scheduler', None) else {}
+                if not batches: return
+                if any(not future.done() and end > s.clock() for end, future in s.clock.waiters): return
+                if s.block is not None and not s.block.is_set() and len(s.calls) > before_calls: return
+                if getattr(s, 'dispatch_blocked', None) is not None and s.dispatch_blocked.is_set(): return
+                if any(batch.phase == 'sending' for batch in batches.values()) and len(s.operations) > before_sends: return
+        await asyncio.wait_for(settled(), 5)
+    s.clock.advance = advance_and_settle
     class Model:
         async def stream_structured_messages(self,messages,configuration,tools):
             s.calls.append((messages,tools))
             if s.block: await s.block.wait()
             if getattr(s,'tool',False): yield ModelToolCall('fake','shell',{'command':'unsafe'})
+            elif '[自然参与规划]' in messages[0]['content']:
+                inputs=[]
+                for item in messages:
+                    if item['role'] != 'user': continue
+                    try: value=json.loads(item['content'])
+                    except ValueError: continue
+                    if isinstance(value,dict) and value.get('sourceKind') != 'role_sent': inputs.append(value)
+                response={'message_id':inputs[-1]['sourceMessageId'], 'intent':'自然接上当前讨论'} if inputs else {}
+                yield ModelTextDelta(json.dumps({'action':s.result.get('action','silence'), 'response':response},ensure_ascii=False))
+            elif '[自然参与表达]' in messages[0]['content']:
+                yield ModelTextDelta(json.dumps({key:s.result[key] for key in ('text','candidate_id') if key in s.result},ensure_ascii=False))
             else: yield ModelTextDelta(json.dumps(s.result,ensure_ascii=False))
     monkeypatch.setattr(main,'model_adapter',Model())
     monkeypatch.setattr(main,'_natural_scheduler',None)
     monkeypatch.setattr(main,'_schedule_clock',s.clock)
     scheduler=main._natural_application()
     scheduler.sleep=s.clock.sleep
-    scheduler.limits=NaturalLimits(coalesce=1,wait=2,lifetime=10,cooldown=3,min_role_interval=0)
+    scheduler.limits=NaturalLimits(coalesce=1,wait=2,lifetime=10,cooldown=3,min_role_interval=0,max_calls=3)
     s.scheduler=scheduler
     s.channels.listening.clock=s.clock
     s.channels.set_group_listening(s.role.id,s.adapter.account_id,'100',True)
@@ -63,7 +91,7 @@ def test_natural_model_receives_host_verified_sender_identity(natural, sender, o
             # Provider preparation includes worker I/O. Virtual clock ticks
             # alone do not wait for that real asynchronous boundary.
             await asyncio.wait_for(model_called(), timeout=5)
-            assert len(s.calls) == 1
+            assert len(s.calls) == 2
             user_inputs = [item['content'] for item in s.calls[0][0] if item['role'] == 'user']
             frames = [text for text in user_inputs if text.startswith(SYSTEM_CONTEXT_FRAME_MARKER)]
             assert len(frames) == 1
@@ -107,7 +135,7 @@ def test_natural_quote_names_owner_separately_from_guest(natural, monkeypatch, q
             await main._handle_channel_event(event)
             await asyncio.sleep(0)
             await s.clock.advance(1)
-            inputs = [json.loads(item['content']) for item in s.calls[0][0] if item['role'] == 'user']
+            inputs = [json.loads(item['content']) for item in s.calls[0][0] if item['role'] == 'user' and item['content'].startswith('{')]
             message = next(item for item in inputs if item['messageId'] == 'natural-quote')
             assert message['senderIsOwner'] is False
             assert message['replyToSenderIdentity'] == identity
@@ -135,13 +163,13 @@ def test_disabling_group_invalidates_pending_natural_reply_and_keeps_listening(n
             assert s.calls == [] and s.operations == []
             await s.receive('new-after-enable')
             await s.clock.advance(1)
-            assert len(s.calls) == 1 and len(s.operations) == 1
+            assert len(s.calls) == 2 and len(s.operations) == 1
         finally:
             await s.scheduler.close()
     asyncio.run(run())
 
 
-def test_natural_reply_scoped_real_message_and_no_tools(natural):
+def test_natural_reply_scoped_real_message_with_available_tools(natural):
     s=natural
     async def run():
         try:
@@ -151,13 +179,13 @@ def test_natural_reply_scoped_real_message_and_no_tools(natural):
             # Virtual time releases coalescing; real worker I/O and delivery
             # finish on the scheduler's owned task.
             await asyncio.wait_for(asyncio.shield(task), 5)
-            assert len(s.calls)==1
-            assert s.calls[0][1]==[] or s.calls[0][1]==()
+            assert len(s.calls)==2
+            assert not s.calls[0][1] and s.calls[1][1]
             assert len(s.operations)==1
             op,params=s.operations[0]
             assert op=='send_group_msg' and params['group_id']==100
             assert [item['type'] for item in params['message']]==['text']
-            messages=s.sessions.list_messages(s.thread.session_key)
+            messages=[m for m in s.sessions.list_messages(s.thread.session_key) if m.role == 'assistant']
             assert len(messages)==1 and messages[0].role=='assistant'
             assert messages[0].metadata['naturalReply'] is True
             assert messages[0].metadata['deliveryStatus']=='sent'
@@ -203,13 +231,13 @@ def test_quota_overflow_window_and_echo_guards(natural):
         s.channels.listening.set_cap(s.role.id,s.thread.thread_id,1)
         await s.receive('1'); await s.receive('2')
         await s.clock.advance(1)
-        assert len(s.calls)==1 and len(s.operations)==1
+        assert len(s.calls)==2 and len(s.operations)==1
         text=str(s.calls[0][0])
         assert '"messageId": "2"' in text
         assert len(s.channels.listening.page(s.role.id,s.thread.thread_id)['messages'])==1
         await s.clock.advance(4)
         await s.receive('3',sender='99'); await s.clock.advance(1)
-        assert len(s.calls)==1
+        assert len(s.calls)==2
     asyncio.run(run())
 
 
@@ -242,11 +270,11 @@ def test_pending_and_real_delivery_receipt(natural,outcome):
         s.adapter._transport=transport
         await s.receive('1'); await s.clock.advance(1)
         await entered.wait()
-        messages=s.sessions.list_messages(s.thread.session_key)
+        messages=[m for m in s.sessions.list_messages(s.thread.session_key) if m.role == 'assistant']
         assert len(messages)==1 and messages[0].metadata['deliveryStatus']=='pending'
         s.channels.listening.set_natural_enabled(s.role.id,s.thread.thread_id,False)
         release.set(); await s.clock.advance(0)
-        messages=s.sessions.list_messages(s.thread.session_key)
+        messages=[m for m in s.sessions.list_messages(s.thread.session_key) if m.role == 'assistant']
         assert len(messages)==1 and messages[0].metadata['deliveryStatus']==outcome
         assert messages[0].status==('completed' if outcome=='sent' else 'failed')
         assert len(s.operations)==1
@@ -255,8 +283,8 @@ def test_pending_and_real_delivery_receipt(natural,outcome):
         await s.clock.advance(4)
         s.result={'action':'silence'}
         await s.receive('2',sender='22'); await s.clock.advance(1)
-        system=s.calls[-1][0][0]['content']
-        assert ('你好' in system)==(outcome=='sent')
+        context=str(s.calls[-1][0])
+        assert ('你好' in context)==(outcome=='sent')
         assert len(s.operations)==1
     asyncio.run(run())
 
@@ -329,8 +357,8 @@ def test_bot_marker_and_duplicate_input_do_not_wake(natural):
         await main._handle_channel_event(event); await s.clock.advance(1)
         assert not s.calls
         await s.receive('1'); await s.receive('1'); await s.clock.advance(1)
-        assert len(s.calls)==1
-        assert s.sessions.list_messages(s.thread.session_key)[0].metadata['relatedInputIds']==['1']
+        assert len(s.calls)==2
+        assert next(m for m in s.sessions.list_messages(s.thread.session_key) if m.role=='assistant').metadata['relatedInputIds']==['1']
     asyncio.run(run())
 
 
@@ -402,7 +430,7 @@ def test_prechange_deferred_input_cannot_repopulate_or_reply(natural,change):
 def test_cancelled_preemption_waiter_preserves_inflight_receipt(natural):
     s=natural
     async def run():
-        entered=asyncio.Event(); release=asyncio.Event()
+        entered=asyncio.Event(); release=asyncio.Event(); s.dispatch_blocked=entered
         async def transport(operation,params):
             entered.set(); await release.wait(); return {'message_id':9001}
         s.adapter._transport=transport
@@ -411,7 +439,7 @@ def test_cancelled_preemption_waiter_preserves_inflight_receipt(natural):
         await asyncio.sleep(0); waiter.cancel(); await asyncio.sleep(0); waiter.cancel()
         release.set()
         await asyncio.gather(waiter,return_exceptions=True)
-        assert s.sessions.list_messages(s.thread.session_key)[0].metadata['deliveryStatus']=='sent'
+        assert next(m for m in s.sessions.list_messages(s.thread.session_key) if m.role=='assistant').metadata['deliveryStatus']=='sent'
         assert not s.scheduler.tasks
     asyncio.run(run())
 
@@ -419,13 +447,13 @@ def test_cancelled_preemption_waiter_preserves_inflight_receipt(natural):
 def test_forced_dispatch_cancellation_is_uncertain_not_pending(natural):
     s=natural
     async def run():
-        entered=asyncio.Event()
+        entered=asyncio.Event(); s.dispatch_blocked=entered
         async def transport(operation,params): entered.set(); await asyncio.Event().wait()
         s.adapter._transport=transport
         await s.receive('1'); await s.clock.advance(1); await entered.wait()
         task=s.scheduler.tasks[s.thread.thread_id]; task.cancel()
         await asyncio.gather(task,return_exceptions=True)
-        assert s.sessions.list_messages(s.thread.session_key)[0].metadata['deliveryStatus']=='uncertain'
+        assert next(m for m in s.sessions.list_messages(s.thread.session_key) if m.role=='assistant').metadata['deliveryStatus']=='uncertain'
         assert s.channels.list_deliveries(s.role.id)[0]['status']=='uncertain'
     asyncio.run(run())
 
@@ -461,7 +489,7 @@ def test_clear_between_hear_and_schedule_cannot_resurrect(natural,monkeypatch):
 def test_cancelled_explicit_preemption_waiter_is_terminal(natural):
     s=natural
     async def run():
-        entered=asyncio.Event(); release=asyncio.Event()
+        entered=asyncio.Event(); release=asyncio.Event(); s.dispatch_blocked=entered
         async def transport(operation,params):
             entered.set(); await release.wait(); return {'message_id':9002}
         s.adapter._transport=transport
@@ -471,7 +499,7 @@ def test_cancelled_explicit_preemption_waiter_is_terminal(natural):
         for _ in range(10): await asyncio.sleep(0)
         task.cancel(); await asyncio.sleep(0); release.set()
         await asyncio.gather(task,return_exceptions=True)
-        user=next(m for m in s.sessions.list_messages(s.thread.session_key) if m.role=='user')
+        user=next(m for m in s.sessions.list_messages(s.thread.session_key) if m.role=='user' and m.metadata.get('platformMessageId')=='explicit')
         assert user.metadata['channelTurnState']=='cancelled'
         assert s.channels.list_deliveries(s.role.id)[0]['status']=='sent'
     asyncio.run(run())

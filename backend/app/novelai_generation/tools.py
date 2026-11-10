@@ -91,6 +91,11 @@ class GenerateImageTool:
             request.setdefault('mode', 'txt2img')
             request.setdefault('samples', 1)
             request.setdefault('background', False)
+            run = self.application.sessions.get_run(context.run_id)
+            if run is not None and run.modelSnapshot.get('natural') is True:
+                # The ordinary task/outbox owns completion beyond the short
+                # participation lease, even if the model omitted the option.
+                request['background'] = True
             # This tool is the chat-expression capability.  Do not let a
             # model relabel it as a manual or scene request through an
             # optional compatibility field.

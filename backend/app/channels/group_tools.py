@@ -218,7 +218,7 @@ class MultichannelGroupRepository:
                 "found": bool(member or sources), "sources": ordered[start:end], "sources_total": len(ordered),
                 "source_page": source_page, "next_source_page": source_page + 1 if end < len(ordered) else None}
 
-    def prompt_context(self, role_id: str, thread_id: str, sender_id: str = "", *, trigger_metadata: Mapping[str, Any] | None = None) -> str:
+    def prompt_context(self, role_id: str, thread_id: str, sender_id: str = "", *, trigger_metadata: Mapping[str, Any] | None = None, concise=False) -> str:
         """Read only the current thread's notes and relevant member profiles."""
 
         thread = self.store.get_thread(role_id, thread_id)
@@ -228,13 +228,14 @@ class MultichannelGroupRepository:
         group_context = self.read_context(role_id, thread_id)
         label = "群" if thread.chat_type == "group" else "会话"
         if group_context.get("groupNote"):
-            parts.append(f"[当前{label}笔记]\n" + str(group_context["groupNote"])[:12000])
+            parts.append(f"[当前{label}笔记]\n" + str(group_context["groupNote"])[:600 if concise else 12000])
         if group_context.get("summary"):
-            parts.append(f"[当前{label}近期摘要]\n" + str(group_context["summary"])[:12000])
+            parts.append(f"[当前{label}近期摘要]\n" + str(group_context["summary"])[:600 if concise else 12000])
         trigger = trigger_metadata or {}
         # Match Shiori's relevance order: the speaker, mentions and quoted
         # speaker need full profiles; other recent participants need briefs.
         full_senders = list(dict.fromkeys([sender_id,
+            *(item for item in trigger.get('contextMemberIds', []) if isinstance(item, str)),
             *(item for item in trigger.get("mentionedIds", []) if isinstance(item, str)),
             str(trigger.get("replyToSenderId") or "") if trigger.get("replyContextVerified") is True else ""]))
         recent = []
@@ -262,7 +263,7 @@ class MultichannelGroupRepository:
                 "shorthand": str(row["shorthand"])[:200],
                 "sources": [source["threadId"] for source in row.get("sources", [])]}
             if full:
-                member["profile"] = str(row["profile"])[:4000]
+                member["profile"] = str(row["profile"])[:800 if concise else 4000]
                 member["nicknames"] = row.get("nicknames", [])
             size = len(json.dumps(member, ensure_ascii=False))
             if not full and size > brief_chars:
@@ -270,7 +271,9 @@ class MultichannelGroupRepository:
             members.append(member)
             brief_chars -= size
         if members:
-            parts.append("[当前会话成员资料；同一平台身份在所列会话中观察所得]\n" + json.dumps(members, ensure_ascii=False))
+            member_block = "[当前会话成员资料；同一平台身份在所列会话中观察所得]\n" + json.dumps(members, ensure_ascii=False)
+            if concise: parts.insert(0, member_block)
+            else: parts.append(member_block)
         return "\n\n".join(parts)[:20000]
 
 

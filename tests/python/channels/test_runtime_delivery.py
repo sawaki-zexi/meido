@@ -107,7 +107,8 @@ def test_real_channel_runtime_commits_reply_only_after_confirmed_delivery(tmp_pa
     history = sessions.runtime_messages(thread.session_key)
     owner_history = channels.owner_context(role.id, exclude_thread_id="desktop")
     if delivery_status is DeliveryStatus.SENT:
-        assert history[-1].content == "actual runtime reply"
+        assert history[-1].content.split('\n', 1)[-1] == "actual runtime reply"
+        assert history[-1].metadata['conversationSource']['responseRelation']['triggerSourceMessageId'] == user.id
         assert owner_history[-1][2] == "actual runtime reply"
     else:
         assert len(history) == 1

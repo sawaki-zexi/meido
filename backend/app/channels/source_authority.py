@@ -71,10 +71,18 @@ class FrozenChannelSource:
     message_created_at: str
     owner_context_since: str | None
     group_reply_revision: int = 0
+    natural_revision: int | None = None
+    connection_generation: str | None = None
 
     def __post_init__(self) -> None:
         for key, value in asdict(self).items():
-            if key == "group_reply_revision":
+            if key == 'natural_revision':
+                if value is not None and (type(value) is not int or value < 0):
+                    raise ValueError('invalid natural source generation')
+            elif key == 'connection_generation':
+                if value is not None and (not isinstance(value, str) or not value):
+                    raise ValueError('invalid connection generation')
+            elif key == "group_reply_revision":
                 if type(value) is not int or value < 0:
                     raise ValueError("invalid group reply generation")
             elif key == "owner_context":
@@ -101,6 +109,9 @@ class FrozenChannelSource:
         ):
             raise ValueError("invalid channel source scope")
         created = _timestamp(self.message_created_at)
+        if self.natural_revision is not None and (
+                self.channel != 'qq' or self.chat_type != 'group' or not self.connection_generation):
+            raise ValueError('natural source requires its original QQ connection')
         if _timestamp(self.account_created_at) > created:
             raise ValueError("message predates its channel account generation")
         if self.owner_context:
@@ -122,6 +133,9 @@ class FrozenChannelSource:
         # hashes for existing tasks; nonzero off/on epochs must remain bound.
         if self.group_reply_revision == 0:
             payload.pop("group_reply_revision")
+        for key in ('natural_revision', 'connection_generation'):
+            if payload[key] is None:
+                payload.pop(key)
         return payload
 
     @classmethod
@@ -164,6 +178,12 @@ class FrozenChannelSource:
             self.chat_type,
         ):
             return "source channel thread no longer matches the frozen origin"
+        if self.natural_revision is not None:
+            generation = getattr(channels, 'source_connection_generation', None)
+            if (self.natural_revision != channels.listening.revision(self.thread_id)
+                    or not channels.listening.state(self.role_id, self.thread_id)['naturalEffective']
+                    or generation is None or generation(self.account_id) != self.connection_generation):
+                return 'natural source permission or connection was revoked'
         if self.owner_context:
             binding = channel_owner_binding(channels, self.channel, self.account_id, self.sender_id)
             if binding is None or (binding["identityId"], binding["pairedAt"]) != (
@@ -209,6 +229,18 @@ def capture_channel_source(
         raise PermissionError(
             "channel source requires the actual run inbound message and thread"
         )
+    frozen = run.modelSnapshot.get('channelTurnSource')
+    if frozen is not None:
+        source = FrozenChannelSource.from_dict(frozen)
+        if (source.role_id, source.session_key, source.thread_id, source.account_id,
+                source.sender_id, source.owner_context, source.message_created_at) != (
+                role_id, session_key, thread.thread_id, thread.account_id,
+                message.metadata.get('senderId'), owner_context, message.createdAt.isoformat()):
+            raise PermissionError('frozen source differs from actual run input')
+        denial = source.authorization_denial(channels)
+        if denial:
+            raise PermissionError(denial)
+        return source
     return capture_channel_message_source(channels, thread, message, owner_context=owner_context)
 
 

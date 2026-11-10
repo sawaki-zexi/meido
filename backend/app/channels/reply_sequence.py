@@ -18,6 +18,9 @@ async def deliver_channel_sequence(thread, metadata, run_id, first_id, sequence,
     target = target_from_chat(account_id=thread.account_id, chat_id=thread.chat_id,
         kind=TargetKind.GROUP if thread.chat_type == 'group' else TargetKind.PRIVATE)
     last_sent = None
+    relation = first.metadata.get('responseRelation')
+    quote = relation.get('requestedQuoteMessageId') if relation else str(metadata.get('platformMessageId')) if metadata.get('platformMessageId') else None
+    mentions = tuple(relation.get('requestedMentionIds', [])) if relation else (str(metadata['senderId']),) if thread.chat_type == 'group' and thread.channel == 'qq' and metadata.get('senderId') else ()
 
     def authorized():
         return not task.cancelling() and source_current()
@@ -49,15 +52,17 @@ async def deliver_channel_sequence(thread, metadata, run_id, first_id, sequence,
                 authorize_source=lambda: (authorized()
                     and (index != 0 or generation_reply is None or generation_reply.authorized())
                     and (index != 0 or reaction_attachment is None or reaction.authorized())),
-                reply_to_message_id=str(metadata.get('platformMessageId')) if metadata.get('platformMessageId') else None,
+                reply_to_message_id=quote,
                 actor='reply', source_thread_id=thread.thread_id, record_message=False,
                 source_session_key=thread.session_key, source_run_id=run_id,
                 source_tool_call_id=f'{run_id}:reply:{index}',
                 source_kind='role_reaction' if index == 0 and reaction_attachment is not None else 'natural_sequence',
-                mention_ids=(str(metadata['senderId']),) if thread.chat_type == 'group' and thread.channel == 'qq' and metadata.get('senderId') else (),
+                mention_ids=mentions,
+                message_metadata={'responseRelation': relation},
                 message_thread_id=metadata.get('messageThreadId'),
             ), cancellations)
             delivery = {'deliveryStatus': result.status.value, 'deliveryAttemptId': result.attempt_id,
+                'replyTo': quote, 'mentionIds': list(mentions),
                 'platformMessageId': result.platform_message_id, 'deliveryError': result.error,
                 **{key: result.raw[key] for key in ('parts', 'partialDelivery', 'deliveredContent', 'receiptKind') if key in result.raw}}
         except Exception as error:
