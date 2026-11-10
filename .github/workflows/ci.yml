@@ -111,6 +111,8 @@ jobs:
               tests/python/channels/test_runtime_delivery.py::test_real_channel_runtime_commits_reply_only_after_confirmed_delivery
               tests/python/channels/test_conversation_relations.py
               tests/python/channels/test_natural_turn.py
+              tests/python/channels/test_qq_failure_feedback.py
+              tests/python/test_novelai_background_channel.py::test_background_owner_channel_returns_text_then_one_original_media_receipt[fallback_journal_failure]
               tests/python/channels/test_natural_capability_scope.py
               tests/python/channels/test_natural_conversation.py
               tests/python/channels/test_natural_scheduler.py
@@ -146,6 +148,9 @@ jobs:
               tests/python/test_spawn.py::test_provider_local_deadline_is_distinct_from_provider_error_text
               tests/python/test_spawn.py::test_management_seals_content_and_stop_from_other_roles_and_sessions
               tests/python/test_spawn_api.py::test_background_completion_survives_parent_and_is_appended_once
+              tests/python/test_spawn_api.py::test_background_summary_failure_uses_original_model_guard_and_notifies_without_private_result
+              tests/python/test_spawn_completion_summary.py
+              tests/python/test_spawn_completion_recovery.py
               tests/python/test_spawn_api.py::test_channel_management_and_watchdog_preserve_frozen_actual_source[unbind]
               tests/python/test_coding_spawn.py::test_coding_spawn_uses_owned_task_before_chat_provider_and_continues_same_job
               tests/python/test_coding_spawn.py::test_coding_requires_explicit_background_zero_retry_and_exclusive_schema

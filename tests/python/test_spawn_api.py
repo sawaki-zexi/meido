@@ -106,6 +106,82 @@ def test_http_sync_child_reads_real_file_while_parent_owns_role_lock(api, monkey
     assert len([item for item in sessions.list_messages(f"role:{role['id']}") if item.role == 'user']) == 1
 
 
+@pytest.mark.parametrize('scenario', ['provider_error', 'provider_timeout', 'configuration_changed', 'configuration_deleted'])
+def test_background_summary_failure_uses_original_model_guard_and_notifies_without_private_result(api, monkeypatch, scenario):
+    import asyncio
+    import threading
+    import time
+    from copy import deepcopy
+    from backend.app import main
+    from backend.app.models import ModelConfiguration
+    from backend.app.task_runtime import TaskOrigin
+
+    client, _roles, sessions, tasks = api
+    release = threading.Event()
+    requests, failures = [], []
+    class Adapter:
+        async def stream_structured_messages(self, messages, configuration, tools):
+            system = str(messages[0])
+            if 'independent delegated task' in system:
+                while not release.is_set():
+                    await asyncio.sleep(.01)
+                yield ModelTextDelta('PRIVATE_CHILD_RESULT')
+            elif 'internal spawn completion' in system:
+                requests.append((configuration.id, deepcopy(messages), deepcopy(tools)))
+                yield ModelTextDelta('PRIVATE_PARTIAL_SUMMARY')
+                error_type = TimeoutError if scenario == 'provider_timeout' else RuntimeError
+                failure = error_type('PRIVATE_MODEL_CONNECTION_ERROR')
+                failures.append(failure)
+                raise failure
+            elif not any(item['role'] == 'tool' for item in messages):
+                yield ModelToolCall('background', 'spawn', {'task': 'controlled background research', 'run_in_background': True})
+                yield ModelResponseDone('tool_use')
+            else:
+                yield ModelTextDelta('accepted')
+    monkeypatch.setattr(main, 'model_adapter', Adapter())
+    configuration = main.model_configuration_store.create(ModelConfiguration(providerId='custom', provider='openai',
+        baseUrl='http://127.0.0.1:1/v1', model='original-model'))
+    role = client.post('/api/roles', json={'name': '后台完成反馈', 'profile': {'profile': '测试'}}).json()['role']
+    assert client.put(f"/api/roles/{role['id']}/model-configuration", json={'configurationId': configuration.id}).status_code == 200
+    key = f"role:{role['id']}"
+    try:
+        with client:
+            assert 'assistant_completed' in client.post(f"/api/roles/{role['id']}/messages", json={'content': '后台调研'}).text
+            result = next(item for item in sessions.runtime_messages(key) if isinstance(item, ToolResultMessage))
+            task_id = result.details['taskId']
+            origin = TaskOrigin.from_dict(result.details['origin'])
+            assert result.details['background'] is True
+            if scenario == 'configuration_changed':
+                main.model_configuration_store.update(configuration.id, configuration.model_copy(update={'model': 'replacement-model'}))
+            elif scenario == 'configuration_deleted':
+                main.model_configuration_store.delete(configuration.id)
+            release.set()
+            deadline = time.monotonic() + 5
+            while (completion := tasks.completion(task_id, origin)) is None or completion['status'] in {'pending', 'sending'}:
+                assert time.monotonic() < deadline
+                time.sleep(.01)
+            assert tasks.query(task_id, origin).status == 'succeeded'
+            assert tasks.query(task_id, origin).output == 'PRIVATE_CHILD_RESULT'
+            messages = [item for item in sessions.list_messages(key) if item.messageType == 'internal_completion']
+            if scenario.startswith('configuration_'):
+                assert not requests and not failures and not messages
+                assert completion['status'] == 'failed' and completion['error_type'] == 'PermissionError'
+            else:
+                assert len(requests) == 1
+                model_id, model_messages, model_tools = requests[0]
+                assert model_id == configuration.id
+                assert not model_tools and 'PRIVATE_CHILD_RESULT' in str(model_messages)
+                assert [type(error) for error in failures] == [TimeoutError if scenario == 'provider_timeout' else RuntimeError]
+                assert str(failures[0]) == 'PRIVATE_MODEL_CONNECTION_ERROR'
+                assert completion['status'] == 'sent' and len(messages) == 1
+                content = messages[0].content
+                assert f'查询任务 {task_id}' in content and 'succeeded' in content
+                assert 'spawn_manage' not in content
+                assert 'PRIVATE_' not in content
+    finally:
+        release.set()
+
+
 def test_background_completion_survives_parent_and_is_appended_once(api, monkeypatch):
     import asyncio
     import threading

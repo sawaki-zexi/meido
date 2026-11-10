@@ -151,7 +151,7 @@ def test_foreign_group_target_is_never_visible_or_dispatchable(meme_turn, monkey
     asyncio.run(main._dispatch_channel_payload(s.adapter.account_id,
         group_message('same-id', '11', '当前群内请求', at('99')), source_adapter=s.adapter))
     assert len(requests) == 2  # one existing format correction, then reject
-    assert not any(op == 'send_group_msg' for op, _ in s.operations)
+    assert_only_failure_notice(s.operations, 'same-id')
 
 
 def test_reopen_preserves_historical_quote_owner_and_reply_relation_after_unpair(meme_turn, monkeypatch):
@@ -224,7 +224,7 @@ def test_minimal_request_does_not_turn_bare_old_id_in_body_into_visible_candidat
         group_message('current', '11', text, at('99')), source_adapter=s.adapter))
     assert len(requests) == 2
     assert old.id in str(requests[-1]) and 'EXCLUDED_ORIGINAL_BODY' not in str(requests[-1])
-    assert not any(op == 'send_group_msg' for op, _ in s.operations)
+    assert_only_failure_notice(s.operations, 'current')
 
 
 @pytest.mark.parametrize('kind', ['image', 'unreadable-image', 'empty'])
@@ -305,12 +305,14 @@ def test_mentioned_only_logical_member_does_not_require_a_sendable_mention(meme_
         source_adapter=s.adapter))
     assert len(requests) == (2 if display in {'corrected', 'invalid-twice'} else 1)
     sends = [params for op, params in s.operations if op == 'send_group_msg']
-    assert len(sends) == (0 if display == 'invalid-twice' else 1)
+    assert len(sends) == 1
     group = target_from_chat(account_id=s.adapter.account_id, chat_id='100', kind=TargetKind.GROUP)
     known = s.channels.get_target(s.role.id, s.adapter.account_id, group.id)
     assert '44' not in known.metadata.get('member_ids', [])
     assert not any(target.chat_id == '44' for target in s.channels.list_targets(s.role.id, s.adapter.account_id))
-    if sends:
+    if display == 'invalid-twice':
+        assert_only_failure_notice(s.operations, 'mentioned-request')
+    else:
         assert sends[0]['group_id'] == 100
         assert not any(part['type'] == 'at' for part in sends[0]['message'])
         thread = s.channels.get_thread_by_chat(s.role.id, s.adapter.account_id, '100', chat_type='group')
@@ -368,3 +370,12 @@ def test_selected_nontrigger_source_is_revalidated_at_actual_dispatch(meme_turn,
     thread = s.channels.get_thread_by_chat(s.role.id, s.adapter.account_id, '100', chat_type='group')
     replay = str(s.sessions.runtime_messages(thread.session_key))
     assert ('RESPONSE_TO_SELECTED_SOURCE' in replay) is (state != 'invalidated')
+
+
+def assert_only_failure_notice(operations, request_id, sender_id='11'):
+    sends = [params for op, params in operations if op == 'send_group_msg']
+    assert len(sends) == 1 and sends[0]['group_id'] == 100
+    parts = sends[0]['message']
+    assert ''.join(part['data']['text'] for part in parts if part['type'] == 'text') == main.QQ_REPLY_FAILURE_NOTICE
+    assert [str(part['data']['id']) for part in parts if part['type'] == 'reply'] == [request_id]
+    assert [str(part['data']['qq']) for part in parts if part['type'] == 'at'] == [sender_id]
