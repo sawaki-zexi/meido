@@ -59,6 +59,8 @@ async def run_agent_loop(
     on_tool_result: Callable[[ToolResultMessage], Awaitable[None] | None] | None = None,
     on_tool_dispatch: Callable[[ToolExecutionStartEvent], None] | None = None,
     can_continue: Callable[[], bool] | None = None,
+    before_tool: Callable[[], bool] | None = None,
+    deadline: float | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Run the provider/tool loop while keeping the transcript mutable.
 
@@ -288,6 +290,9 @@ async def run_agent_loop(
                 break
             if token.is_cancelled():
                 break
+            if before_tool is not None and not before_tool():
+                token.cancel()
+                break
             if capabilities is not None and capabilities._discovery is not None:
                 registry = capabilities.current()
             elif capabilities is not None and hasattr(provider, 'bind_capabilities'):
@@ -312,6 +317,8 @@ async def run_agent_loop(
                 else ToolContext(role_id=role_id, session_key=session_key, run_id=run_id, signal=token, tool_call_id=call.id)
             )
             tool_message: ToolResultMessage | None = None
+            if deadline is not None:
+                tool_context = replace(tool_context, deadline=deadline)
 
             async def settle_result(final_result: AgentToolResult) -> None:
                 nonlocal tool_message

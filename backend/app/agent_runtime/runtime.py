@@ -172,6 +172,24 @@ class RuntimeManager:
             self._reservation_end[run.runId] = on_end
         return result
 
+    async def reserve_natural_run(self, run: AgentRun, record: dict, *, can_start) -> AgentRun:
+        """The ordinary role gate, without joining or overtaking its FIFO."""
+        lock = self.lock_for(run.roleId)
+        if lock.locked() or self._queued_roles.get(run.roleId, 0):
+            raise ActiveRunError('role has active or queued work')
+        await lock.acquire()
+        try:
+            if not can_start():
+                raise ActiveRunError('natural input is no longer admitted')
+            accepted = self.sessions.admit_natural_run(run, record)
+        except BaseException:
+            lock.release()
+            raise
+        self._reserved_roles[run.runId] = run.roleId
+        self._tokens[run.runId] = CancellationToken()
+        self.attach_current_task(run.runId)
+        return accepted
+
     async def reserve_existing_user_message(self, run: AgentRun, message_id: str, *, can_start: Callable[[], bool] | None = None,
                                             on_accepting: Callable[[], Callable[[], None] | None] | None = None) -> tuple[AgentRun, Message, Message]:
         """Reserve a run around a channel message already written to SQLite."""
@@ -348,6 +366,9 @@ class RuntimeManager:
         on_message_end: MessageEndHandler | None = None,
         defer_reply: bool = False,
         can_continue: Callable[[], bool] | None = None,
+        before_tool: Callable[[], bool] | None = None,
+        deadline: float | None = None,
+        keep_open: bool = False,
     ) -> AsyncIterator[AgentEvent]:
         """Execute a loop and finish run/message state through one idempotent path."""
 
@@ -368,6 +389,7 @@ class RuntimeManager:
             self._tasks[run.runId] = task
         turn_count = 0
         assistant_content = ""
+        continuation_ready = False
         try:
             if self.sessions.get_run(run.runId) is None:
                 self.sessions.create_run(run)
@@ -426,6 +448,8 @@ class RuntimeManager:
                 tool_timeout=tool_timeout,
                 on_tool_result=persist_tool_result,
                 on_tool_dispatch=bind_tool_dispatch,
+                before_tool=before_tool,
+                deadline=deadline,
                 **({"can_continue": can_continue} if can_continue is not None else {}),
             )) as loop_stream:
                 async for event in loop_stream:
@@ -465,6 +489,12 @@ class RuntimeManager:
                         )
                         if assistant is not None:
                             assistant_content = assistant.content
+                        if keep_open and event.reason == 'completed':
+                            # The owning natural batch may revise its response
+                            # plan. It finalizes this run when the batch settles.
+                            continuation_ready = True
+                            yield event
+                            continue
                         self._finish_run(
                             run.runId,
                             status=event.reason,
@@ -503,7 +533,7 @@ class RuntimeManager:
                             # Cleanup diagnostics must not hide the run's terminal state.
                             pass
                     run_state = self.sessions.get_run(run.runId)
-                    if run_state is not None and run_state.status in {"created", "running"}:
+                    if not (keep_open and continuation_ready) and run_state is not None and run_state.status in {"created", "running"}:
                         token.cancel()
                         self._finish_run(
                             run.runId,
@@ -528,6 +558,14 @@ class RuntimeManager:
     ) -> Message | None:
         if status not in {"completed", "failed", "cancelled", "max_turns"}:
             raise ValueError(f"invalid terminal status: {status}")
+        current = self.sessions.get_run(run_id)
+        if (current is not None and current.modelSnapshot.get('natural') is True
+                and self._assistant_message_ids.get(run_id) is None):
+            self.sessions.update_run(run_id, status=status, turn_count=turn_count,
+                ended_at=datetime.now(timezone.utc), cancel_reason=cancel_reason, error=error)
+            self.sessions.finish_open_tool_audits(run_id, result_category=status,
+                error_type='RuntimeError' if error else None, error_message=error)
+            return None
         try:
             _, message = self.sessions.finish_run(
                 run_id,

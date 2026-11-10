@@ -55,7 +55,7 @@ def natural(meme_turn,monkeypatch):
     monkeypatch.setattr(main,'_schedule_clock',s.clock)
     scheduler=main._natural_application()
     scheduler.sleep=s.clock.sleep
-    scheduler.limits=NaturalLimits(coalesce=1,wait=2,lifetime=10,cooldown=3,min_role_interval=0)
+    scheduler.limits=NaturalLimits(coalesce=1,wait=2,lifetime=10,cooldown=3,min_role_interval=0,max_calls=3)
     s.scheduler=scheduler
     s.channels.listening.clock=s.clock
     s.channels.set_group_listening(s.role.id,s.adapter.account_id,'100',True)
@@ -169,7 +169,7 @@ def test_disabling_group_invalidates_pending_natural_reply_and_keeps_listening(n
     asyncio.run(run())
 
 
-def test_natural_reply_scoped_real_message_and_no_tools(natural):
+def test_natural_reply_scoped_real_message_with_available_tools(natural):
     s=natural
     async def run():
         try:
@@ -180,12 +180,12 @@ def test_natural_reply_scoped_real_message_and_no_tools(natural):
             # finish on the scheduler's owned task.
             await asyncio.wait_for(asyncio.shield(task), 5)
             assert len(s.calls)==2
-            assert all(not tools for _, tools in s.calls)
+            assert not s.calls[0][1] and s.calls[1][1]
             assert len(s.operations)==1
             op,params=s.operations[0]
             assert op=='send_group_msg' and params['group_id']==100
             assert [item['type'] for item in params['message']]==['text']
-            messages=s.sessions.list_messages(s.thread.session_key)
+            messages=[m for m in s.sessions.list_messages(s.thread.session_key) if m.role == 'assistant']
             assert len(messages)==1 and messages[0].role=='assistant'
             assert messages[0].metadata['naturalReply'] is True
             assert messages[0].metadata['deliveryStatus']=='sent'
@@ -270,11 +270,11 @@ def test_pending_and_real_delivery_receipt(natural,outcome):
         s.adapter._transport=transport
         await s.receive('1'); await s.clock.advance(1)
         await entered.wait()
-        messages=s.sessions.list_messages(s.thread.session_key)
+        messages=[m for m in s.sessions.list_messages(s.thread.session_key) if m.role == 'assistant']
         assert len(messages)==1 and messages[0].metadata['deliveryStatus']=='pending'
         s.channels.listening.set_natural_enabled(s.role.id,s.thread.thread_id,False)
         release.set(); await s.clock.advance(0)
-        messages=s.sessions.list_messages(s.thread.session_key)
+        messages=[m for m in s.sessions.list_messages(s.thread.session_key) if m.role == 'assistant']
         assert len(messages)==1 and messages[0].metadata['deliveryStatus']==outcome
         assert messages[0].status==('completed' if outcome=='sent' else 'failed')
         assert len(s.operations)==1
@@ -358,7 +358,7 @@ def test_bot_marker_and_duplicate_input_do_not_wake(natural):
         assert not s.calls
         await s.receive('1'); await s.receive('1'); await s.clock.advance(1)
         assert len(s.calls)==2
-        assert s.sessions.list_messages(s.thread.session_key)[0].metadata['relatedInputIds']==['1']
+        assert next(m for m in s.sessions.list_messages(s.thread.session_key) if m.role=='assistant').metadata['relatedInputIds']==['1']
     asyncio.run(run())
 
 
@@ -439,7 +439,7 @@ def test_cancelled_preemption_waiter_preserves_inflight_receipt(natural):
         await asyncio.sleep(0); waiter.cancel(); await asyncio.sleep(0); waiter.cancel()
         release.set()
         await asyncio.gather(waiter,return_exceptions=True)
-        assert s.sessions.list_messages(s.thread.session_key)[0].metadata['deliveryStatus']=='sent'
+        assert next(m for m in s.sessions.list_messages(s.thread.session_key) if m.role=='assistant').metadata['deliveryStatus']=='sent'
         assert not s.scheduler.tasks
     asyncio.run(run())
 
@@ -453,7 +453,7 @@ def test_forced_dispatch_cancellation_is_uncertain_not_pending(natural):
         await s.receive('1'); await s.clock.advance(1); await entered.wait()
         task=s.scheduler.tasks[s.thread.thread_id]; task.cancel()
         await asyncio.gather(task,return_exceptions=True)
-        assert s.sessions.list_messages(s.thread.session_key)[0].metadata['deliveryStatus']=='uncertain'
+        assert next(m for m in s.sessions.list_messages(s.thread.session_key) if m.role=='assistant').metadata['deliveryStatus']=='uncertain'
         assert s.channels.list_deliveries(s.role.id)[0]['status']=='uncertain'
     asyncio.run(run())
 
@@ -499,7 +499,7 @@ def test_cancelled_explicit_preemption_waiter_is_terminal(natural):
         for _ in range(10): await asyncio.sleep(0)
         task.cancel(); await asyncio.sleep(0); release.set()
         await asyncio.gather(task,return_exceptions=True)
-        user=next(m for m in s.sessions.list_messages(s.thread.session_key) if m.role=='user')
+        user=next(m for m in s.sessions.list_messages(s.thread.session_key) if m.role=='user' and m.metadata.get('platformMessageId')=='explicit')
         assert user.metadata['channelTurnState']=='cancelled'
         assert s.channels.list_deliveries(s.role.id)[0]['status']=='sent'
     asyncio.run(run())

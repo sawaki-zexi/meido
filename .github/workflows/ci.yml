@@ -114,6 +114,9 @@ jobs:
               tests/python/channels/test_qq_failure_feedback.py
               tests/python/test_novelai_background_channel.py::test_background_owner_channel_returns_text_then_one_original_media_receipt[fallback_journal_failure]
               tests/python/channels/test_natural_capability_scope.py
+              tests/python/channels/test_natural_tools.py
+              tests/python/channels/test_natural_tools_background.py
+              tests/python/test_channel_source_authority.py::test_image_management_scope_crosses_natural_and_explicit_without_losing_revocation
               tests/python/channels/test_natural_conversation.py
               tests/python/channels/test_natural_scheduler.py
               tests/python/channels/test_natural_reply_delivery.py
@@ -152,6 +155,7 @@ jobs:
               tests/python/test_spawn_completion_summary.py
               tests/python/test_spawn_completion_recovery.py
               tests/python/test_spawn_api.py::test_channel_management_and_watchdog_preserve_frozen_actual_source[unbind]
+              tests/python/test_spawn_api.py::test_spawn_management_crosses_natural_and_explicit_inputs_without_widening_source
               tests/python/test_coding_spawn.py::test_coding_spawn_uses_owned_task_before_chat_provider_and_continues_same_job
               tests/python/test_coding_spawn.py::test_coding_requires_explicit_background_zero_retry_and_exclusive_schema
               tests/python/test_chat_lifecycle.py

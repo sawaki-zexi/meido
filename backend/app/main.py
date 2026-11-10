@@ -3040,9 +3040,19 @@ def _natural_application():
             authorized=_natural_authorized,
             busy=lambda role_id: runtime_manager.lock_for(role_id).locked(),
             quota=NaturalQuota(multichannel_store), clock=lambda: _schedule_clock(),
-            cleanup=lambda batch: batch.media.close() if batch.media is not None else None)
+            cleanup=_natural_cleanup)
         multichannel_store.listening.on_invalidate = _natural_scheduler.invalidate
     return _natural_scheduler
+
+
+def _natural_cleanup(batch):
+    if batch.media is not None:
+        batch.media.close()
+    for run_id in batch.execution_runs.values():
+        current = session_store.get_run(run_id)
+        if current is not None and current.status in {'created', 'running'}:
+            session_store.update_run(run_id, status='cancelled' if batch.invalidated else 'completed',
+                ended_at=datetime.now(timezone.utc))
 
 
 def _natural_authorized(batch):
@@ -3063,7 +3073,7 @@ def _natural_authorized(batch):
     return bool(multichannel_store.listening.state(thread.role_id, thread.thread_id)['naturalEffective'])
 
 
-def _natural_accept(thread, event, metadata):
+def _natural_accept(thread, event, record, *, accepted_binding=None):
     from .channels.natural import NaturalInput
     if event.channel != 'qq' or event.chat_type is not ChatType.GROUP or event.triggered:
         return
@@ -3080,8 +3090,20 @@ def _natural_accept(thread, event, metadata):
     accepted_revision = event.metadata.get('naturalListeningRevision',multichannel_store.listening.revision(thread.thread_id))
     if accepted_revision != multichannel_store.listening.revision(thread.thread_id):
         return
+    from .channels.source_authority import capture_channel_message_source, channel_owner_binding
+    metadata = record['metadata']
+    owner = metadata.get('senderIsOwner') is True
+    if owner and accepted_binding != channel_owner_binding(multichannel_store, thread.channel, thread.account_id, event.sender_id):
+        return
+    try:
+        source = capture_channel_message_source(multichannel_store, thread,
+            Message.model_validate({**record, 'sessionKey':thread.session_key, 'sequence':record['sequence'] or 0}),
+            owner_context=owner)
+        source = replace(source, natural_revision=accepted_revision, connection_generation=generation)
+    except PermissionError:
+        return
     application = _natural_application()
-    application.accept(thread, NaturalInput(event.external_message_id,event.sender_id,event.content,metadata,event),
+    application.accept(thread, NaturalInput(event.external_message_id,event.sender_id,event.content,metadata,event,record,source),
         authority={'accountCreatedAt':account.created_at,'generation':generation,
             'revision':accepted_revision})
 
@@ -3143,8 +3165,9 @@ async def _natural_decide(batch, inputs, authorized):
         media=_natural_media_application(), channel_adapter=channel_adapters.get(batch.thread.account_id),
         limits=_natural_application().limits, clock=_schedule_clock,
         memory_blocks=_channel_memory_blocks,
-        reserve_request=lambda batch, revision: _natural_application()._request_slot(batch, revision, account=False),
+        reserve_request=lambda batch, revision, **kwargs: _natural_application()._request_slot(batch, revision, account=False, **kwargs),
         commit_request=_natural_application()._commit_request,
+        execute=_natural_execute,
         supports_images=bool(configuration and model_adapter_registry.supports_images(configuration)))
     return await batch.turn.plan(inputs, authorized)
 
@@ -3153,11 +3176,17 @@ async def _natural_draft(batch, decision, authorized):
     return await batch.turn.express(decision, authorized)
 
 
+async def _natural_execute(conversation, run, provider, messages, authorized):
+    from .channels.natural_execution import execute
+    return await execute(sys.modules[__name__], conversation, run, provider, messages, authorized)
+
+
 async def _natural_send(batch, decision, authorized):
     if not authorized() or decision.plan is None or batch.turn is None or not batch.turn.valid(decision.plan): return
     from .channels.napcat import FORWARD_MAX_CHARS
     text = ' '.join(decision.text.splitlines())[:FORWARD_MAX_CHARS].strip()
     thread, media = batch.thread, batch.media
+    source = batch.snapshot[-1].source if batch.snapshot else None
     # Suppress text-only repeats; image cooldown is based on actual content hash.
     if text.strip() and not decision.candidate_id and any(
             message.metadata.get('naturalReply') and message.content.strip()==text.strip()
@@ -3174,7 +3203,9 @@ async def _natural_send(batch, decision, authorized):
             # Silence is safer than sending 'look at this' without its image.
             return
     def dispatch_authorized():
-        return authorized() and batch.turn.valid(decision.plan) and (candidate_id is None or media.valid(candidate_id))
+        return (source is not None and source.authorization_denial(multichannel_store) is None
+            and authorized() and batch.turn.valid(decision.plan)
+            and (candidate_id is None or media.valid(candidate_id)))
     if not dispatch_authorized(): return
     target = target_from_chat(account_id=thread.account_id,chat_id=thread.chat_id,
         kind=TargetKind.GROUP,display_name=thread.title)
@@ -3392,7 +3423,7 @@ async def _handle_channel_event_locked(event):
         if heard is not None:
             if heard["sequence"] is not None:
                 channel_memory_maintenance.heard(thread)
-            _natural_accept(thread, event, heard['metadata'])
+            _natural_accept(thread, event, heard, accepted_binding=accepted_binding)
         return
     if event.channel == "qq":
         metadata["channelTurnState"] = "invalidated" if media_invalidated else "queued"
@@ -4966,7 +4997,10 @@ def _runtime_tool_candidates(
             source_authority_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
             # A later message from the same actual sender/binding can observe
             # the task; a re-pair or another sender cannot inherit its scope.
-            scope = {key: value for key, value in payload.items() if key != "message_created_at"}
+            # Natural execution epochs stay in the authority above; they do
+            # not split management identity between natural and explicit turns.
+            scope = {key: value for key, value in payload.items()
+                if key not in {"message_created_at", "natural_revision", "connection_generation"}}
             source_scope_id = hashlib.sha256(json.dumps(scope, sort_keys=True).encode()).hexdigest()
         return TaskOrigin(role.id, context.session_key, context.run_id, context.tool_call_id, version or "",
                           source_thread_id or f"desktop:{role.id}", source_account_id or "",

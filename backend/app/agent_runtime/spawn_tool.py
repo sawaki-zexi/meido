@@ -331,6 +331,7 @@ class SpawnTool:
         self.coding_authorized = coding_authorized or authorized
         self.capabilities: CapabilityResolution | None = None
         self.provider_factory: Callable[[], ModelProvider] | None = None
+        self.synchronous_request_start = None
         self.definition = replace(self.definition, timeout_seconds=config.timeoutSeconds + 5, output_limit=config.maxOutputChars)
 
     def bind(self, capabilities: CapabilityResolution, provider_factory: Callable[[], ModelProvider]) -> None:
@@ -361,8 +362,11 @@ class SpawnTool:
             if 'repository' in arguments:
                 return _error()
             owned_context, authorized = replace(context, capability_binding=None), self.authorized
+            provider = self.provider_factory()
+            if not background and self.synchronous_request_start is not None:
+                provider.request_start = self.synchronous_request_start
             executor = SpawnExecutor(task=arguments["task"], profile=arguments.get("profile", "research"), config=self.config,
-                provider=self.provider_factory(), capabilities=current, context=owned_context, authorized=lambda: authorized(owned_context))
+                provider=provider, capabilities=current, context=owned_context, authorized=lambda: authorized(owned_context))
             task_id = self.tasks.submit(origin, executor, budget=TaskBudget(self.config.timeoutSeconds, self.config.maxOutputChars),
                 kind="spawn", description=json.dumps({"label": arguments.get("label", ""), "profile": arguments.get("profile", "research"),
                     "retry_count": arguments.get("retry_count", 0)}, ensure_ascii=False),

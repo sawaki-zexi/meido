@@ -1134,6 +1134,8 @@ class SessionStore:
             ).fetchone()
             if source is None or source[3] != "user" or source[5] != "completed":
                 raise KeyError(message_id)
+            if source[13] is not None and source[13] != run.runId:
+                raise ValueError("inbound message already belongs to a run")
             connection.execute("UPDATE messages SET run_id=? WHERE message_id=?", (run.runId, message_id))
             assistant_sequence = int(source[2]) + 1
             next_sequence = connection.execute(
@@ -1160,6 +1162,46 @@ class SessionStore:
             metadata={"runtimePlaceholder": True},
         )
         return run, user_message, assistant_message
+
+    def admit_natural_run(self, run: AgentRun, record: dict) -> AgentRun:
+        """Atomically bind the original hearing record, without a synthetic input.
+
+        The same physical input remains claimed after expiry/restart. Only its
+        owning batch can resume expression; it keeps the run and tool facts.
+        """
+        metadata = record['metadata']
+        if (not record['id'].startswith('listen:') or record['role'] != 'user'
+                or record['status'] != 'completed' or metadata.get('triggered') is not False
+                or metadata.get('direction') != 'inbound' or metadata.get('internalEvent')
+                or run.sessionKey != 'thread:' + str(metadata.get('threadId'))):
+            raise PermissionError('natural execution requires its original hearing record')
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            prior = connection.execute(
+                "SELECT run_id,message_id,content,created_at,metadata_json FROM messages WHERE session_key=? AND role='user' "
+                "AND json_extract(metadata_json,'$.accountId')=? "
+                "AND json_extract(metadata_json,'$.platformMessageId')=?",
+                (run.sessionKey, metadata['accountId'], metadata['platformMessageId'])).fetchone()
+            if prior:
+                existing = connection.execute('SELECT model_snapshot_json,status FROM agent_runs WHERE run_id=?', (prior[0],)).fetchone()
+                if (prior[0] != run.runId or not existing or existing[1] != 'running'
+                        or json.loads(existing[0]).get('batchId') != run.modelSnapshot['batchId']
+                        or (prior[1], prior[2], prior[3], json.loads(prior[4])) != (
+                            record['id'], record['content'], record['createdAt'], metadata)):
+                    raise PermissionError('natural input was already admitted; do not replay it')
+                return run.model_copy(update={'modelSnapshot': {**json.loads(existing[0]), **run.modelSnapshot}})
+            connection.execute(
+                'INSERT INTO agent_runs (run_id,role_id,session_key,status,model_configuration_id,model_snapshot_json,turn_count,started_at) VALUES(?,?,?,?,?,?,?,?)',
+                (run.runId,run.roleId,run.sessionKey,run.status,run.modelConfigurationId,
+                 json.dumps(run.modelSnapshot, ensure_ascii=False),run.turnCount,run.startedAt.isoformat()))
+            sequence = connection.execute('SELECT COALESCE(MAX(sequence),0)+1 FROM messages WHERE session_key=?', (run.sessionKey,)).fetchone()[0]
+            connection.execute(
+                "INSERT INTO messages (message_id,session_key,sequence,role,content,status,created_at,message_type,run_id,metadata_json) VALUES(?,?,?,'user',?,'completed',?,'text',?,?)",
+                (record['id'],run.sessionKey,sequence,record['content'],record['createdAt'],run.runId,_dump(metadata)))
+            connection.execute(
+                "INSERT INTO channel_events(event_id,thread_id,direction,external_message_id,created_at,metadata_json) VALUES(?,?,'inbound',?,?,?)",
+                ('event-' + uuid.uuid4().hex,metadata['threadId'],metadata['platformMessageId'],record['createdAt'],_dump(metadata)))
+        return run
 
     def delete_role_session(self, role_id: str) -> None:
         session_key = f"role:{role_id}"

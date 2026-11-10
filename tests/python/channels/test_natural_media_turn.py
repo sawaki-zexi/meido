@@ -29,7 +29,7 @@ def media_turn(natural, monkeypatch):
     s.text, s.choose, s.before_result = '开心', True, lambda:None
     class Model:
         async def stream_structured_messages(self, messages, configuration, tools):
-            assert not tools
+            assert bool(tools) == ('[自然参与表达]' in messages[0]['content'])
             s.calls.append((messages,tools))
             system = messages[0]['content']
             if '[自然参与规划]' in system:
@@ -97,7 +97,7 @@ def test_single_original_gif_message_and_actual_history(media_turn, text, uncert
             assert [part['type'] for part in segments]==(['text','image'] if text else ['image'])
             raw=base64.b64decode(segments[-1]['data']['file'].removeprefix('base64://'))
             assert raw==s.raw and Image.open(io.BytesIO(raw)).n_frames==2
-            messages=s.sessions.list_messages(s.thread.session_key)
+            messages=[m for m in s.sessions.list_messages(s.thread.session_key) if m.role == 'assistant']
             assert len(messages)==1 and messages[0].role=='assistant'
             assert messages[0].metadata['deliveryStatus']==('uncertain' if uncertain else 'sent')
             assert messages[0].metadata['attachments'][0]['mediaType']=='image/gif'
@@ -205,7 +205,7 @@ def test_library_change_during_image_encoding_stops_last_safe_handoff(media_turn
             assert not [op for op,_ in s.operations if op=='send_group_msg']
             counts=next(iter(main._natural_media_application().usage.values()))
             assert counts['attempts']==1 and counts['successes']==0
-            messages=s.sessions.list_messages(s.thread.session_key)
+            messages=[m for m in s.sessions.list_messages(s.thread.session_key) if m.role == 'assistant']
             assert len(messages)==1 and messages[0].metadata['deliveryStatus']=='failed'
         finally:
             if main._proactive is not None: await main._proactive.close()
@@ -218,7 +218,7 @@ def test_recent_uncertain_attempt_prevents_same_meme_after_service_restart(media
     async def run():
         try:
             await s.media_receive('first')
-            message=s.sessions.list_messages(s.thread.session_key)[0]
+            message=next(m for m in s.sessions.list_messages(s.thread.session_key) if m.role == 'assistant')
             assert message.metadata['naturalMemeSha256']
             main._natural_media_application._instance=None
             await s.clock.advance(4)  # scheduler cooldown elapsed, sticker cooldown has not

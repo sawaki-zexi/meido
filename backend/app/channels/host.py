@@ -85,6 +85,9 @@ class ChannelHost:
         self.attachment_resolver = attachment_resolver
         self._adapters: dict[str, ChannelAdapter] = {}
         self._adapter_generations: dict[int, str] = {}
+        # Durable task sources store this opaque generation, then consult the
+        # current host after restoration; a new host cannot revive old work.
+        store.source_connection_generation = self.connection_generation
         self._send_state_lock = asyncio.Lock()
         self._paused_accounts: set[str] = set()
         self._inflight_sends: dict[str, int] = {}

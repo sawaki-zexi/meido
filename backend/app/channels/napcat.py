@@ -236,9 +236,9 @@ class NapCatAdapter(ChannelAdapter):
                 return replace(event, triggered=True, reply_to_sender_id=sender_id)
         return event
 
-    async def enrich_reply(self, event: InboundEvent) -> InboundEvent:
-        """Resolve a quote only after the host admitted a triggering message."""
-        if not event.reply_to_message_id or not event.triggered or self._transport is None:
+    async def enrich_reply(self, event: InboundEvent, *, admitted=False) -> InboundEvent:
+        """Resolve an admitted quote while retaining the real trigger fact."""
+        if not event.reply_to_message_id or not (event.triggered or admitted) or self._transport is None:
             return event
         try:
             response = await self._transport("get_msg", {"message_id": event.reply_to_message_id})

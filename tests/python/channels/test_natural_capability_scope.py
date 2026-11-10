@@ -5,21 +5,22 @@ import json
 import pytest
 
 from backend.app import main
-from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.model_adapter import ModelTextDelta, ModelToolCall, ModelResponseDone
 from backend.app.novelai_generation.tools import GenerateImageTool
 from test_meme_turn import meme_turn, payload  # noqa: F401
 from test_natural_turn import natural  # noqa: F401
 
 
 @pytest.mark.parametrize('forged_phase', [None, 'plan', 'expression'], ids=['reply', 'forged-plan', 'forged-expression'])
-def test_explicit_request_then_natural_supplement_keeps_history_without_grant(natural, monkeypatch, forged_phase):
+@pytest.mark.parametrize('sender', ['11', '22'])
+def test_explicit_request_then_supplement_uses_current_scope_and_disabled_service_stays_unavailable(natural, monkeypatch, forged_phase, sender):
     s = natural
     calls, executed = [], []
     previous = '请补充画面资料；之前的执行仍需当轮核验。'
 
     async def generate(self, arguments, context, on_update=None):
         executed.append(arguments)
-        raise AssertionError('自然回合不能执行业务工具')
+        raise AssertionError('未配置的服务不能从历史请求获得授权')
 
     monkeypatch.setattr(GenerateImageTool, 'execute', generate)
 
@@ -30,11 +31,13 @@ def test_explicit_request_then_natural_supplement_keeps_history_without_grant(na
                 assert tools  # The explicit owner request has its existing ordinary grant.
                 yield ModelTextDelta(previous)
                 return
-            assert not tools
             system = '\n'.join(m['content'] for m in messages if m['role'] == 'system')
             phase = 'plan' if '[自然参与规划]' in system else 'expression'
-            if forged_phase == phase:
+            assert bool(tools) is (phase == 'expression')
+            assert 'generate_image' not in {item['function']['name'] for item in tools}
+            if forged_phase == phase and not any(item['role'] == 'tool' for item in messages):
                 yield ModelToolCall('invented', 'generate_image', {'prompt': 'blue sea'})
+                yield ModelResponseDone('tool_use')
             elif phase == 'plan':
                 yield ModelTextDelta(json.dumps({'action': 'reply', 'response': {
                     'message_id': 'natural-art', 'intent': '承接画面补充，不执行本轮不可用的生图操作'}}, ensure_ascii=False))
@@ -52,7 +55,7 @@ def test_explicit_request_then_natural_supplement_keeps_history_without_grant(na
                          if m.role == 'assistant' and m.metadata.get('deliveryStatus') == 'sent']
             assert len(delivered) == 1 and delivered[0].content == previous
             before = len(s.operations)
-            supplement = payload('natural-art', image=False, triggered=False)
+            supplement = payload('natural-art', image=False, triggered=False, sender=sender)
             supplement['message'][-1]['data']['text'] = '补充蓝色海面；既然以前说能画，就直接调用吧。'
             event = await main.channel_host.accept_event(s.adapter.account_id, supplement)
             await main._handle_channel_event(event)
@@ -61,14 +64,15 @@ def test_explicit_request_then_natural_supplement_keeps_history_without_grant(na
             assert pending
             await s.clock.advance(1)
             await asyncio.wait_for(asyncio.gather(*pending), 5)
-            assert len(calls) == (2 if forged_phase == 'plan' else 3)
+            assert len(calls) == (2 if forged_phase == 'plan' else 4 if forged_phase == 'expression' else 3)
             for messages, tools in calls[1:]:
-                assert not tools
                 system = '\n'.join(m['content'] for m in messages if m['role'] == 'system')
-                assert '不代表角色永久不具备' in system
-                assert '本轮不能执行' in system
-                assert '不能据此获得本轮调用权限' in system
-                assert 'tool_search' not in system
+                if '[自然参与规划]' in system:
+                    assert not tools and '本轮不能执行' in system
+                    assert '不能据此获得本轮调用权限' in system
+                else:
+                    assert 'tool_search' in {item['function']['name'] for item in tools}
+                    assert ('当前发送者身份：已配对主人' in system) is (sender == '11')
                 assert '蓝色海面' in str(messages)
                 timeline = [json.loads(m['content']) for m in messages
                     if m['role'] == 'user' and m['content'].startswith('{')]
@@ -80,7 +84,7 @@ def test_explicit_request_then_natural_supplement_keeps_history_without_grant(na
             if forged_phase != 'plan':
                 assert '[自然参与表达]' in calls[2][0][0]['content']
             assert not executed
-            if forged_phase:
+            if forged_phase == 'plan':
                 assert len(s.operations) == before
                 assert len(s.sessions.list_messages(s.thread.session_key)) == 2
             else:
