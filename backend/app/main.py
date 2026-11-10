@@ -5157,6 +5157,8 @@ def _runtime_tool_candidates(
         PetActionTool(_desktop_pet_application(), role.id, authorized=pet_source_authorized),
         _novelai_application().tool_for(role.id, is_owner=is_channel_owner,
             source_thread_id=source_thread_id, source_account_id=source_account_id, frozen_role=role),
+        _novelai_application().management_tool_for(role.id, is_owner=is_channel_owner,
+            source_thread_id=source_thread_id, source_account_id=source_account_id),
         ScheduleTool(_schedule_application, session_store, origin_resolver=task_origin,
             authorized=schedule_source_authorized),
         *(ScheduleManageTool(name, _schedule_application, origin_resolver=task_origin,
@@ -5281,6 +5283,8 @@ def _enabled_runtime_tool_names(role, *, include_channel: bool = False) -> set[s
         enabled.update(COMPUTER_USE_TOOL_NAMES)
     if _novelai_application().tool_enabled(role):
         enabled.add('generate_image')
+    if _novelai_application().management_enabled(role):
+        enabled.add('manage_image')
     if not _screen_unavailable_reason(role):
         enabled.add("observe_screen")
     if include_channel or group_repository.has_member_data(role.id):
@@ -5340,7 +5344,7 @@ def _runtime_capability_policy(role, *, include_channel: bool) -> RuntimeCapabil
     enabled_tools = _enabled_runtime_tool_names(role, include_channel=include_channel)
     host_enabled = set(enabled_tools)
     enabled_tools.update(agent_config.enabledTools)
-    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | COMPUTER_USE_TOOL_NAMES | CODING_TOOL_NAMES | HERDR_AGENT_TOOL_NAMES | {"recall_memory", "memorize", "forget_memory", "search_owner_knowledge", "mail.manage", "observe_screen", "generate_image", "pet_action", "set_role_mood", "inspect_role_image"}) - host_enabled)
+    enabled_tools.difference_update((SHELL_TOOL_NAMES | SPAWN_TOOL_NAMES | COMPUTER_USE_TOOL_NAMES | CODING_TOOL_NAMES | HERDR_AGENT_TOOL_NAMES | {"recall_memory", "memorize", "forget_memory", "search_owner_knowledge", "mail.manage", "observe_screen", "generate_image", "manage_image", "pet_action", "set_role_mood", "inspect_role_image"}) - host_enabled)
     if not include_channel:
         enabled_tools.difference_update({
             "account_list", "account_targets", "account_send", "set_group_listening", "read_attachment",

@@ -17,7 +17,7 @@ def test_guest_qq_turn_can_generate_and_deliver_only_to_its_original_group(novel
     _, service = novelai_main
     channels = main.multichannel_store
     account = channels.register_channel_account(service.role.id, 'qq', account_id='guest-qq', enabled=True, allow_group=True)
-    sends, offered = [], []
+    sends, offered, results = [], [], {}
 
     async def transport(operation, params):
         if operation == 'send_group_msg':
@@ -33,24 +33,19 @@ def test_guest_qq_turn_can_generate_and_deliver_only_to_its_original_group(novel
         async def stream_structured_messages(self, messages, configuration, tools):
             self.calls += 1
             offered.append({tool['function']['name'] for tool in tools})
+            results.update({item['tool_call_id']: item['content'] for item in messages if item['role'] == 'tool'})
             if self.calls == 1:
-                yield ModelToolCall('guest-discover', 'tool_search', {'query': 'select:account_list,account_targets'})
+                yield ModelToolCall('guest-discover', 'tool_search', {'query': 'select:account_list,account_targets,list_schedules'})
                 yield ModelResponseDone('tool_use')
             elif self.calls == 2:
-                assert {'account_list', 'account_targets'} <= offered[-1]
                 yield ModelToolCall('guest-accounts', 'account_list', {})
                 yield ModelToolCall('guest-targets', 'account_targets', {'account_id': account.account_id, 'kind': 'known'})
                 yield ModelToolCall('guest-schedules', 'list_schedules', {})
                 yield ModelResponseDone('tool_use')
             elif self.calls == 3:
-                results = {item['tool_call_id']: item['content'] for item in messages if item['role'] == 'tool'}
-                assert json.loads(results['guest-accounts'])[0]['accountId'] == account.account_id
-                assert any(item['chatId'] == '100' for item in json.loads(results['guest-targets'])['targets'])
-                assert json.loads(results['guest-schedules']) == {'schedules': []}
                 yield ModelToolCall('guest-image', 'generate_image', service.request)
                 yield ModelResponseDone('tool_use')
             else:
-                assert json.loads(messages[-1]['content'])['status'] == 'succeeded'
                 yield ModelTextDelta('画好了。')
 
     adapter = NapCatAdapter(NapCatConfig(account.account_id), transport=transport)
@@ -77,8 +72,13 @@ def test_guest_qq_turn_can_generate_and_deliver_only_to_its_original_group(novel
 
     asyncio.run(scenario())
     assert offered and 'generate_image' in offered[0]
-    assert 'list_schedules' in offered[0]
-    assert not {'shell', 'schedule', 'cancel_schedule', 'read_file'} & offered[0]
+    assert 'list_schedules' not in offered[0]
+    assert {'account_list', 'account_targets', 'list_schedules'} <= offered[1]
+    assert json.loads(results['guest-accounts'])[0]['accountId'] == account.account_id
+    assert any(item['chatId'] == '100' for item in json.loads(results['guest-targets'])['targets'])
+    assert json.loads(results['guest-schedules']) == {'schedules': []}
+    assert json.loads(results['guest-image'])['status'] == 'succeeded'
+    assert not {'shell', 'schedule', 'cancel_schedule', 'read_file', 'manage_image'} & set.union(*offered)
     assert len(service.peer.requests) == 1 and len(sends) == 1
     assert sends[0]['group_id'] == 100
     assert any(part['type'] == 'image' for part in sends[0]['message'])
