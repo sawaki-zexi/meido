@@ -128,10 +128,16 @@ async def test_history_folds_in_longest_ordered_batches_and_commits_once(tmp_pat
     assert coverage == [state['removed']]
     assert sessions.list_messages('role:r') == original
     records = [record for payload in model.payloads for record in payload['messages']]
-    assert [*prior['removed'], *(identifier for record in records for identifier in record['source_message_ids'])] == state['removed']
+    assert [record['content'] for record in records] == [
+        message.content for message in original[len(prior['removed']):len(state['removed'])]]
+    assert all(len(record['source_message_ids']) == 1 and record['message_refs'] for record in records)
     assert state['removed'] == [message.id for message in original[:len(state['removed'])]]
     assert state['summary']['source_message_ids'] == state['removed']
-    assert model.payloads[0]['previous_summary'] == prior['summary']
+    if prior['summary']:
+        assert {field: model.payloads[0]['previous_summary'][field] for field in SUMMARY_FIELDS} == {
+            field: prior['summary'][field] for field in SUMMARY_FIELDS}
+    else:
+        assert model.payloads[0]['previous_summary'] is None
     limit = budget(base.configuration, provider.settings, provider.settings.maxTokens)[0]
     consumed = 0
     for index, payload in enumerate(model.payloads):
@@ -140,7 +146,9 @@ async def test_history_folds_in_longest_ordered_batches_and_commits_once(tmp_pat
         assert not wire.get('tools')
         assert input_cost(project_input(wire, base.configuration)) <= limit
         if index:
-            assert payload['previous_summary'] == model.summaries[index - 1]
+            assert {field: payload['previous_summary'][field] for field in SUMMARY_FIELDS} == {
+                field: model.summaries[index - 1][field] for field in SUMMARY_FIELDS}
+            assert payload['previous_summary']['source_message_ids'] == payload['messages'][0]['source_message_ids']
         consumed += len(payload['messages'])
         if consumed < len(records):
             extended = deepcopy(wire)
@@ -186,7 +194,10 @@ async def test_single_oversized_source_shrinks_text_but_keeps_ids_head_tail_and_
     assert 'DO_NOT_SEND' not in text and 'source.png' in text
     state = windows.load('r', 'role:r', 'owner', 'a')
     assert first.id in state['removed']
-    assert state['removed'] == [identifier for record in sent for identifier in record['source_message_ids']]
+    assert state['removed'] == [message.id for message in original[:len(state['removed'])]]
+    assert state['summary']['source_message_ids'] == state['removed']
+    assert len(sent) == len(state['removed'])
+    assert all(len(record['source_message_ids']) == 1 for record in sent)
     assert sessions.list_messages('role:r') == original
 
 
@@ -299,11 +310,15 @@ async def test_each_oversized_batch_has_only_one_shortening_and_counts_all_reque
         assert shortened['budget_feedback']['hard_limit'] == provider.settings.summaryTokenLimit
         assert 'messages' not in shortened
         if index:
-            assert model.payloads[index]['previous_summary'] == model.summaries[index - 1]
+            assert {field: model.payloads[index]['previous_summary'][field] for field in SUMMARY_FIELDS} == {
+                field: model.summaries[index - 1][field] for field in SUMMARY_FIELDS}
         assert [attempt['batch'] for attempt in provider.summary_attempts[index:index + 2]] == [index // 2 + 1] * 2
         assert [attempt['shortening'] for attempt in provider.summary_attempts[index:index + 2]] == [False, True]
     assert provider.requests == len(model.requests) == len(model.payloads) + 1
-    assert windows.load('r', 'role:r', 'owner', 'a')['summary'] == model.summaries[-1]
+    saved = windows.load('r', 'role:r', 'owner', 'a')
+    assert {field: saved['summary'][field] for field in SUMMARY_FIELDS} == {
+        field: model.summaries[-1][field] for field in SUMMARY_FIELDS}
+    assert saved['summary']['source_message_ids'] == saved['removed']
 
 
 @pytest.mark.anyio

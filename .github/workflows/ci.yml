@@ -216,6 +216,7 @@ jobs:
               tests/python/test_input_usage_calibration.py
               tests/python/test_batched_summary.py
               tests/python/test_summary_accounting.py
+              tests/python/test_summary_sources.py
               tests/python/test_output_usage.py
               tests/python/test_compaction_diagnostics.py
               tests/python/test_tool_discovery.py
