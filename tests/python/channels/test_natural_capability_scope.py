@@ -6,15 +6,22 @@ import pytest
 
 from backend.app import main
 from backend.app.model_adapter import ModelTextDelta, ModelToolCall
+from backend.app.novelai_generation.tools import GenerateImageTool
 from test_meme_turn import meme_turn, payload  # noqa: F401
 from test_natural_turn import natural  # noqa: F401
 
 
-@pytest.mark.parametrize('forged_call', [False, True])
-def test_explicit_request_then_natural_supplement_keeps_history_without_grant(natural, monkeypatch, forged_call):
+@pytest.mark.parametrize('forged_phase', [None, 'plan', 'expression'], ids=['reply', 'forged-plan', 'forged-expression'])
+def test_explicit_request_then_natural_supplement_keeps_history_without_grant(natural, monkeypatch, forged_phase):
     s = natural
-    calls = []
+    calls, executed = [], []
     previous = '请补充画面资料；之前的执行仍需当轮核验。'
+
+    async def generate(self, arguments, context, on_update=None):
+        executed.append(arguments)
+        raise AssertionError('自然回合不能执行业务工具')
+
+    monkeypatch.setattr(GenerateImageTool, 'execute', generate)
 
     class Model:
         async def stream_structured_messages(self, messages, configuration, tools):
@@ -24,10 +31,15 @@ def test_explicit_request_then_natural_supplement_keeps_history_without_grant(na
                 yield ModelTextDelta(previous)
                 return
             assert not tools
-            if forged_call:
+            system = '\n'.join(m['content'] for m in messages if m['role'] == 'system')
+            phase = 'plan' if '[自然参与规划]' in system else 'expression'
+            if forged_phase == phase:
                 yield ModelToolCall('invented', 'generate_image', {'prompt': 'blue sea'})
+            elif phase == 'plan':
+                yield ModelTextDelta(json.dumps({'action': 'reply', 'response': {
+                    'message_id': 'natural-art', 'intent': '承接画面补充，不执行本轮不可用的生图操作'}}, ensure_ascii=False))
             else:
-                yield ModelTextDelta(json.dumps({'action': 'reply', 'text': '已收到补充。'}, ensure_ascii=False))
+                yield ModelTextDelta(json.dumps({'text': '已收到补充。'}, ensure_ascii=False))
 
     monkeypatch.setattr(main, 'model_adapter', Model())
 
@@ -49,17 +61,26 @@ def test_explicit_request_then_natural_supplement_keeps_history_without_grant(na
             assert pending
             await s.clock.advance(1)
             await asyncio.wait_for(asyncio.gather(*pending), 5)
-            assert len(calls) == 2
-            messages, tools = calls[1]
-            assert not tools
-            system = '\n'.join(m['content'] for m in messages if m['role'] == 'system')
-            assert previous in system
-            assert '不代表角色永久不具备' in system
-            assert '本轮不能执行' in system
-            assert '不能据此获得本轮调用权限' in system
-            assert 'tool_search' not in system
-            assert '蓝色海面' in str(messages)
-            if forged_call:
+            assert len(calls) == (2 if forged_phase == 'plan' else 3)
+            for messages, tools in calls[1:]:
+                assert not tools
+                system = '\n'.join(m['content'] for m in messages if m['role'] == 'system')
+                assert '不代表角色永久不具备' in system
+                assert '本轮不能执行' in system
+                assert '不能据此获得本轮调用权限' in system
+                assert 'tool_search' not in system
+                assert '蓝色海面' in str(messages)
+                timeline = [json.loads(m['content']) for m in messages
+                    if m['role'] == 'user' and m['content'].startswith('{')]
+                own = next(item for item in timeline if item.get('sourceKind') == 'role_sent')
+                assert own['text'] == previous and own['deliveryStatus'] == 'sent'
+                assert own['responseRelation']['targetPlatformMessageId'] == 'explicit-art'
+                assert any(item['messageId'] == 'natural-art' for item in timeline)
+            assert '[自然参与规划]' in calls[1][0][0]['content']
+            if forged_phase != 'plan':
+                assert '[自然参与表达]' in calls[2][0][0]['content']
+            assert not executed
+            if forged_phase:
                 assert len(s.operations) == before
                 assert len(s.sessions.list_messages(s.thread.session_key)) == 2
             else:

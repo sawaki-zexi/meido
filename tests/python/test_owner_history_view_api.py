@@ -23,6 +23,11 @@ def paired_thread(channels, role_id, *, account="qq", sender="22"):
 def test_desktop_model_gets_more_than_24_private_messages_as_dialogue(api, monkeypatch):
     client, _, sessions, _ = api
     requests = []
+    async def no_background_maintenance(*_args, **_kwargs):
+        return None
+    # This case isolates history projection; host document maintenance is
+    # independently covered even when semantic memory is disabled.
+    monkeypatch.setattr(main.memory_worker, '_maintain', no_background_maintenance)
     class Adapter:
         async def stream_rich_messages(self, messages, configuration, tools, **kwargs):
             requests.append(messages)
@@ -39,7 +44,7 @@ def test_desktop_model_gets_more_than_24_private_messages_as_dialogue(api, monke
             metadata={"channel": "qq", "deliveryStatus": "sent"})
     response = client.post(f"/api/roles/{role['id']}/messages", json={"content": "继续最开始那个话题"})
     assert "assistant_completed" in response.text
-    assert len(requests) == 1  # This case covers history projection, not compaction.
+    assert len(requests) == 1  # History projection, not background maintenance/compaction.
     actual = [(message.role, block.text) for message in requests[0] for block in message.content if isinstance(block, ModelTextBlock)]
     assert any(role == "user" and "手机第0个问题" in text for role, text in actual)
     assert any(role == "assistant" and "手机第0个回答" in text for role, text in actual)
@@ -65,7 +70,7 @@ def test_real_local_model_receives_cross_channel_image_quote_and_assistant_sourc
     data = io.BytesIO(); Image.new('RGB', (2, 2), 'red').save(data, 'PNG')
     image = save_attachment(roles.workspace_path(role['id']), 'own.png', 'image/png', data.getvalue())
     sessions.append_message(thread.session_key, 'user', '手机图片问题', run_id='image',
-        metadata={'platformMessageId': '11', 'attachments': [image]})
+        metadata={'platformMessageId': '11', 'attachments': [image], 'senderId':'22', 'senderIsOwner':True})
     sessions.append_message(thread.session_key, 'assistant', '这是一张红图', run_id='image',
         metadata={'deliveryStatus': 'sent', 'content_blocks': [{'type': 'text', 'text': '这是一张红图'}]})
     sessions.append_message(thread.session_key, 'user', '我引用这张图', metadata={'replyTo': '11'})

@@ -225,6 +225,7 @@ class MeidoProvider:
         self._request_time = datetime.now().astimezone().isoformat(timespec="seconds")
         self.request_guard = None
         self.snapshot_guard = None
+        self.request_observer = None
         # One-off providers (including spawn) get a temporary store. The host
         # explicitly shares a bounded store only for ordinary conversation views.
         self.usage_anchors = usage_anchors if usage_anchors is not None else UsageAnchors()
@@ -261,6 +262,7 @@ class MeidoProvider:
             usage_anchors=self.usage_anchors, usage_context=self.usage_context)
         provider.request_guard = self.request_guard
         provider.snapshot_guard = self.snapshot_guard
+        provider.request_observer = self.request_observer
         provider._request_time = self._request_time
         return provider
 
@@ -287,6 +289,8 @@ class MeidoProvider:
     def stream_prepared(self, request, *, system, messages, signal):
         if self.skill_state is not None:
             self.skill_state.commit_window(messages)
+        if self.request_observer is not None:
+            self.request_observer(request, messages)
         rich = getattr(self.adapter, 'stream_rich_messages', None)
         if rich is not None:
             return self._stream_rich_structured(system, messages, request.tools, signal, rich, request)

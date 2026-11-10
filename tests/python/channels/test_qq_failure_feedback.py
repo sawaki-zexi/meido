@@ -213,3 +213,72 @@ def test_unknown_failure_notice_receipt_is_retained_without_resend(failure_turn,
     assert reply.status == 'failed' and reply.content == main.QQ_REPLY_FAILURE_NOTICE
     assert reply.metadata['deliveryStatus'] == 'uncertain'
     assert state.service.sessions.get_run(reply.runId).status == 'failed'
+
+
+@pytest.mark.parametrize('obsolete', [False, True], ids=['current-selection', 'obsolete-selection'])
+def test_failure_notice_uses_current_input_not_unfinished_response_selection(failure_turn, monkeypatch, obsolete):
+    from backend.app import main
+    from backend.app.channels.conversation_context import ResponseContext
+    from backend.app.model_adapter import ModelTextDelta
+    state = failure_turn
+    original_observe = ResponseContext.observe_request
+
+    def observe(context, request, messages=()):
+        original_observe(context, request, messages)
+        context.choose({'message_id': context.trigger_id,
+            'quote_message_id': None, 'mention_ids': []})
+        if obsolete:
+            state.service.sessions.update_message(context.trigger_id, 'source changed after admission', 'completed')
+
+    monkeypatch.setattr(ResponseContext, 'observe_request', observe)
+
+    class Model:
+        async def stream_structured_messages(self, messages, configuration, tools):
+            state.requests.append(deepcopy(messages))
+            if False:
+                yield ModelTextDelta('never')
+            raise RuntimeError(PRIVATE_ERROR)
+
+    monkeypatch.setattr(main, 'model_adapter', Model())
+
+    async def scenario():
+        await state.send(171)
+
+    state.execute(scenario)
+    assert len(state.requests) == 1
+    if obsolete:
+        assert state.sends == []
+    else:
+        assert len(state.sends) == 1
+        assert text_of(state.sends[0]) == main.QQ_REPLY_FAILURE_NOTICE
+        assert any(part['type'] == 'reply' and str(part['data']['id']) == '171'
+            for part in state.sends[0]['message'])
+        assert any(part['type'] == 'at' and str(part['data']['qq']) == '123'
+            for part in state.sends[0]['message'])
+        reply = next(row for row in reversed(state.rows()) if row.role == 'assistant')
+        assert reply.metadata['responseRelation']['selectionOrigin'] == 'default'
+        assert reply.metadata['responseRelation']['targetPlatformMessageId'] == '171'
+
+
+def test_failure_before_request_observation_still_reports_to_actual_input(failure_turn, monkeypatch):
+    from backend.app import main
+    from backend.app.channels.conversation_context import ResponseContext
+    state = failure_turn
+
+    def failed_preparation(context, request, messages=()):
+        assert not context.visible
+        raise RuntimeError(PRIVATE_ERROR)
+
+    monkeypatch.setattr(ResponseContext, 'observe_request', failed_preparation)
+
+    async def scenario():
+        await state.send(171)
+
+    state.execute(scenario)
+    assert len(state.sends) == 1
+    assert text_of(state.sends[0]) == main.QQ_REPLY_FAILURE_NOTICE
+    assert any(part['type'] == 'reply' and str(part['data']['id']) == '171'
+        for part in state.sends[0]['message'])
+    reply = next(row for row in reversed(state.rows()) if row.role == 'assistant')
+    assert reply.status == 'failed' and reply.metadata['deliveryStatus'] == 'sent'
+    assert state.service.peer.requests == []

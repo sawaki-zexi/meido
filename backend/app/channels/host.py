@@ -645,11 +645,7 @@ class ChannelHost:
                 raise UnsupportedTargetError("该平台或目标不支持群成员提及")
             if len(mention_ids) > 20 or any(not isinstance(item, str) or not item for item in mention_ids):
                 raise UnsupportedTargetError("群成员提及参数无效")
-            members = {str(item) for item in target.metadata.get("member_ids", [])}
-            members.update(
-                item.chat_id for item in self.store.list_targets(role_id, account_id)
-                if item.kind is TargetKind.GROUP_MEMBER and str(item.metadata.get("group_id") or "") == target.chat_id
-            )
+            members = directory.group_mention_member_ids(self.store, role_id, target)
             if any(item not in members for item in mention_ids):
                 raise UnsupportedTargetError("只能提及该群目录已观察或发现的成员")
             mention_ids = tuple(dict.fromkeys(mention_ids))
@@ -743,6 +739,8 @@ class ChannelHost:
                 _, pending_message = self.store.append_event(thread, direction="outbound", content=content,
                     external_message_id=None, role="assistant", status="pending",
                     metadata={**dict(message_metadata or {}), "naturalReply": source_kind == 'natural',
+                        'sourceRunId': source_run_id, 'sourceSessionKey': source_session_key,
+                        'sourceThreadId': source_thread_id,
                         "deliveryAttemptId": attempt_id, "deliveryStatus": "pending", "attachments": attachment_metadata})
             dispatch_cancelled = False
             latest_details = {}
@@ -835,6 +833,7 @@ class ChannelHost:
                 "deliveryStatus": result.status.value,
                 "platformMessageId": result.platform_message_id,
                 "mentionIds": list(mention_ids),
+                "replyTo": reply_to_message_id,
                 "messageThreadId": message_thread_id,
                 "error": result.error,
                 "attachments": attachment_metadata,

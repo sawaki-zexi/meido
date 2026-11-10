@@ -109,13 +109,16 @@ jobs:
               tests/python/channels/test_adapters.py::test_napcat_group_event_is_normalized_for_host_listener_policy
               tests/python/channels/test_adapters.py::test_napcat_group_member_target_uses_private_message_shape
               tests/python/channels/test_runtime_delivery.py::test_real_channel_runtime_commits_reply_only_after_confirmed_delivery
+              tests/python/channels/test_conversation_relations.py
+              tests/python/channels/test_natural_turn.py
               tests/python/channels/test_qq_failure_feedback.py
               tests/python/test_novelai_background_channel.py::test_background_owner_channel_returns_text_then_one_original_media_receipt[fallback_journal_failure]
-              tests/python/channels/test_natural_turn.py::test_natural_model_receives_host_verified_sender_identity
-              tests/python/channels/test_natural_turn.py::test_natural_reply_scoped_real_message_and_no_tools
-              tests/python/channels/test_natural_turn.py::test_forged_tool_call_never_executes_or_sends
-              tests/python/channels/test_natural_turn.py::test_explicit_at_or_quote_preempts_natural_and_preserves_tools
               tests/python/channels/test_natural_capability_scope.py
+              tests/python/channels/test_natural_conversation.py
+              tests/python/channels/test_natural_scheduler.py
+              tests/python/channels/test_natural_reply_delivery.py
+              tests/python/channels/test_delivery_parts.py
+              tests/python/channels/test_natural_media_turn.py
               tests/python/channels/test_qq_image_receiving.py
               tests/python/channels/test_qq_file_receiving.py
               tests/python/channels/test_attachment_turn.py
@@ -155,6 +158,7 @@ jobs:
               tests/python/test_chat_stream_projection.py
               tests/python/test_chat_stop.py
               tests/python/test_natural_reply_api.py
+              tests/python/test_natural_reply_protocol.py
               tests/python/test_natural_runtime.py
               tests/python/test_tool_progress.py
               tests/python/test_tool_audit_diagnostics.py
@@ -182,9 +186,11 @@ jobs:
               tests/python/test_memory.py
               tests/python/channels/test_owner_memory_progress.py
               tests/python/channels/test_consolidation_parity.py
+              tests/python/channels/test_conversation_projection.py
               tests/python/test_context_preparation.py
               tests/python/test_stream_preparation.py
               tests/python/test_owner_history_view.py
+              tests/python/test_owner_history_view_api.py
               tests/python/test_context_inspection.py
               tests/python/test_context_windows.py
               tests/python/test_current_tool_registry.py

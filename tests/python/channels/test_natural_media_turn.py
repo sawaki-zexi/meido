@@ -32,9 +32,21 @@ def media_turn(natural, monkeypatch):
             assert not tools
             s.calls.append((messages,tools))
             system = messages[0]['content']
+            if '[自然参与规划]' in system:
+                inputs=[]
+                for item in messages:
+                    if item['role'] != 'user': continue
+                    content=item['content']
+                    if isinstance(content,list): content=next(part['text'] for part in content if part['type']=='text')
+                    try: value=json.loads(content)
+                    except ValueError: continue
+                    if isinstance(value,dict) and value.get('sourceKind') != 'role_sent': inputs.append(value)
+                yield ModelTextDelta(json.dumps({'action':'reply','response': {
+                    'message_id':inputs[-1]['sourceMessageId'], 'intent':'用表情接上群内话题'}},ensure_ascii=False))
+                return
             candidates = json.JSONDecoder().raw_decode(system.split('候选：',1)[1])[0]
             s.before_result()
-            result = {'action':'reply','text':s.text,'candidate_id':candidates[0]['id'] if candidates and s.choose else None}
+            result = {'text':s.text,'candidate_id':candidates[0]['id'] if candidates and s.choose else None}
             if hasattr(s,'forged'): result['candidate_id'] = s.forged
             yield ModelTextDelta(json.dumps(result,ensure_ascii=False))
     monkeypatch.setattr(main,'model_adapter',Model())
@@ -57,7 +69,8 @@ def media_turn(natural, monkeypatch):
         task = s.scheduler.tasks.get(s.thread.thread_id)
         await s.clock.advance(1)
         if task is not None:
-            await asyncio.wait_for(task,5)
+            results = await asyncio.wait_for(asyncio.gather(task, return_exceptions=True),5)
+            if isinstance(results[0], Exception): raise results[0]
     s.media_receive = receive
     return s
 
@@ -70,8 +83,8 @@ def test_single_original_gif_message_and_actual_history(media_turn, text, uncert
     async def run():
         try:
             await s.media_receive()
-            assert len(s.calls)==1 and s.downloads==['https://qq.test/image']
-            user = next(item for item in s.calls[0][0] if item['role']=='user')
+            assert len(s.calls)==2 and s.downloads==['https://qq.test/image']
+            user = next(item for item in s.calls[0][0] if item['role']=='user' and isinstance(item['content'],list))
             parts = user['content']
             pictures = [part for part in parts if part['type']=='image_url']
             assert len(pictures)==2
@@ -108,7 +121,7 @@ def test_real_adapter_quoted_images_require_verified_group(media_turn, verified)
         try:
             await s.media_receive(quote=True)
             assert s.downloads==(['https://qq.test/image'] if verified else [])
-            assert len(s.calls)==1
+            assert len(s.calls)==2
             assert len([op for op,_ in s.operations if op=='send_group_msg'])==1
         finally:
             if main._proactive is not None: await main._proactive.close()
@@ -151,7 +164,7 @@ def test_unreadable_input_has_explicit_image_fact_not_invented_pixels(media_turn
     async def run():
         try:
             await s.media_receive()
-            user=next(item for item in s.calls[0][0] if item['role']=='user')
+            user=next(item for item in s.calls[0][0] if item['role']=='user' and isinstance(item['content'],str) and item['content'].startswith('{'))
             content=user['content']
             assert isinstance(content,str)
             fact=json.loads(content)

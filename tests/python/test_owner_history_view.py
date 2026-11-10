@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 from dataclasses import replace
 
 import pytest
@@ -170,7 +171,7 @@ def test_owned_image_and_quote_survive_but_foreign_or_missing_files_are_not_open
     image = save_attachment(root, "photo.png", "image/png", output.getvalue())
     foreign = save_attachment(tmp_path / "r2", "foreign.png", "image/png", output.getvalue())
     thread = private(channels); pair(channels, thread)
-    original = sessions.append_message(thread.session_key, "user", "这张图", run_id="old", metadata={"platformMessageId": "11", "attachments": [image]})
+    original = sessions.append_message(thread.session_key, "user", "这张图", run_id="old", metadata={"platformMessageId": "11", "attachments": [image], 'senderId':'owner', 'senderIsOwner':True})
     sessions.append_message(thread.session_key, "user", "继续看引用图片", run_id="quote", metadata={"replyTo": "11", "attachments": [foreign, {"id": "missing", "name": "丢失.png", "path": image["path"]}]})
     view = ConversationHistoryView(channels, role_id="r1", attachment_resolver=lambda key: resolve_attachment(root, key))
     messages = view.runtime_messages()
@@ -178,6 +179,66 @@ def test_owned_image_and_quote_survive_but_foreign_or_missing_files_are_not_open
     assert len([attachment for attachment in messages[-1].attachments if attachment.image]) == 1
     assert sum("不属于" in attachment.text for attachment in messages[-1].attachments) == 2
     assert "引用主人" in messages[-1].content and original.content in messages[-1].content
+
+
+@pytest.mark.parametrize('source', ['allowed', 'legacy', 'pre-pair', 'other-chat'])
+def test_authorized_quote_content_and_identity_reach_actual_request_without_cached_or_current_binding_inference(tmp_path, source):
+    from backend.app.agent_runtime.meido_provider import MeidoProvider
+    from backend.app.agent_runtime.provider import CancellationToken
+    from backend.app.model_adapter import ModelTextDelta
+    from backend.app.models import RoleInput
+    sessions, channels, _, _ = setup_history(tmp_path)
+    thread = private(channels)
+    if source != 'pre-pair': pair(channels, thread)
+    origin = private(channels, 'ungranted-other') if source == 'other-chat' else thread
+    metadata = {'channel':'qq', 'accountId':'qq', 'threadId':origin.thread_id,
+        'chatId':origin.chat_id, 'chatType':'private', 'direction':'inbound', 'platformMessageId':'original'}
+    if source != 'legacy': metadata.update(senderId='owner', senderIsOwner=True, senderName='Saved name')
+    original = sessions.append_message(origin.session_key, 'user', 'AUTHORIZED_ORIGINAL_TEXT', metadata=metadata)
+    if source == 'pre-pair': pair(channels, thread)
+    current_meta = {'channel':'qq', 'accountId':'qq', 'threadId':thread.thread_id,
+        'chatId':thread.chat_id, 'chatType':'private', 'direction':'inbound', 'platformMessageId':'current',
+        'senderId':'owner', 'senderIsOwner':True, 'replyTo':'original', 'replyToContent':'CACHED_QUOTE_MUST_NOT_LEAK',
+        'replyContextVerified':True, 'replyToSenderId':'CACHED_QUOTE_AUTHOR_ID',
+        'replyToSenderName':'CACHED_QUOTE_AUTHOR_NAME', 'replyToSenderIsOwner':False}
+    current = sessions.append_message(thread.session_key, 'user', 'CURRENT_QUESTION', metadata=current_meta)
+    view = ConversationHistoryView(channels, role_id='r1', thread_id=thread.thread_id, through_message_id=current.id)
+    projected = view.runtime_messages()
+    requests = []
+
+    class Adapter:
+        async def stream_structured_messages(self, messages, configuration, tools):
+            requests.append(messages)
+            yield ModelTextDelta('ok')
+
+    async def run():
+        role = RoleInput(name='quote fixture', profile={'profile':'fixture'}).model_copy(update={'id':'r1'})
+        provider = MeidoProvider(Adapter(), role, None, structured_without_tools=True)
+        async for _ in provider.stream_response(model='', system='', messages=projected, tools=(), signal=CancellationToken()): pass
+
+    asyncio.run(run())
+    text = next(item['content'] for item in requests[0] if item['role']=='user' and 'CURRENT_QUESTION' in item['content'])
+    facts = json.loads(next(line for line in text.splitlines() if line.startswith('[消息来源] ')).removeprefix('[消息来源] '))
+    if source in {'allowed', 'legacy'}:
+        assert facts['replyToContent'] == original.content and facts['replyMissing'] is False
+        assert facts['replyContextVerified'] is True
+        if source == 'allowed':
+            assert facts['replyToSenderId'] == 'owner' and facts['replyToSenderIdentity'] == '已配对主人'
+            assert facts['replyToSenderName'] == 'Saved name'
+        else:
+            assert facts['replyToSenderId'] is None and facts['replyToSenderIdentity'] == '未知发送者'
+            assert facts['replyToSenderName'] is None
+            assert '引用主人' not in text
+    else:
+        assert facts['replyToContent'] == '' and facts['replyMissing'] is True
+        assert facts['replyContextVerified'] is False
+        assert facts['replyToSenderId'] is None and facts['replyToSenderName'] is None
+        assert facts['replyToSenderIdentity'] == '未知发送者'
+        assert 'AUTHORIZED_ORIGINAL_TEXT' not in str(requests)
+    assert all(marker not in str(requests) for marker in (
+        'CACHED_QUOTE_MUST_NOT_LEAK', 'CACHED_QUOTE_AUTHOR_ID', 'CACHED_QUOTE_AUTHOR_NAME'))
+    assert sessions.list_messages(thread.session_key)[-1].metadata['replyToContent'] == 'CACHED_QUOTE_MUST_NOT_LEAK'
+    assert sessions.list_messages(thread.session_key)[-1].metadata['replyToSenderName'] == 'CACHED_QUOTE_AUTHOR_NAME'
 
 
 def test_media_and_tool_wait_recheck_the_same_frozen_grant(tmp_path, monkeypatch):

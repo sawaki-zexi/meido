@@ -62,14 +62,21 @@ class ChannelMemoryMaintenance:
                     source_stamp TEXT NOT NULL DEFAULT ''
                 );
             """)
-            if 'source_stamp' not in {row[1] for row in db.execute('PRAGMA table_info(channel_memory_cursors)')}:
-                db.execute("ALTER TABLE channel_memory_cursors ADD COLUMN source_stamp TEXT NOT NULL DEFAULT ''")
+            for cursor_table in ('channel_memory_cursors', 'channel_listening_cursors'):
+                if 'source_stamp' not in {row[1] for row in db.execute(f'PRAGMA table_info({cursor_table})')}:
+                    db.execute(f"ALTER TABLE {cursor_table} ADD COLUMN source_stamp TEXT NOT NULL DEFAULT ''")
         return store
 
     @staticmethod
-    def _source_stamp(store, thread, through):
+    def _source_stamp(store, thread, through, *, listening=False):
         from .source_authority import channel_owner_binding
-        messages = [item.model_dump(mode='json') for item in store.sessions.list_messages(thread.session_key) if item.sequence <= through]
+        from .conversation_context import PROJECTION_VERSION
+        if listening:
+            with store._connect() as db:
+                rows = db.execute('SELECT * FROM channel_listening_records WHERE thread_id=? AND sequence<=? ORDER BY sequence', (thread.thread_id, through)).fetchall()
+            messages = [store.listening._message(row) for row in rows]
+        else:
+            messages = [item.model_dump(mode='json') for item in store.sessions.list_messages(thread.session_key) if item.sequence <= through]
         senders = {str(item['metadata'].get('senderId') or '') for item in messages if item['role'] == 'user'}
         owners = {}
         for sender in senders:
@@ -77,7 +84,7 @@ class ChannelMemoryMaintenance:
             owners[sender] = {key: binding[key] for key in ('identityId', 'pairedAt')} if binding else None
         account = store.get_account(thread.account_id)
         messages = source_messages(messages)
-        return hashlib.sha256(json.dumps([messages, owners, account.created_at if account else None],
+        return hashlib.sha256(json.dumps([PROJECTION_VERSION, messages, owners, account.created_at if account else None],
             sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def profile(self, role_id: str, thread_id: str, sender_id: str) -> dict:
@@ -184,10 +191,10 @@ class ChannelMemoryMaintenance:
         with store._connect() as db:
             row = db.execute(f"SELECT sequence FROM {cursor_table} WHERE thread_id=?", (thread_id,)).fetchone()
             cursor = int(row[0]) if row else 0
-            if not listening and cursor:
-                stamp = db.execute('SELECT source_stamp FROM channel_memory_cursors WHERE thread_id=?', (thread_id,)).fetchone()[0]
-                if stamp != self._source_stamp(store, thread, cursor):
-                    db.execute("UPDATE channel_memory_cursors SET sequence=0,source_stamp='' WHERE thread_id=?", (thread_id,))
+            if cursor:
+                stamp = db.execute(f'SELECT source_stamp FROM {cursor_table} WHERE thread_id=?', (thread_id,)).fetchone()[0]
+                if stamp != self._source_stamp(store, thread, cursor, listening=listening):
+                    db.execute(f"UPDATE {cursor_table} SET sequence=0,source_stamp='' WHERE thread_id=?", (thread_id,))
                     cursor = 0
             if listening:
                 rows = db.execute("SELECT * FROM channel_listening_records WHERE thread_id=? AND sequence>? ORDER BY sequence LIMIT ?", (thread_id, cursor, self.BATCH_SIZE)).fetchall()
@@ -214,10 +221,14 @@ class ChannelMemoryMaintenance:
         if thread.chat_type == "private":
             owner_runs = {item.runId for item in store.sessions.list_messages(thread.session_key)
                 if item.role == "user" and item.metadata.get("senderIsOwner") is True and item.runId}
-        conversation = [message for message in batch
+        from .delivery_projection import delivered_message
+        from ..models import Message
+        projected = [delivered_message(Message.model_validate(message)) if message['role'] == 'assistant' else message for message in batch]
+        projected = [item.model_dump(mode='json') if isinstance(item, Message) else item for item in projected if item is not None]
+        conversation = [message for message in projected
             if message["metadata"].get("channelTurnState") != "invalidated"
             and (message["role"] == "user" or (message["role"] == "assistant"
-                and message["metadata"].get("deliveryStatus") == "sent"))
+                and (message["metadata"].get("deliveryStatus") == "sent" or message['metadata'].get('deliveryProjection') is True)))
             and (thread.chat_type == "group" or (message["metadata"].get("senderIsOwner") is not True
                 and not message["metadata"].get("ownerContext") and message.get("runId") not in owner_runs))]
         external = [message for message in conversation if message["role"] == "user"
@@ -266,8 +277,11 @@ class ChannelMemoryMaintenance:
             if not listening:
                 current_batch = [item.model_dump(mode='json') for item in store.sessions.list_messages(thread.session_key)
                     if cursor < item.sequence <= up_to and item.status == 'completed' and item.messageType == 'text']
-                if json.dumps(source_messages(current_batch), sort_keys=True, ensure_ascii=False) != frozen:
-                    return False
+            else:
+                rows = db.execute('SELECT * FROM channel_listening_records WHERE thread_id=? AND sequence>? AND sequence<=? ORDER BY sequence', (thread_id, cursor, up_to)).fetchall()
+                current_batch = [store.listening._message(row) for row in rows]
+            if json.dumps(source_messages(current_batch), sort_keys=True, ensure_ascii=False) != frozen:
+                return False
             if store.external_memory.revision_in(db, thread.role_id, "context", thread_id) != context_revision:
                 return False
             for sender_id in valid_senders:
@@ -292,9 +306,8 @@ class ChannelMemoryMaintenance:
                 else:
                     store.external_memory.members.write_in(db, thread, expected["key"], **fields)
             db.execute(f"INSERT INTO {cursor_table}(thread_id,sequence) VALUES(?,?) ON CONFLICT(thread_id) DO UPDATE SET sequence=excluded.sequence", (thread_id, up_to))
-            if not listening:
-                db.execute('UPDATE channel_memory_cursors SET source_stamp=? WHERE thread_id=?',
-                    (self._source_stamp(store, thread, up_to), thread_id))
+            db.execute(f'UPDATE {cursor_table} SET source_stamp=? WHERE thread_id=?',
+                (self._source_stamp(store, thread, up_to, listening=listening), thread_id))
         store.publish(thread.role_id, {"type": "group_memory", "roleId": thread.role_id, "threadId": thread_id})
         return True
 

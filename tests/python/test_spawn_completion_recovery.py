@@ -16,6 +16,30 @@ from backend.app.task_runtime.completion import TaskCompletionWorker
 from backend.app.task_runtime.process import ProcessExecutor
 
 
+def confirmed_channel_bodies(sessions, session_key):
+    """Recovery replays one confirmed source envelope per original message."""
+    from backend.app.channels.conversation_context import SOURCE_MARKER
+    replay = sessions.runtime_messages(session_key)
+    source_ids = []
+    bodies = []
+    for item in replay:
+        header, separator, body = item.content.partition('\n')
+        assert separator and header.startswith(SOURCE_MARKER)
+        source = json.loads(header[len(SOURCE_MARKER):])
+        assert source == item.metadata['conversationSource']
+        assert source['channel'] == 'qq'
+        assert source['deliveryStatus'] == 'sent'
+        assert source['sourceKind'] == 'role_sent'
+        assert source['direction'] == 'outbound'
+        assert source['sessionKey'] == session_key
+        assert item.role == 'assistant'
+        assert item.source_message_ids == (source['sourceMessageId'],)
+        source_ids.append(source['sourceMessageId'])
+        bodies.append(body)
+    assert len(source_ids) == len(set(source_ids))
+    return bodies
+
+
 @pytest.fixture
 def channel_task(tmp_path):
     initialize_databases(tmp_path / 'data')
@@ -76,7 +100,7 @@ def test_restart_reconciles_authoritative_delivery_without_resending(channel_tas
         assert restored[0].metadata['deliveryAttemptId'] == 'local-attempt'
         assert restarted.completion(task_id, origin)['status'] == expected
         assert restarted.pending_completions() == ()
-        assert [item.content for item in sessions.runtime_messages(origin.session_key)] == (
+        assert confirmed_channel_bodies(sessions, origin.session_key) == (
             ['completion-marker'] if status == 'sent' else [])
     finally:
         restarted.close()
@@ -153,7 +177,7 @@ def test_expired_task_still_repairs_its_unsynchronized_confirmed_message(channel
             await worker.close()
     try:
         asyncio.run(run())
-        assert [item.content for item in sessions.runtime_messages(origin.session_key)] == ['expired-confirmed']
+        assert confirmed_channel_bodies(sessions, origin.session_key) == ['expired-confirmed']
         # Repaired terminal events may now expire normally; no unbounded pin.
         assert restarted.list(origin, kind='spawn') == ()
     finally:
@@ -256,7 +280,7 @@ def test_transient_sqlite_busy_during_recovery_does_not_stop_other_completions(c
     try:
         asyncio.run(run())
         assert sends == [another]
-        assert {item.content for item in sessions.runtime_messages(origin.session_key)} == {
+        assert set(confirmed_channel_bodies(sessions, origin.session_key)) == {
             'confirmed-before-lock', f'[内部子任务完成 / {another} / succeeded]\nanother-completion-marker'}
     finally:
         release.set()

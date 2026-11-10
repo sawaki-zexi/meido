@@ -43,6 +43,45 @@ class NaturalDecision:
     action: str
     text: str = ''
     candidate_id: str | None = None
+    plan: Any = None
+
+
+@dataclass(frozen=True)
+class NaturalPlan:
+    selection: Any
+    revision: int
+    run_id: str
+
+
+@dataclass
+class RelatedTopic:
+    """Follow a focused chain until a participant explicitly changes addressee."""
+    message_ids: set[str]
+    senders: set[str]
+    own_ids: set[str] = field(default_factory=set)
+    terms: tuple[str, ...] = ()
+
+    @classmethod
+    def from_inputs(cls, inputs):
+        ids = {item.message_id for item in inputs}
+        ids.update(str(item.metadata['replyTo']) for item in inputs if item.metadata.get('replyTo'))
+        return cls(ids, {identifier for item in inputs for identifier in (item.sender_id,
+            str(item.metadata.get('replyToSenderId') or '') if item.metadata.get('replyContextVerified') is True else '') if identifier},
+            {str(item.metadata['receivingPlatformId']) for item in inputs if item.metadata.get('receivingPlatformId')})
+
+    def accept(self, message):
+        quote = str(message.metadata.get('replyTo') or '')
+        mentions = {str(item) for item in message.metadata.get('mentionedIds', [])}
+        related = bool(message.message_id in self.message_ids or quote and quote in self.message_ids or mentions & self.own_ids
+            or any(term.casefold() in message.content.casefold() for term in self.terms))
+        if not related and (quote or mentions):
+            self.senders.discard(message.sender_id)
+            return False
+        if related or message.sender_id in self.senders:
+            self.senders.add(message.sender_id)
+            self.message_ids.add(message.message_id)
+            return True
+        return False
 
 @dataclass
 class NaturalBatch:
@@ -60,6 +99,9 @@ class NaturalBatch:
     authority: Any = None
     media: Any = None
     media_units: int = 0
+    turn: Any = None
+    plan: NaturalPlan | None = None
+    topic: RelatedTopic | None = None
 
 class NaturalQuota:
     """Role cumulative request accounting survives process restart."""
@@ -79,12 +121,21 @@ class NaturalQuota:
             db.execute('INSERT INTO channel_natural_quota VALUES(?,?,?,?) ON CONFLICT(role_id) DO UPDATE SET day=excluded.day,calls=excluded.calls,last_call=excluded.last_call', (role_id,day,calls+1,now))
         return True
 
+    def delay(self, role_id, now, *, daily, interval):
+        day = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
+        with self.store._connect() as db:
+            row = db.execute('SELECT day,calls,last_call FROM channel_natural_quota WHERE role_id=?', (role_id,)).fetchone()
+        if row and row[0] == day and int(row[1]) >= daily:
+            return None
+        return max(0., float(row[2]) + interval - now) if row else 0.
+
 class NaturalScheduler:
     def __init__(self, *, decide, send, authorized, busy, quota, clock=time.time,
-                 sleep=asyncio.sleep, limits=NaturalLimits(), cleanup=None):
+                 sleep=asyncio.sleep, limits=NaturalLimits(), cleanup=None, draft=None):
         self.decide, self.send, self.authorized, self.busy = decide, send, authorized, busy
         self.quota, self.clock, self.sleep, self.limits = quota, clock, sleep, limits
         self.cleanup = cleanup
+        self.draft = draft
         self.batches: dict[str, NaturalBatch] = {}
         self.tasks: dict[str, asyncio.Task] = {}
         self.cooldowns: dict[str, float] = {}
@@ -98,7 +149,7 @@ class NaturalScheduler:
             received = min(self.clock(),float(message.metadata.get("hostReceivedAt",self.clock())))
             batch.started_at = min(batch.started_at,received)
             batch.deadline = min(batch.deadline,received+self.limits.lifetime)
-            if self._related(batch.snapshot, message):
+            if batch.topic is not None and batch.topic.accept(message):
                 batch.revision += 1
             batch.inputs.append(message)
             del batch.inputs[:-self.limits.max_inputs]
@@ -160,6 +211,37 @@ class NaturalScheduler:
         for key in tuple(self.batches): self.invalidate(key)
         await self._drain_owned(tuple(self.tasks.values()))
 
+    async def _request_slot(self, batch, revision, *, account=True):
+        if not self.valid(batch) or batch.revision != revision or batch.calls >= self.limits.max_calls:
+            return False
+        delay = self.quota.delay(batch.thread.role_id, self.clock(), daily=self.limits.daily_calls, interval=self.limits.min_role_interval)
+        if delay is None or self.clock() + delay >= batch.deadline:
+            return False
+        if delay:
+            await self.sleep(delay)
+        if not self.valid(batch) or batch.revision != revision or self.busy(batch.thread.role_id):
+            return False
+        return self._commit_request(batch, revision) if account else True
+
+    def _commit_request(self, batch, revision):
+        if not self.valid(batch) or batch.revision != revision or batch.calls >= self.limits.max_calls:
+            return False
+        if not self.quota.take(batch.thread.role_id, self.clock(), daily=self.limits.daily_calls, interval=self.limits.min_role_interval):
+            return False
+        batch.calls += 1
+        return True
+
+    def _focus(self, batch, plan):
+        batch.topic = batch.turn.topic(plan)
+        snapshot_ids = {item.message_id for item in batch.snapshot}
+        # An arrival during planning may relate to the chosen old explicit
+        # question/quote even when it did not relate to the initial batch.
+        for item in batch.inputs:
+            if item.message_id not in snapshot_ids and batch.topic.accept(item):
+                batch.revision += 1
+                return False
+        return True
+
     async def _run(self, batch):
         key = batch.thread.thread_id
         try:
@@ -170,12 +252,13 @@ class NaturalScheduler:
                 if self.busy(batch.thread.role_id):
                     await self.sleep(min(.25, max(0.,batch.deadline-self.clock())))
                     continue
-                if not self.quota.take(batch.thread.role_id,self.clock(),daily=self.limits.daily_calls,interval=self.limits.min_role_interval):
-                    break
-                batch.calls += 1
                 batch.snapshot = tuple(batch.inputs)
                 revision = batch.revision
-                batch.phase = 'generating'
+                batch.topic = RelatedTopic.from_inputs(batch.snapshot)
+                if self.draft is None and not await self._request_slot(batch, revision):
+                    if self.valid(batch) and batch.revision != revision: continue
+                    break
+                batch.phase = 'planning'
                 decision = await self.decide(batch,batch.snapshot,lambda: self.valid(batch))
                 if not self.valid(batch): break
                 if batch.revision != revision:
@@ -185,9 +268,25 @@ class NaturalScheduler:
                     await self.sleep(min(self.limits.wait,max(0.,batch.deadline-self.clock())))
                     continue
                 if decision.action != 'reply': break
+                if self.draft is not None:
+                    batch.plan = decision.plan
+                    if batch.plan is None or batch.turn is None or not batch.turn.valid(batch.plan): break
+                    if not self._focus(batch, batch.plan): continue
+                    if not batch.turn.valid(batch.plan): break
+                    batch.phase = 'generating'
+                    decision = await self.draft(batch, decision, lambda: self.valid(batch))
+                    while (decision.action == 'revise' and self.valid(batch) and batch.revision == revision
+                           and batch.calls < self.limits.max_calls):
+                        batch.plan = decision.plan
+                        if batch.plan is None or not batch.turn.valid(batch.plan): break
+                        if not self._focus(batch, batch.plan): break
+                        decision = await self.draft(batch, decision, lambda: self.valid(batch))
+                    if not self.valid(batch): break
+                    if batch.revision != revision: continue
+                    if decision.action != 'reply' or not batch.turn.valid(batch.plan): break
                 text = "\n".join(decision.text.strip().splitlines()[:8])[:self.limits.text_chars]
                 if not text and not decision.candidate_id: break
-                decision = NaturalDecision('reply',text,decision.candidate_id)
+                decision = NaturalDecision('reply',text,decision.candidate_id,decision.plan)
                 batch.phase = 'sending'
                 # An attempt (even uncertain/failed) cools down; never retry it.
                 self.cooldowns[key] = self.clock()+self.limits.cooldown

@@ -59,7 +59,11 @@ class ContextWindowStore:
             found.update((row[0], row) for row in rows)
         if len(found) != len(identifiers):
             raise WindowConflict('工作摘要来源已变化')
-        return _stamp([found[identifier] for identifier in ids])
+        rows = [found[identifier] for identifier in ids]
+        if any(json.loads(row[-1] or '{}').get('channel') not in {None, '', 'desktop'} for row in rows):
+            from .channels.conversation_context import PROJECTION_VERSION
+            return _stamp([PROJECTION_VERSION, rows])
+        return _stamp(rows)
 
     def load(self, role, session, scope, authority):
         with self.connect() as db:
