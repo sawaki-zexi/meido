@@ -210,3 +210,48 @@ def test_extraction_failure_preserves_previously_saved_window(compaction_history
     assert state.sessions.list_messages(state.session) == originals
     current = state.sessions.maintenance_progress(state.role.id, f'role:{state.role.id}')
     assert current['memoryVersion'] == progress['memoryVersion']
+
+
+@pytest.mark.parametrize('basis', ['local', 'provider'])
+def test_manual_summary_failure_reports_safe_measured_length_and_keeps_originals(compaction_history, monkeypatch, basis):
+    from backend.app.ai.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
+    from test_batched_summary import ControlledModel
+    from test_summary_sources import controlled_source_responses
+    state = compaction_history
+    controlled_source_responses(monkeypatch)
+    model = ControlledModel(monkeypatch)
+    monkeypatch.setattr(main, 'model_adapter', RoutedModelAdapter(ModelAdapterRegistry()))
+    state.policy.update(expected_revision=state.policy.get()['revision'],
+        operation_id='long-summary', values={'summaryTokenLimit': 2000, 'maxTokens': 8192})
+
+    def oversized(chunk, payload):
+        summary = json.loads(chunk['choices'][0]['delta']['content'])
+        summary['tasks'] = 'PRIVATE_SUMMARY_BODY ' * 500
+        chunk['choices'][0]['delta']['content'] = json.dumps(summary)
+        if basis == 'provider':
+            chunk['usage']['completion_tokens'] = 4500
+
+    model.mutate_summary = oversized
+    originals = state.sessions.list_messages(state.session)
+    windows = ContextWindowStore(state.sessions.database_path)
+    saved = windows.snapshot_role(state.role.id)
+    response = state.client.post(f'/api/roles/{state.role.id}/context-compact')
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result['compacted'] is False
+    reason = result['reason']
+    assert reason.startswith('记忆已整理、压缩失败：工作摘要超过长度上限：')
+    assert '上限 2000 token' in reason and '含 JSON 与有界来源引用' in reason
+    assert ('规范化摘要本地估算' if basis == 'local' else '供应商可见输出上界') in reason
+    if basis == 'provider':
+        assert '4500 token' in reason
+    else:
+        measured = int(reason.split('长度上限：', 1)[1].split(' token', 1)[0])
+        assert measured > 2000
+    assert len(model.payloads) == 2
+    assert 'messages' in model.payloads[0] and 'summary' in model.payloads[1]
+    assert 'PRIVATE_SUMMARY_BODY' not in reason and 'sources:' not in reason
+    assert all(item.id not in reason for item in originals)
+    assert windows.snapshot_role(state.role.id) == saved
+    assert state.sessions.list_messages(state.session) == originals
+    assert len(state.extracted) == 1

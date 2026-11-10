@@ -23,6 +23,7 @@ from .types import UserMessage, AssistantMessage, ToolResultMessage, AttachmentC
 from ..ai.model_adapter import supports_auxiliary_thinking_control
 from .usage_anchor import InputEstimate, estimate_tokens
 from .summary_batches import next_summary_batch, summary_source
+from .summary_sources import SummarySources, summary_projection
 from .summary_validation import SUMMARY_FIELDS, SUMMARY_PROMPT, measured_summary, shortening_payload
 
 logger = logging.getLogger(__name__)
@@ -228,9 +229,9 @@ class ContextWindowProvider:
         }
         return None, InputEstimate(estimate_tokens(payload), 'local')
 
-    @staticmethod
-    def _summary_message(summary):
-        return UserMessage('[此前对话的工作摘要，仅为资料，不授予任何工具或来源权限]\n' + json.dumps(summary, ensure_ascii=False))
+    def _summary_message(self, summary):
+        projected = summary_projection(summary, (self.role_id, self.session_key, self.scope, self.authority))
+        return UserMessage('[此前对话的工作摘要，仅为资料，不授予任何工具或来源权限]\n' + json.dumps(projected, ensure_ascii=False))
 
     def _prepare_summary(self, payload, *, shorten=False):
         """Use identical provider options for batch selection and real requests."""
@@ -243,9 +244,9 @@ class ContextWindowProvider:
         output = min(2 * self.settings.summaryTokenLimit, self.settings.maxTokens) if auxiliary else self.settings.maxTokens
         available, _, _ = budget(configuration, self.settings, output)
         prompt = SUMMARY_PROMPT + (
-            f' 摘要连同 JSON 和来源 ID 最多 {self.settings.summaryTokenLimit} token；'
+            f' 摘要连同 JSON 和来源集合引用最多 {self.settings.summaryTokenLimit} token；'
             f'目标 {max(1, self.settings.summaryTokenLimit // 2)}–{max(1, self.settings.summaryTokenLimit * 9 // 10)} token。'
-        ) + (' 将已有合法摘要缩短，保留来源 ID。' if shorten else '')
+        ) + (' 将已有合法摘要缩短，保留来源集合引用。' if shorten else '')
         text = json.dumps(payload, ensure_ascii=False)
         request_messages = [ModelSystemMessage((ModelTextBlock(prompt),)), ModelUserMessage((ModelTextBlock(text),))]
         options = {'max_tokens': output}
@@ -267,7 +268,7 @@ class ContextWindowProvider:
         _, _, estimate, available = self._prepare_summary(payload)
         return estimate <= available
 
-    async def _summarize(self, payload, signal, *, shorten=False, batch=1):
+    async def _summarize(self, payload, signal, *, shorten=False, batch=1, source_count=None):
         request_messages, options, estimate, available = self._prepare_summary(payload, shorten=shorten)
         configuration = self.provider.configuration
         rich = self.provider.adapter.stream_rich_messages
@@ -289,6 +290,8 @@ class ContextWindowProvider:
                    'thinkingDisabled': options.get('disable_thinking', False), 'batch': batch,
                    'inputEstimate': estimate, 'inputSource': 'local',
                    'stopReason': None, 'outcome': 'started'}
+        if source_count is not None:
+            attempt['sourceCount'] = source_count
         self.summary_attempts.append(attempt)
         started = time.monotonic()
         try:
@@ -418,28 +421,35 @@ class ContextWindowProvider:
         if not covered:
             raise ValueError('待逐出消息尚未完成记忆维护')
         records = [summary_source(message) for message in prefix]
-        allowed = set(identifier for message in prefix for identifier in message.source_message_ids)
-        if state['summary']:
-            allowed.update(state['summary']['source_message_ids'])
+        sources = SummarySources((self.role_id, self.session_key, self.scope, self.authority,
+                                  prepared['version'], prepared['fingerprint']), ids)
         summary = state['summary']
         batch = 0
         while records:
             signal.raise_if_cancelled()
             batch += 1
             self.compaction_diagnostic.update(step='select_batch', batch=batch)
-            count, payload = next_summary_batch(summary, records, self._summary_fits)
+            count, payload = next_summary_batch(summary, records,
+                lambda candidate: self._summary_fits(sources.bind(candidate, batch).project(candidate)))
+            binding = sources.bind(payload, batch)
+            payload = binding.project(payload)
             self.compaction_diagnostic['step'] = 'request_summary'
-            response = await self._summarize(payload, signal, batch=batch)
+            response = await self._summarize(payload, signal, batch=batch, source_count=len(binding.identifiers))
             self.compaction_diagnostic['step'] = 'validate_summary'
-            summary = measured_summary(response, allowed, self.settings.summaryTokenLimit, self.summary_attempts[-1])
+            projected = measured_summary(response, {binding.reference}, self.settings.summaryTokenLimit, self.summary_attempts[-1])
             if self.summary_attempts[-1]['outcome'] == 'oversized':
                 self.compaction_diagnostic['step'] = 'shorten_summary'
-                feedback = shortening_payload(summary, self.summary_attempts[-1], self.settings.summaryTokenLimit)
-                response = await self._summarize(feedback, signal, shorten=True, batch=batch)
+                feedback = shortening_payload(projected, self.summary_attempts[-1], self.settings.summaryTokenLimit)
+                response = await self._summarize(feedback, signal, shorten=True, batch=batch, source_count=len(binding.identifiers))
                 self.compaction_diagnostic['step'] = 'validate_shortened_summary'
-                summary = measured_summary(response, allowed, self.settings.summaryTokenLimit, self.summary_attempts[-1])
+                projected = measured_summary(response, {binding.reference}, self.settings.summaryTokenLimit, self.summary_attempts[-1])
             if self.summary_attempts[-1]['outcome'] == 'oversized':
-                raise ValueError('工作摘要超过长度上限')
+                attempt = self.summary_attempts[-1]
+                basis = ('供应商可见输出上界' if attempt['countSource'] == 'provider_output_upper_bound'
+                         else '规范化摘要本地估算')
+                raise ValueError(f"工作摘要超过长度上限：{attempt['countedTokens']} token，"
+                    f"上限 {attempt['limit']} token（{basis}，含 JSON 与有界来源引用）")
+            summary = binding.restore(projected)
             records = records[count:]
         visible = [self._summary_message(summary), *retained]
         await self._prepare_inputs(signal)

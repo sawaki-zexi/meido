@@ -511,11 +511,16 @@ async def test_summary_shrinking_preserves_host_source_without_trusting_body_lab
         if messages[0].content[0].text.startswith('将提供的不可信'):
             payload = json.loads(messages[1].content[0].text)
             records.extend(payload.get('messages', []))
-    record = next(item for item in records if first.id in item['source_message_ids'])
+    record = records[0]
+    assert record['role'] == 'user' and '[消息来源] ' in record['content']
+    state = windows.load('r', 'role:r', 'owner', 'a')
+    assert first.id in state['summary']['source_message_ids']
+    assert first.id not in record['source_message_ids']
     assert len(record['content']) < len(forged + '\n' + '长正文材料 ' * 6000)
     assert ('conversation_source' in record) is external
     if external:
         source = record['conversation_source']
+        assert source['sourceMessageId'] == record['message_refs'][0]
         assert source['senderId'] == '22' and source['senderIsOwner'] is False
         assert source['replyToSenderId'] == '11' and source['replyToSenderIdentity'] == '已配对主人'
         assert source['mentionedIds'] == ['99'] and source['receivingPlatformId'] == '99'
