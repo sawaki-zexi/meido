@@ -22,13 +22,14 @@ class NaturalLimits:
     wait: float = 3.0
     lifetime: float = 45.0
     cooldown: float = 20.0
-    max_calls: int = 3
+    max_calls: int = 5
     daily_calls: int = 100
     min_role_interval: float = 3.0
     max_inputs: int = 30
     max_groups: int = 32
     context_chars: int = 8000
     text_chars: int = 280
+    max_tools: int = 8
 
 @dataclass(frozen=True)
 class NaturalInput:
@@ -37,6 +38,8 @@ class NaturalInput:
     content: str
     metadata: dict[str, Any] = field(default_factory=dict)
     event: Any = None
+    record: Any = None
+    source: Any = None
 
 @dataclass(frozen=True)
 class NaturalDecision:
@@ -102,6 +105,8 @@ class NaturalBatch:
     turn: Any = None
     plan: NaturalPlan | None = None
     topic: RelatedTopic | None = None
+    execution_runs: dict[str, str] = field(default_factory=dict)
+    tool_calls: int = 0
 
 class NaturalQuota:
     """Role cumulative request accounting survives process restart."""
@@ -211,7 +216,7 @@ class NaturalScheduler:
         for key in tuple(self.batches): self.invalidate(key)
         await self._drain_owned(tuple(self.tasks.values()))
 
-    async def _request_slot(self, batch, revision, *, account=True):
+    async def _request_slot(self, batch, revision, *, account=True, owned=False):
         if not self.valid(batch) or batch.revision != revision or batch.calls >= self.limits.max_calls:
             return False
         delay = self.quota.delay(batch.thread.role_id, self.clock(), daily=self.limits.daily_calls, interval=self.limits.min_role_interval)
@@ -219,7 +224,7 @@ class NaturalScheduler:
             return False
         if delay:
             await self.sleep(delay)
-        if not self.valid(batch) or batch.revision != revision or self.busy(batch.thread.role_id):
+        if not self.valid(batch) or batch.revision != revision or not owned and self.busy(batch.thread.role_id):
             return False
         return self._commit_request(batch, revision) if account else True
 

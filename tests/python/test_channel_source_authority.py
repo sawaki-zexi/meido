@@ -276,3 +276,42 @@ def test_rebinding_between_provider_requests_revokes_search_and_loaded_execution
     )
     assert "capabilityRevisions" not in sessions.get_run("run").modelSnapshot
     assert sessions.call_binding("run", "old-owner-call")["visibilityVersion"] == 1
+
+
+@pytest.mark.parametrize('revocation', ['disable', 'connection', 'rebind'])
+def test_image_management_scope_crosses_natural_and_explicit_without_losing_revocation(tmp_path, monkeypatch, revocation):
+    import hashlib
+    from dataclasses import replace
+    from backend.app.agent_runtime.tools import ToolContext
+    from backend.app.agent_runtime import CancellationToken
+    from backend.app.novelai_generation.context import capture_tool_context, GenerationContext
+    from backend.app.novelai_generation.ledger import canonical
+
+    channels, sessions, thread = channel_run(tmp_path, chat_type='group')
+    channels.set_group_listening('r', 'a', 'chat', True)
+    channels.listening.set_natural_enabled('r', thread.thread_id, True)
+    generation = ['first']
+    monkeypatch.setattr(channels, 'source_connection_generation', lambda account: generation[0], raising=False)
+    context = ToolContext('r', thread.session_key, 'run', CancellationToken(), tool_call_id='image')
+    explicit = capture_tool_context(sessions, channels, context, role_id='r', is_owner=True)
+    payload = explicit.channel_source.to_dict()
+    assert explicit.source_scope == hashlib.sha256(canonical({key: value for key, value in payload.items()
+        if key != 'message_created_at'}).encode()).hexdigest()
+    frozen = replace(explicit.channel_source, natural_revision=channels.listening.revision(thread.thread_id),
+        connection_generation=generation[0])
+    sessions.update_run('run', status='running', model_snapshot={'channelTurnSource': frozen.to_dict()})
+    natural = capture_tool_context(sessions, channels, context, role_id='r', is_owner=True)
+    assert natural.source_scope == explicit.source_scope
+    restored = GenerationContext.from_dict(natural.to_dict())
+    assert restored.channel_source == frozen
+    assert restored.denial(channels) is None
+    if revocation == 'disable':
+        channels.listening.set_natural_enabled('r', thread.thread_id, False)
+    elif revocation == 'connection':
+        generation[0] = 'replacement'
+    else:
+        channels.unbind_identity(channels.list_identities()[0]['identityId'])
+        pair(channels)
+    assert restored.denial(channels)
+    with pytest.raises(PermissionError):
+        capture_tool_context(sessions, channels, context, role_id='r', is_owner=True)

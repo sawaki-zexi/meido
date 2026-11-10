@@ -84,7 +84,10 @@ def capture_tool_context(sessions, channels, context: ToolContext, *, role_id: s
         if source_thread_id is not None and source.thread_id != source_thread_id or source_account_id is not None and source.account_id != source_account_id:
             raise PermissionError('generation source does not match its host origin')
         payload = source.to_dict()
-        scope = hashlib.sha256(canonical({key: value for key, value in payload.items() if key != 'message_created_at'}).encode()).hexdigest()
+        # Management identity spans natural and explicit turns. Execution and
+        # publication still validate the full frozen authority below.
+        scope = hashlib.sha256(canonical({key: value for key, value in payload.items()
+            if key not in {'message_created_at', 'natural_revision', 'connection_generation'}}).encode()).hexdigest()
         authority = canonical(payload)
         revision = tuple(channels.directory_revision(source.account_id, source.channel))
     elif (not is_owner or context.session_key != f'role:{role_id}' or source_account_id

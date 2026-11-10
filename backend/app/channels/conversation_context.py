@@ -189,7 +189,13 @@ def memory_conversation(messages):
 
 
 def record_fingerprint(record):
-    return hashlib.sha256(render_record(record).encode()).hexdigest()
+    projected = project_record(record)
+    # Binding an admitted input to its execution is accounting, not a source
+    # edit. Listening and transcript projections describe the same fact.
+    projected.pop('runId', None)
+    if projected.get('threadId'):
+        projected['sessionKey'] = 'thread:' + projected['threadId']
+    return hashlib.sha256(json.dumps(projected, ensure_ascii=False).encode()).hexdigest()
 
 
 def _timeline_record(message):

@@ -346,6 +346,109 @@ def test_channel_management_and_watchdog_preserve_frozen_actual_source(api, monk
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('first_natural', [True, False])
+def test_spawn_management_crosses_natural_and_explicit_inputs_without_widening_source(api, first_natural):
+    import asyncio
+    import json
+    import time
+    from dataclasses import replace
+    from datetime import datetime, timezone
+    from backend.app import main
+    from backend.app.agent_runtime import CapabilityRegistry, CancellationToken, ToolContext
+    from backend.app.agent_runtime.provider import AssistantDoneEvent
+    from backend.app.agent_runtime.types import AssistantMessage
+    from backend.app.channels.napcat import NapCatAdapter, NapCatConfig
+    from backend.app.channels.source_authority import capture_channel_source
+    from backend.app.models import AgentRun
+
+    client, roles, sessions, tasks = api
+    channels = main.multichannel_store
+    role = client.post('/api/roles', json={'name':'自然任务管理', 'profile':{'profile':'测试'},
+        'agentConfig':{'spawn':{'enabled':True}, 'enabledTools':['read_file']}}).json()['role']
+    role_id = role['id']
+    account = channels.register_channel_account(role_id, 'qq', account_id='natural-task-source', enabled=True, allow_group=True)
+    main.channel_host.register(NapCatAdapter(NapCatConfig(account.account_id)))
+    thread = channels.ensure_channel_thread(role_id, 'qq', account.account_id, 'source-group', 'group')
+    channels.set_group_listening(role_id, account.account_id, thread.chat_id, True)
+    channels.listening.set_natural_enabled(role_id, thread.thread_id, True)
+    for sender in ('owner', 'another-owner'):
+        code = channels.create_pairing_code(role_id, 'qq')
+        assert channels.consume_pairing_code(code, role_id=role_id, channel='qq', scope='platform',
+            platform_user_id=sender, account_id=account.account_id, chat_id=sender)
+
+    def turn(run_id, *, natural, sender='owner', target=thread):
+        previous = sessions.active_run(role_id)
+        if previous:
+            sessions.update_run(previous.runId, status='completed', ended_at=datetime.now(timezone.utc))
+        _, message = channels.append_event(target, direction='inbound', content='controlled task management',
+            external_message_id=run_id, metadata={'senderId':sender, 'senderIsOwner':True, 'triggered':not natural})
+        sessions.create_run_with_existing_user_message(AgentRun(runId=run_id, roleId=role_id, sessionKey=target.session_key,
+            status='running', startedAt=datetime.now(timezone.utc)), message.id)
+        if natural:
+            source = capture_channel_source(channels, sessions, role_id=role_id, session_key=target.session_key,
+                run_id=run_id, owner_context=True)
+            source = replace(source, natural_revision=channels.listening.revision(target.thread_id),
+                connection_generation=main.channel_host.connection_generation(account.account_id))
+            sessions.update_run(run_id, status='running', model_snapshot={'natural':True, 'channelTurnSource':source.to_dict()})
+        candidates = main._runtime_tool_candidates(roles.get(role_id), is_channel_owner=True,
+            source_thread_id=target.thread_id, source_account_id=account.account_id, include_channel=True)
+        tools = {item.definition.name:item for item in candidates}
+        context = ToolContext(role_id, target.session_key, run_id, CancellationToken(), 'host-spawn-call')
+        return candidates, tools, context
+
+    class Provider:
+        async def stream_response(self, **kwargs):
+            await asyncio.sleep(10)
+            yield AssistantDoneEvent(AssistantMessage('PRIVATE_TASK_RESULT'))
+
+    async def submit(run_id, *, natural):
+        candidates, tools, context = turn(run_id, natural=natural)
+        capabilities = CapabilityRegistry(candidates).resolve(role_id=role_id, session_key=context.session_key,
+            run_id=context.run_id, enabled_tools={'spawn','spawn_manage','read_file'})
+        tools['spawn'].bind(capabilities, Provider)
+        result = await tools['spawn'].execute({'task':'controlled independent work', 'run_in_background':True}, context)
+        assert not result.is_error, result.content
+        origin = tools['spawn'].origin_resolver(context)
+        snapshot = tasks.query(result.details['taskId'], origin)
+        authority = json.loads(snapshot.origin.source_authority_json)
+        assert ('natural_revision' in authority) is natural
+        assert ('connection_generation' in authority) is natural
+        return result.details['taskId'], origin
+
+    async def run():
+        task_id, origin = await submit('initial', natural=first_natural)
+        _, tools, context = turn('other-entry', natural=not first_natural)
+        own = await tools['spawn_manage'].execute({'action':'get','job_id':task_id}, context)
+        assert not own.is_error, own.content
+        # A different genuine paired sender, another group, or another role
+        # still cannot observe or stop this task through the other entry path.
+        another_group = channels.ensure_channel_thread(role_id, 'qq', account.account_id, 'other-group', 'group')
+        other_contexts = []
+        for name, arguments in [('sender', {'sender':'another-owner'}), ('group', {'target':another_group})]:
+            _, denied_tools, denied_context = turn('different-' + name, natural=False, **arguments)
+            other_contexts.append((denied_tools, denied_context))
+        other_contexts.append((tools, replace(context, role_id='other-role')))
+        for denied_tools, denied_context in other_contexts:
+            for action in ('get', 'cancel'):
+                denied = await denied_tools['spawn_manage'].execute({'action':action,'job_id':task_id}, denied_context)
+                assert denied.is_error and 'logPath' not in denied.details
+                assert 'PRIVATE_TASK_RESULT' not in denied.content
+        _, tools, context = turn('cancel-other-entry', natural=not first_natural)
+        cancelled = await tools['spawn_manage'].execute({'action':'cancel','job_id':task_id}, context)
+        assert cancelled.details['status'] == 'cancelled'
+        assert tasks.query(task_id, origin).status == 'cancelled'
+        # Stable management identity must not replace the original natural
+        # execution evidence: its watchdog still revokes accepted background work.
+        natural_task, natural_origin = await submit('natural-revocation', natural=True)
+        channels.listening.set_natural_enabled(role_id, thread.thread_id, False)
+        deadline = time.monotonic() + 3
+        while tasks.query(natural_task, natural_origin).ended_at is None:
+            assert time.monotonic() < deadline
+            await asyncio.sleep(.02)
+        assert tasks.query(natural_task, natural_origin).status == 'cancelled'
+    asyncio.run(run())
+
+
 def test_real_http_model_parent_and_child_use_independent_transcripts_and_frozen_config(api, monkeypatch):
     import json
     import threading

@@ -169,7 +169,7 @@ class GroupListeningStore:
         source.pop("viaAccount", None)
         if account:
             source["viaAccount"] = account.source_snapshot()
-        message = {"id": f"listen:{uuid.uuid4().hex}", "sequence": None, "role": "user", "content": content, "status": "completed", "createdAt": moment.isoformat(), "metadata": source}
+        message = {"id": f"listen:{uuid.uuid4().hex}", "sessionKey":thread.session_key, "sequence": None, "role": "user", "content": content, "status": "completed", "createdAt": moment.isoformat(), "metadata": source}
         with self.store._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             if external_message_id and db.execute("SELECT 1 FROM channel_listening_records WHERE thread_id=? AND external_message_id=?", (thread.thread_id, external_message_id)).fetchone():

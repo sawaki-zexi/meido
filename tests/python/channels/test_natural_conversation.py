@@ -26,7 +26,7 @@ def test_each_actual_phase_uses_original_quota_and_interval(natural, monkeypatch
 
     class Model:
         async def stream_structured_messages(self, messages, configuration, tools):
-            assert not tools
+            assert bool(tools) == ('[自然参与表达]' in messages[0]['content'])
             requests.append(messages)
             if '[自然参与规划]' in messages[0]['content']:
                 yield ModelTextDelta(json.dumps({'action': 'reply', 'response': {
@@ -58,7 +58,7 @@ def test_each_actual_phase_uses_original_quota_and_interval(natural, monkeypatch
             assert '"addressing": "other"' in first
             assert len(s.operations) == (1 if expected == 2 else 0)
             if expected == 2:
-                message = s.sessions.list_messages(s.thread.session_key)[0]
+                message = next(m for m in s.sessions.list_messages(s.thread.session_key) if m.role == 'assistant')
                 relation = message.metadata['responseRelation']
                 assert relation['targetPlatformMessageId'] == 'new-question'
                 assert relation['targetSenderId'] == '11'
@@ -105,7 +105,7 @@ def test_natural_timeline_includes_explicit_question_own_reply_and_selected_olde
     class Model:
         async def stream_structured_messages(self, messages, configuration, tools):
             requests.append((messages, tools))
-            if tools:
+            if len(requests) == 1:
                 yield ModelTextDelta('此前给甲的回答')
             elif '[自然参与规划]' in messages[0]['content']:
                 yield ModelTextDelta(json.dumps({'action': 'reply', 'response': {
@@ -163,7 +163,7 @@ def test_related_input_during_expression_exhausts_original_three_calls_without_o
 
     class Model:
         async def stream_structured_messages(self, messages, configuration, tools):
-            assert not tools
+            assert bool(tools) == ('[自然参与表达]' in messages[0]['content'])
             requests.append(messages)
             if '[自然参与规划]' in messages[0]['content']:
                 yield ModelTextDelta(json.dumps({'action': 'reply', 'response': {
@@ -190,7 +190,7 @@ def test_related_input_during_expression_exhausts_original_three_calls_without_o
             await until(lambda: not s.scheduler.batches)
             assert len(requests) == 3
             assert batch.calls == 3 and batch.deadline == deadline
-            assert not s.operations and not s.sessions.list_messages(s.thread.session_key)
+            assert not s.operations and all(m.role != 'assistant' for m in s.sessions.list_messages(s.thread.session_key))
         finally:
             await s.scheduler.close()
 
@@ -204,7 +204,7 @@ def test_expression_can_update_choice_then_generate_again_under_original_budget(
     class Model:
         async def stream_structured_messages(self, messages, configuration, tools):
             requests.append(messages)
-            assert not tools
+            assert bool(tools) == ('[自然参与表达]' in messages[0]['content'])
             if len(requests) == 1:
                 value = {'action': 'reply', 'response': {'message_id': 'first', 'intent': '先回应甲'}}
             elif len(requests) == 2:
@@ -226,7 +226,7 @@ def test_expression_can_update_choice_then_generate_again_under_original_budget(
             assert len(requests) == 3 and len(s.operations) == 1
             parts = s.operations[0][1]['message']
             assert next(part['data']['id'] for part in parts if part['type'] == 'reply') == 'second'
-            reply = s.sessions.list_messages(s.thread.session_key)[0]
+            reply = next(m for m in s.sessions.list_messages(s.thread.session_key) if m.role == 'assistant')
             assert reply.metadata['responseRelation']['targetSenderId'] == '33'
             assert reply.metadata['responseRelation']['targetPlatformMessageId'] == 'second'
             with s.channels._connect() as db:
@@ -286,7 +286,7 @@ def test_quoted_target_author_correction_invalidates_expression_without_original
     class Model:
         async def stream_structured_messages(self, messages, configuration, tools):
             requests.append(messages)
-            assert not tools
+            assert bool(tools) == ('[自然参与表达]' in messages[0]['content'])
             if '[自然参与规划]' in messages[0]['content']:
                 value = {'action':'reply','response':{'message_id':'unrecorded-quote', 'intent':'回应引用里甲的安排'}}
             else:
@@ -313,7 +313,7 @@ def test_quoted_target_author_correction_invalidates_expression_without_original
             await until(lambda: not s.scheduler.batches)
             assert len(requests) == 3
             assert not any(op == 'send_group_msg' for op, _ in s.operations)
-            assert not s.sessions.list_messages(s.thread.session_key)
+            assert all(m.role != 'assistant' for m in s.sessions.list_messages(s.thread.session_key))
         finally:
             await s.scheduler.close()
 
