@@ -15,6 +15,7 @@ export const defaultNovelaiRoleConfig: NovelaiRoleConfig = {
 export type NovelaiAvailability = { available: boolean; code: string; message: string };
 export type NovelaiConfiguration = {
   availability?: NovelaiAvailability;
+  modelCatalog?: { id: string; label: string }[];
   enabled: boolean; tokenConfigured: boolean; credentialCleanupPending: boolean; revision: number;
   allowTxt2Img: boolean; allowImg2Img: boolean;
   allowedModels: string[]; defaultModel: string; nsfwEnabled: boolean; nsfwModel: string; allowedSamplers: string[]; defaultSampler: string;
@@ -29,6 +30,7 @@ export type GenerationParameters = {
 export type GenerationView = {
   generationId: string; attemptId: string; roleId: string; status: string; parameters: (GenerationParameters & {
     width: number; height: number; seed: number; samples?: number; qualityToggle?: boolean; ucPreset?: number;
+    effective_prompt?: string; effective_negative_prompt?: string; params_version?: number; scale?: number; noise_schedule?: string;
   }) | null;
   purpose?: 'manual' | 'chat_expression' | 'scene_cg'; phase?: 'auxiliary' | 'generation' | 'completed';
   auxiliaryConsumption?: 'possible' | 'not_dispatched'; auxiliaryStatus?: 'not_dispatched' | 'dispatching' | 'succeeded' | 'failed';
@@ -53,7 +55,7 @@ export const novelai = {
   previewPromptTags: (roleId: string, text: string, prompt: string, negative_prompt: string) => api<PromptTagPreview>(`${tagsPath(roleId)}/preview`,
     { method: 'POST', body: JSON.stringify({ text, prompt, negative_prompt }) }),
   configuration: () => api<NovelaiConfiguration>('/api/services/novelai'),
-  saveConfiguration: (configuration: Partial<Omit<NovelaiConfiguration, 'revision' | 'tokenConfigured' | 'credentialCleanupPending' | 'manualConsentRevision' | 'availability'>> & { confirmManualConsumption?: boolean }, expectedRevision: number) =>
+  saveConfiguration: (configuration: Partial<Omit<NovelaiConfiguration, 'revision' | 'tokenConfigured' | 'credentialCleanupPending' | 'manualConsentRevision' | 'availability' | 'modelCatalog'>> & { confirmManualConsumption?: boolean; managedModelIds?: string[] }, expectedRevision: number) =>
     api<NovelaiConfiguration>('/api/services/novelai', { method: 'PUT', body: JSON.stringify({ ...configuration, expectedRevision }) }),
   setToken: (token: string) => api<NovelaiConfiguration>('/api/services/novelai/token', { method: 'PUT', body: JSON.stringify({ token }) }),
   clearToken: () => api<NovelaiConfiguration>('/api/services/novelai/token', { method: 'DELETE' }),

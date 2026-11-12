@@ -94,3 +94,47 @@ def test_default_samples_is_bounded_and_changes_invalidate_manual_consent(tmp_pa
     assert changed['manualConsentRevision'] == 0
     with pytest.raises(ValueError):
         settings.save({'defaultSamples': 5}, expected_revision=changed['revision'])
+
+
+def test_model_catalog_allows_v5_without_changing_existing_defaults(tmp_path):
+    from backend.app.novelai_generation.config import NovelaiSettingsStore
+    settings = NovelaiSettingsStore(tmp_path / 'novelai.db', Credentials())
+    original = settings.public()
+    identifiers = [model['id'] for model in original['modelCatalog']]
+    assert identifiers == ['nai-diffusion-4-5-curated', 'nai-diffusion-4-5-full',
+                           'nai-diffusion-5-curated', 'nai-diffusion-5-full']
+    assert original['allowedModels'] == ['nai-diffusion-4-5-curated']
+    assert original['defaultModel'] == 'nai-diffusion-4-5-curated'
+    saved = settings.save({'allowedModels': identifiers, 'defaultModel': 'nai-diffusion-5-curated',
+        'nsfwEnabled': True, 'nsfwModel': 'nai-diffusion-5-full', 'managedModelIds': identifiers},
+        expected_revision=original['revision'])
+    reopened = NovelaiSettingsStore(tmp_path / 'novelai.db', Credentials()).public()
+    assert reopened['allowedModels'] == identifiers
+    assert reopened['defaultModel'] == saved['defaultModel'] == 'nai-diffusion-5-curated'
+    assert reopened['nsfwModel'] == 'nai-diffusion-5-full'
+
+
+def test_legacy_model_save_preserves_v5_until_a_capable_client_removes_it(tmp_path):
+    from backend.app.novelai_generation.config import NovelaiSettingsStore
+    settings = NovelaiSettingsStore(tmp_path / 'novelai.db', Credentials())
+    expanded = settings.save({'allowedModels': ['nai-diffusion-4-5-curated', 'nai-diffusion-5-full']},
+        expected_revision=settings.public()['revision'])
+    legacy = settings.save({'allowedModels': ['nai-diffusion-4-5-curated'], 'maxSteps': 20,
+        'modelCatalog': expanded['modelCatalog']}, expected_revision=expanded['revision'])
+    assert legacy['allowedModels'] == expanded['allowedModels']
+    assert legacy['maxSteps'] == 20
+    with pytest.raises(ValueError, match='revision'):
+        settings.save({'allowedModels': ['nai-diffusion-4-5-curated']}, expected_revision=expanded['revision'])
+    managed = settings.save({'allowedModels': ['nai-diffusion-4-5-curated'],
+        'managedModelIds': [model['id'] for model in expanded['modelCatalog']]}, expected_revision=legacy['revision'])
+    assert managed['allowedModels'] == ['nai-diffusion-4-5-curated']
+
+
+@pytest.mark.parametrize('managed', ['nai-diffusion-5-full', ['unknown'], [True], ['nai-diffusion-5-full'] * 2])
+def test_invalid_model_management_marker_cannot_change_configuration(tmp_path, managed):
+    from backend.app.novelai_generation.config import NovelaiSettingsStore
+    settings = NovelaiSettingsStore(tmp_path / 'novelai.db', Credentials())
+    original = settings.public()
+    with pytest.raises(ValueError):
+        settings.save({'managedModelIds': managed}, expected_revision=original['revision'])
+    assert settings.public() == original

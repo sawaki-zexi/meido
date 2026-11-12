@@ -11,6 +11,10 @@ export function NovelaiSettings({ showTitle = true }: { showTitle?: boolean }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const models = configuration?.modelCatalog ?? [
+    { id: 'nai-diffusion-4-5-curated', label: 'V4.5 Curated' },
+    { id: 'nai-diffusion-4-5-full', label: 'V4.5 Full' },
+  ];
   useEffect(() => {
     let active = true;
     void novelai.configuration().then((value) => { if (active) setConfiguration(value); })
@@ -23,8 +27,9 @@ export function NovelaiSettings({ showTitle = true }: { showTitle?: boolean }) {
     setPending(true); setError(''); setMessage('');
     try {
       const { revision, enabled: _enabled, tokenConfigured: _configured, credentialCleanupPending: _cleanup,
-        manualConsentRevision: _consent, manualEnabled: _legacyEnabled, availability: _availability, ...values } = configuration;
-      const saved = await novelai.saveConfiguration(values, revision);
+        manualConsentRevision: _consent, manualEnabled: _legacyEnabled, availability: _availability,
+        modelCatalog: _catalog, ...values } = configuration;
+      const saved = await novelai.saveConfiguration({ ...values, managedModelIds: models.map(model => model.id) }, revision);
       setConfiguration(saved);
       setMessage('NovelAI 生图设置已保存。');
     } catch (cause) { setError(errorMessage(cause, '生图设置保存失败')); }
@@ -51,6 +56,14 @@ export function NovelaiSettings({ showTitle = true }: { showTitle?: boolean }) {
   }
   if (!configuration) return error ? <Notice>{error}</Notice> : <Placeholder loading>正在加载生图设置…</Placeholder>;
   const patch = (value: Partial<NovelaiConfiguration>) => setConfiguration({ ...configuration, ...value });
+  function allowModel(id: string, allowed: boolean) {
+    if (!configuration) return;
+    const allowedModels = allowed ? [...configuration.allowedModels, id] : configuration.allowedModels.filter(model => model !== id);
+    if (!allowedModels.length) return;
+    patch({ allowedModels,
+      defaultModel: allowedModels.includes(configuration.defaultModel) ? configuration.defaultModel : allowedModels[0],
+      nsfwEnabled: configuration.nsfwEnabled && allowedModels.includes(configuration.nsfwModel) });
+  }
   const availability = generationAvailability(configuration);
   const credentialState = configuration.credentialCleanupPending ? '独立凭据清理未完成' : configuration.tokenConfigured ? '独立凭据已配置' : '缺少独立凭据';
   return <section className="page-narrow novelai-settings-page" aria-label="NovelAI 生图设置">
@@ -99,7 +112,9 @@ export function NovelaiSettings({ showTitle = true }: { showTitle?: boolean }) {
         </fieldset>
         <fieldset className="novelai-parameter-group" disabled={pending}>
           <legend>默认模型</legend>
-          <label className="field checkbox-field novelai-option-row"><input type="checkbox" aria-label="允许 nai-diffusion-4-5-full" checked={configuration.allowedModels.includes('nai-diffusion-4-5-full')} disabled={pending} onChange={(event) => patch({ allowedModels: event.target.checked ? ['nai-diffusion-4-5-curated', 'nai-diffusion-4-5-full'] : ['nai-diffusion-4-5-curated'], ...(!event.target.checked ? { defaultModel: 'nai-diffusion-4-5-curated', nsfwEnabled: false } : {}) })} /><span>允许 nai-diffusion-4-5-full</span></label>
+          {models.map(model => <label key={model.id} className="field checkbox-field novelai-option-row"><input type="checkbox" aria-label={`允许 ${model.id}`}
+            checked={configuration.allowedModels.includes(model.id)} disabled={pending || (configuration.allowedModels.length === 1 && configuration.allowedModels[0] === model.id)}
+            onChange={event => allowModel(model.id, event.target.checked)} /><span>允许 {model.label}</span></label>)}
           <div className="novelai-settings-grid">
             <label className="field"><span>默认模型</span><select aria-label="默认生图模型" value={configuration.defaultModel} disabled={pending} onChange={(event) => patch({ defaultModel: event.target.value })}>{configuration.allowedModels.map((value) => <option key={value}>{value}</option>)}</select></label>
             <label className="field"><span>NSFW 默认模型</span><select aria-label="NSFW 默认模型" value={configuration.nsfwModel} disabled={pending} onChange={(event) => patch({ nsfwModel: event.target.value })}>

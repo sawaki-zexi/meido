@@ -11,8 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, Strict
 
 from ..credentials import CredentialStore
 from .availability import configuration_availability
+from .model_catalog import LEGACY_MODELS, MODEL_CATALOG, MODELS
 
-MODELS = ('nai-diffusion-4-5-curated', 'nai-diffusion-4-5-full')
 SAMPLERS = ('k_euler_ancestral', 'k_euler')
 
 
@@ -41,7 +41,7 @@ class NovelaiSettings(BaseModel):
     manualDailyAttempts: StrictInt = Field(default=10, ge=1, le=100)
     allowTxt2Img: StrictBool = True
     allowImg2Img: StrictBool = True
-    allowedModels: list[str] = Field(default_factory=lambda: [MODELS[0]], min_length=1, max_length=2)
+    allowedModels: list[str] = Field(default_factory=lambda: [MODELS[0]], min_length=1, max_length=len(MODELS))
     defaultModel: str = MODELS[0]
     nsfwEnabled: StrictBool = False
     nsfwModel: str = MODELS[1]
@@ -91,7 +91,8 @@ class NovelaiSettingsStore:
         settings = NovelaiSettings.model_validate_json(row[0])
         public = {**settings.model_dump(), 'manualEnabled': settings.enabled, 'revision': row[1],
                 'tokenConfigured': bool(row[2]), 'credentialCleanupPending': bool(row[3]), 'manualConsentRevision': row[4]}
-        return {**public, 'availability': configuration_availability(public)}
+        return {**public, 'availability': configuration_availability(public),
+                'modelCatalog': [{'id': identifier, 'label': model.label} for identifier, model in MODEL_CATALOG.items()]}
 
     def save(self, changes: dict[str, object], *, expected_revision: int) -> dict[str, object]:
         with self.lock, sqlite3.connect(self.database_path) as connection:
@@ -100,6 +101,14 @@ class NovelaiSettingsStore:
             if type(expected_revision) is not int or row[1] != expected_revision:
                 raise ValueError('service revision changed')
             values = dict(changes)
+            # Older clients spread the public response into their save body.
+            # Reading the catalog does not mean their UI can edit every model.
+            values.pop('modelCatalog', None)
+            managed_models = values.pop('managedModelIds', list(LEGACY_MODELS))
+            if (not isinstance(managed_models, list)
+                    or any(not isinstance(item, str) or item not in MODELS for item in managed_models)
+                    or len(set(managed_models)) != len(managed_models)):
+                raise ValueError('unsupported managed model list')
             if 'confirmManualConsumption' in values and type(values.pop('confirmManualConsumption')) is not bool:
                 raise ValueError('legacy consumption confirmation must be a boolean')
             # Compatibility for older settings clients: their manual switch
@@ -111,6 +120,10 @@ class NovelaiSettingsStore:
                 values.setdefault('enabled', legacy_enabled)
             previous = NovelaiSettings.model_validate_json(row[0])
             settings = NovelaiSettings.model_validate({**previous.model_dump(), **values})
+            if 'allowedModels' in values:
+                retained = [model for model in previous.allowedModels
+                            if model not in managed_models and model not in settings.allowedModels]
+                settings = settings.model_copy(update={'allowedModels': [*settings.allowedModels, *retained]})
             settings = settings.model_copy(update={'manualEnabled': settings.enabled})
             if settings.defaultModel not in settings.allowedModels or settings.defaultSampler not in settings.allowedSamplers:
                 raise ValueError('default must be in allowlist')

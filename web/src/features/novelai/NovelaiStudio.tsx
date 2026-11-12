@@ -213,6 +213,12 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
               <dl className="studio-parameter-list">
                 <div className="studio-parameter-wide"><dt>正向 tags</dt><dd>{selected.parameters.prompt || '（空）'}</dd></div>
                 <div className="studio-parameter-wide"><dt>负向 tags</dt><dd>{selected.parameters.negative_prompt || '（空）'}</dd></div>
+                {selected.parameters.effective_prompt !== undefined && <>
+                  <div className="studio-parameter-wide"><dt>实际发送的正向 tags</dt><dd>{selected.parameters.effective_prompt}</dd></div>
+                  <div className="studio-parameter-wide"><dt>实际发送的负向 tags</dt><dd>{selected.parameters.effective_negative_prompt || '（空）'}</dd></div>
+                  <div><dt>Prompt Guidance</dt><dd>{selected.parameters.scale}</dd></div>
+                  <div><dt>噪声计划</dt><dd>{selected.parameters.noise_schedule}</dd></div>
+                </>}
                 <div><dt>生成模式</dt><dd>{modeLabel(selected.parameters.mode)}</dd></div>
                 <div><dt>模型</dt><dd>{selected.parameters.model ?? '未记录'}</dd></div>
                 <div><dt>采样器</dt><dd>{selected.parameters.sampler ?? '未记录'}</dd></div>

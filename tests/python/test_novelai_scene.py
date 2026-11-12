@@ -122,6 +122,28 @@ def test_scene_candidate_freezes_quality_preferences_before_auxiliary_model_retu
     peer.aux_release.set()
 
 
+def test_v5_scene_freezes_model_before_auxiliary_and_records_effective_prompt(scene_main):
+    client, service, peer, _ = scene_main
+    public = service.application.settings.public()
+    service.application.settings.save({'allowedModels': ['nai-diffusion-5-full'],
+        'defaultModel': 'nai-diffusion-5-full', 'addQualityTags': True, 'undesiredContentPreset': 2},
+        expected_revision=public['revision'])
+    peer.aux_block = True
+    response = client.post(f'/api/roles/{service.role.id}/messages', json={'content': 'Enter the sunny garden.'})
+    assert 'assistant_completed' in response.text and peer.aux_accepted.wait(2)
+    with service.application.ledger.connect() as connection:
+        row = connection.execute('SELECT parameters FROM novelai_attempts WHERE purpose=?', ('scene_cg',)).fetchone()
+    assert json.loads(row['parameters'])['model'] == 'nai-diffusion-5-full'
+    peer.aux_release.set()
+    assert service.peer.accepted.wait(3)
+    auxiliary = [request for request in peer.requests if request['model'] == 'fixture-scene']
+    assert 'NovelAI V5' in auxiliary[1]['messages'][0]['content']
+    payload = service.peer.requests[0]['body']
+    assert payload['model'] == 'nai-diffusion-5-full'
+    assert payload['input'].endswith(', very aesthetic, masterpiece, no text')
+    assert payload['parameters']['params_version'] == 4
+
+
 def test_scene_cg_explicit_tags_require_both_service_nsfw_and_role_grant(scene_main):
     client, service, peer, _ = scene_main
     path = f'/api/roles/{service.role.id}/novelai/prompt-tags'

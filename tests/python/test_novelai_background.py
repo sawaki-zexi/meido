@@ -1,6 +1,7 @@
 """Managed image work outlives its accepted request, never its source grant."""
 import time
 from contextlib import asynccontextmanager
+import pytest
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -51,7 +52,8 @@ def test_background_http_returns_accepted_before_provider_finishes_and_recovers_
         assert messages[0].metadata['attachments'] == result['attachments']
 
 
-def test_real_messages_background_finishes_parent_while_http_generation_is_owned(novelai_main, monkeypatch):
+@pytest.mark.parametrize('model', ['nai-diffusion-4-5-curated', 'nai-diffusion-5-full'])
+def test_real_messages_background_finishes_parent_while_http_generation_is_owned(novelai_main, monkeypatch, model):
     import json
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -59,6 +61,8 @@ def test_real_messages_background_finishes_parent_while_http_generation_is_owned
     from backend.app.ai.model_adapter_registry import ModelAdapterRegistry, RoutedModelAdapter
     from backend.app.models import ModelConfigurationInput
     client, service = novelai_main
+    service.application.settings.save({'allowedModels': [model], 'defaultModel': model},
+        expected_revision=service.application.settings.public()['revision'])
     service.peer.block = True
     provider_requests = []
     class Provider(BaseHTTPRequestHandler):
@@ -114,6 +118,8 @@ def test_real_messages_background_finishes_parent_while_http_generation_is_owned
             assert rows[-1].metadata['generationAttemptIds'] == [history[0]['attemptId']]
             assert len([row for row in rows if row.role == 'user']) == 1
             assert len(service.peer.requests) == 1 and len(provider_requests) == 2
+            assert service.peer.requests[0]['body']['model'] == model
+            assert history[0]['parameters']['model'] == model
     finally:
         service.peer.release.set()
         server.shutdown()

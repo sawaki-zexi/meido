@@ -18,6 +18,7 @@ from ..channels.consolidation import finish_io
 from .context import GenerationContext, capture_tool_context
 from .ledger import canonical
 from .parameters import normalize_request
+from .model_catalog import MODEL_CATALOG
 
 AUXILIARY_TIMEOUT_SECONDS = 30.0
 SCENE_PROMPT_TAGS = ('third-person view', 'cinematic composition', 'character visible in frame')
@@ -280,7 +281,9 @@ class SceneCoordinator:
                 _, reason = self._decision(db, row, source, observation)
             drawing = None
             if not reason:
-                system_prompt = ('Convert the observed scene into NovelAI V4.5 tags. '
+                frozen = json.loads(row['parameters'])
+                model = frozen.get('model', settings.nsfwModel if settings.nsfwEnabled else settings.defaultModel)
+                system_prompt = (f'Convert the observed scene into NovelAI {MODEL_CATALOG[model].version} tags. '
                     'Return only one JSON object with prompt, negative_prompt (comma-separated English ASCII tags), '
                     'and size_preset (square/landscape/portrait). No tools, prose or extra fields. '
                     'Include the depicted character\'s known hair color and style, eyes, clothing and signature accessories '
@@ -374,10 +377,11 @@ class SceneCoordinator:
             prompt = _append_missing_tags(expanded['prompt'], SCENE_PROMPT_TAGS)
             negative_prompt = _append_missing_tags(expanded['negative_prompt'], SCENE_NEGATIVE_PROMPT_TAGS)
             parameters = normalize_request({'prompt': prompt, 'negative_prompt': negative_prompt,
-                'size_preset': drawing.size_preset, 'mode': 'txt2img', 'samples': 1, 'background': True}, settings)
-            parameters.update(intent='scene_cg', scene_key=scene_key, visual_key=observation.visual_key,
-                qualityToggle=frozen.get('qualityToggle', settings.addQualityTags),
-                ucPreset=frozen.get('ucPreset', settings.undesiredContentPreset))
+                'size_preset': drawing.size_preset, 'mode': 'txt2img', 'samples': 1, 'background': True,
+                'model': frozen.get('model', settings.nsfwModel if settings.nsfwEnabled else settings.defaultModel),
+                'qualityToggle': frozen.get('qualityToggle', settings.addQualityTags),
+                'ucPreset': frozen.get('ucPreset', settings.undesiredContentPreset)}, settings)
+            parameters.update(intent='scene_cg', scene_key=scene_key, visual_key=observation.visual_key)
             db.execute("UPDATE novelai_attempts SET parameters=?,phase='generation',aux_status='succeeded' WHERE attempt_id=?",
                 (canonical(parameters), row['attempt_id']))
             return True

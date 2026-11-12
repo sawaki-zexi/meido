@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from ..chat_attachments import resolve_attachment
 from ..novelai_generation.context import GenerationContext
+from ..novelai_generation.model_catalog import MODEL_CATALOG
 from ..task_runtime import TaskOrigin
 from .errors import StorySimulationError, StoryProviderUnavailableError, StoryInvalidOutputError
 
@@ -41,9 +42,10 @@ class StoryImageGenerator:
             TaskOrigin(role_id, f'role:{role_id}', source_thread_id=f'desktop:{role_id}', source_scope_id=f"story:{story['id']}"),
             key, key, frozenset(), ui_action=True)
         settings = app.settings.public()
-        # Shiori Story uses V4.5 full; retain the owner's model allowlist.
-        model = 'nai-diffusion-4-5-full' if 'nai-diffusion-4-5-full' in settings['allowedModels'] else (
-            settings['nsfwModel'] if settings['nsfwEnabled'] else settings['defaultModel'])
+        model = settings['nsfwModel'] if settings['nsfwEnabled'] else settings['defaultModel']
+        # Keep the established V4.5 story preference within that model family.
+        if MODEL_CATALOG[model].version == 'V4.5' and 'nai-diffusion-4-5-full' in settings['allowedModels']:
+            model = 'nai-diffusion-4-5-full'
         try:
             result = await app.submit(source, {'prompt': prompt, 'mode': 'txt2img', 'size_preset': 'landscape',
                                               'samples': 1, 'background': False, 'intent': 'user_requested', 'model': model},

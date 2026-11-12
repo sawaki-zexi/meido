@@ -6,12 +6,38 @@ Copyright (c) 2026 YinFengWindy. See SHIORI-LICENSE.txt.
 from __future__ import annotations
 
 import base64
+import re
 import secrets
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, field_validator
 
 from .config import NovelaiSettings
+from .model_catalog import MODEL_CATALOG
+
+
+V5_QUALITY_SUFFIX = 'very aesthetic, masterpiece, no text'
+V5_UNDESIRED_PREFIXES = (
+    '',
+    'lowres, bad hands, bad anatomy, artistic error, sepia, white haze, worst quality, '
+    'very displeasing, jpeg artifacts, 0::ai-generated::',
+    'lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, '
+    'very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, '
+    'too many watermarks, negative space, blank page',
+)
+
+
+def _v5_quality_prompt(prompt: str) -> str:
+    # The preset belongs to the first prompt chunk, before any rendered text.
+    # Double-pipe randomizer groups may contain pipes of their own.
+    boundary = next((match.start() for match in re.finditer(r'\|\|.*?(?:\|\||$)|\|', prompt)
+                     if match.group() == '|'), len(prompt))
+    text = re.search(r'(?:^|\s|[,.:\[\]{}])text:(?!:)', prompt[:boundary], re.IGNORECASE)
+    if text is not None:
+        boundary = text.start()
+    first = ', '.join(part for part in (prompt[:boundary], V5_QUALITY_SUFFIX) if part)
+    separator = ' ' if text is not None and boundary == 0 else ''
+    return first + separator + prompt[boundary:]
 
 
 class GenerationRequest(BaseModel):
@@ -87,10 +113,26 @@ def normalize_request(arguments: dict[str, object], settings: NovelaiSettings) -
     if request.mode == 'img2img':
         value.update(strength=request.strength if request.strength is not None else .7,
                      noise=request.noise if request.noise is not None else .2)
+    capabilities = MODEL_CATALOG[model]
+    if capabilities.version == 'V5':
+        prompt = request.prompt
+        if value['qualityToggle']:
+            prompt = _v5_quality_prompt(prompt)
+        first_negative, separator, remaining_negative = request.negative_prompt.partition('|')
+        negative = ', '.join(part for part in (V5_UNDESIRED_PREFIXES[value['ucPreset']], first_negative) if part)
+        negative += separator + remaining_negative
+        if model == 'nai-diffusion-5-full' and value['ucPreset'] != 0 and 'nsfw' not in prompt.lower():
+            negative = 'nsfw, ' + negative
+        value.update(effective_prompt=prompt, effective_negative_prompt=negative,
+                     params_version=capabilities.params_version, scale=capabilities.scale,
+                     noise_schedule=capabilities.noise_schedule)
     return value
 
 
 def generation_payload(request: dict[str, object], *, base_image: bytes | None = None) -> dict[str, object]:
+    capabilities = MODEL_CATALOG[request['model']]
+    prompt = request.get('effective_prompt', request['prompt'])
+    negative = request.get('effective_negative_prompt', request['negative_prompt'])
     parameters = {key: request[key] for key in ('width', 'height', 'steps', 'sampler', 'seed', 'negative_prompt')}
     parameters.update(n_samples=request.get('samples', 1), scale=5, params_version=3, noise_schedule='native', cfg_rescale=0,
         dynamic_thresholding=False, characterPrompts=[], controlnet_strength=1,
@@ -99,11 +141,24 @@ def generation_payload(request: dict[str, object], *, base_image: bytes | None =
         use_coords=False, qualityToggle=request.get('qualityToggle', False), ucPreset=request.get('ucPreset', 0),
         v4_prompt={'caption': {'base_caption': request['prompt'], 'char_captions': []}, 'use_coords': False, 'use_order': True},
         v4_negative_prompt={'caption': {'base_caption': request['negative_prompt'], 'char_captions': []}})
+    if capabilities.version == 'V5':
+        parameters.update(params_version=request['params_version'], scale=request['scale'],
+            noise_schedule=request['noise_schedule'], negative_prompt=negative,
+            tag_hint_qt=1 if request['qualityToggle'] else 0,
+            tag_hint_uc_preset=(0, 3, 2)[request['ucPreset']], straight_alpha=True,
+            image_format='webp',
+            v4_prompt={'caption': {'base_caption': prompt, 'char_captions': []}, 'use_coords': False, 'use_order': True},
+            v4_negative_prompt={'caption': {'base_caption': negative, 'char_captions': []}, 'legacy_uc': False})
+        # V5's client-side presets have already been applied and frozen above.
+        parameters.pop('qualityToggle')
+        parameters.pop('ucPreset')
     if request['mode'] == 'img2img':
         if base_image is None:
             raise ValueError('owned input has not been resolved')
         parameters.update(image=base64.b64encode(base_image).decode('ascii'), strength=request['strength'], noise=request['noise'])
-    return {'input': request['prompt'], 'model': request['model'],
+        if capabilities.version == 'V5':
+            parameters.update(extra_noise_seed=request['seed'] - 1, color_correct=False)
+    return {'input': prompt, 'model': request['model'],
             'action': 'img2img' if request['mode'] == 'img2img' else 'generate', 'parameters': parameters}
 
 

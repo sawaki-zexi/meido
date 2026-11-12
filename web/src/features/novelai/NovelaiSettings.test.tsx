@@ -6,6 +6,46 @@ import { NovelaiSettings } from './NovelaiSettings';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it('allows each catalog model and explicitly saves which model permissions the UI manages', async () => {
+  const modelCatalog = [
+    { id: 'nai-diffusion-4-5-curated', label: 'V4.5 Curated' },
+    { id: 'nai-diffusion-4-5-full', label: 'V4.5 Full' },
+    { id: 'nai-diffusion-5-curated', label: 'V5 Curated' },
+    { id: 'nai-diffusion-5-full', label: 'V5 Full' },
+  ];
+  let config = { enabled: true, tokenConfigured: true, credentialCleanupPending: false, revision: 3,
+    allowedModels: ['nai-diffusion-4-5-curated'], defaultModel: 'nai-diffusion-4-5-curated', modelCatalog,
+    nsfwEnabled: false, nsfwModel: 'nai-diffusion-4-5-full', allowedSamplers: ['k_euler_ancestral'], defaultSampler: 'k_euler_ancestral',
+    maxPixels: 1048576, maxSteps: 28, dailyAttemptLimit: 20 };
+  const { calls } = fakeBackend({
+    'GET /api/services/novelai': () => ({ body: config }),
+    'PUT /api/services/novelai': init => {
+      const { expectedRevision, managedModelIds, ...values } = JSON.parse(String(init?.body));
+      expect(expectedRevision).toBe(config.revision);
+      expect(managedModelIds).toEqual(modelCatalog.map(model => model.id));
+      config = { ...config, ...values, revision: config.revision + 1 };
+      return { body: config };
+    },
+  });
+  const user = userEvent.setup();
+  render(<NovelaiSettings />);
+  await user.click(await screen.findByLabelText('允许 nai-diffusion-5-curated'));
+  await user.click(screen.getByLabelText('允许 nai-diffusion-5-full'));
+  await user.selectOptions(screen.getByLabelText('默认生图模型'), 'nai-diffusion-5-curated');
+  await user.selectOptions(screen.getByLabelText('NSFW 默认模型'), 'nai-diffusion-5-full');
+  await user.click(screen.getByLabelText('NSFW 默认模型模式'));
+  await user.click(screen.getByRole('button', { name: '保存生图设置' }));
+  await screen.findByText('NovelAI 生图设置已保存。');
+  expect(config).toMatchObject({ defaultModel: 'nai-diffusion-5-curated', nsfwModel: 'nai-diffusion-5-full', nsfwEnabled: true,
+    allowedModels: ['nai-diffusion-4-5-curated', 'nai-diffusion-5-curated', 'nai-diffusion-5-full'] });
+  await user.click(screen.getByLabelText('允许 nai-diffusion-5-full'));
+  await user.click(screen.getByRole('button', { name: '保存生图设置' }));
+  await screen.findByText('NovelAI 生图设置已保存。');
+  expect(config.allowedModels).not.toContain('nai-diffusion-5-full');
+  expect(config.nsfwEnabled).toBe(false);
+  expect(calls.filter(call => call.method === 'PUT')).toHaveLength(2);
+});
+
 it('shows ready configuration and saves parameter changes without another consumption checkbox', async () => {
   let config = { enabled: true, manualEnabled: false, manualConsentRevision: 0,
     tokenConfigured: true, credentialCleanupPending: false, revision: 5,
