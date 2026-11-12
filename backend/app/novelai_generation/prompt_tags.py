@@ -5,7 +5,7 @@ import unicodedata
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationInfo, field_validator
 
 from ..chat_attachments import public_attachment, resolve_attachment
 from .ledger import canonical
@@ -49,7 +49,12 @@ class PromptTag(BaseModel):
 
     @field_validator('prompt', 'negative_prompt')
     @classmethod
-    def bounded_tags(cls, value):
+    def bounded_tags(cls, value, info: ValidationInfo):
+        if info.context and info.context.get('stored') and value.isascii() and '\x7f' in value:
+            # Old saves accepted DEL. Keep that exact draft readable for repair,
+            # while validating every other character and all remaining fields.
+            validate_prompt(value.replace('\x7f', ''))
+            return value
         return validate_prompt(value)
 
     @field_validator('reference_attachment_id')
@@ -133,7 +138,7 @@ class PromptTags:
                 (role_id, cursor or '', limit + 1)).fetchall()
         tags = []
         for row in rows[:limit]:
-            tag = PromptTag.model_validate(json.loads(row['value']))
+            tag = PromptTag.model_validate(json.loads(row['value']), context={'stored': True})
             tags.append(self._view(role_id, row['id'], tag))
         return {'tags': tags,
             'revision': self.revision(role_id), 'nextCursor': rows[limit - 1]['id'] if len(rows) > limit else None}

@@ -228,3 +228,86 @@ def test_unicode_preview_cannot_authorize_a_later_disallowed_model(novelai_main)
     assert denied.status_code == 422
     assert not service.peer.requests
     assert client.get(path + '/generations').json()['usage']['accountAttempts'] == 0
+
+
+@pytest.mark.parametrize('model', [V45, V5])
+@pytest.mark.parametrize('field', ['prompt', 'negative_prompt'])
+def test_legacy_del_draft_remains_readable_and_correctable_but_cannot_be_used(novelai_main, model, field):
+    from backend.app.agent_runtime.provider import CancellationToken
+    from backend.app.agent_runtime.tools import ToolContext
+    from backend.app.models import AgentRun
+    client, service = novelai_main
+    config = configure(service, model)
+    role_id = service.role.id
+    path = f'/api/roles/{role_id}'
+    tags_path = path + '/novelai/prompt-tags'
+    enabled = client.put(path, json={'name': service.role.name, 'profile': service.role.profile.model_dump(),
+                                    'agentConfig': {'novelai': {'promptTagsEnabled': True}}})
+    assert enabled.status_code == 200, enabled.text
+    legacy = {'name': 'Legacy', 'keywords': ['garden'], 'prompt': 'portrait',
+              'negative_prompt': 'rain', 'rating': 'general', 'enabled': True}
+    legacy[field] += '\x7f'
+    disabled = {**legacy, 'name': 'Disabled', 'keywords': ['unrelated'], 'enabled': False}
+    stored = {'a' * 32: json.dumps(legacy), 'b' * 32: json.dumps(disabled)}
+    with service.application.ledger.connect() as db:
+        db.executemany('INSERT INTO novelai_prompt_tags(role_id,id,value) VALUES(?,?,?)',
+                       [(role_id, identifier, value) for identifier, value in stored.items()])
+
+    listed = client.get(tags_path)
+    assert listed.status_code == 200, listed.text
+    assert listed.json()['revision'] == 0
+    assert [tag[field] for tag in listed.json()['tags']] == [legacy[field], disabled[field]]
+    assert client.post(tags_path, json=legacy).status_code == 422
+    assert client.put(tags_path + '/' + 'a' * 32, json=legacy).status_code == 422
+    unmatched = client.post(tags_path + '/preview', json={'text': 'unrelated', 'prompt': 'blue sky'})
+    assert unmatched.status_code == 200, unmatched.text
+    assert unmatched.json()['prompt'] == 'blue sky' and unmatched.json()['matchedIds'] == []
+    matched = client.post(tags_path + '/preview', json={'text': 'garden', 'prompt': 'blue sky'})
+    assert matched.status_code == 422 and '控制' in matched.text
+    submitted = client.post(path + '/generations', json={'requestId': 'a' * 32,
+        'expectedRevision': config['revision'], 'parameters': {**service.request, field: legacy[field]}})
+    assert submitted.status_code == 422
+
+    session_key = f'role:{role_id}'
+    def draw(run_id, text):
+        _, _, placeholder = service.sessions.create_run_with_messages(AgentRun(runId=run_id, roleId=role_id,
+            sessionKey=session_key, status='running', startedAt=datetime.now(timezone.utc),
+            modelSnapshot={'humanInputSource': 'desktop_owner'}), text)
+        result = asyncio.run(service.application.tool_for(role_id, is_owner=True).execute({'prompt': 'blue sky'},
+            ToolContext(role_id, session_key, run_id, CancellationToken(), 'draw')))
+        service.sessions.finish_run(run_id, status='completed', assistant_message_id=placeholder.id,
+                                    assistant_content='Drawing request checked.', turn_count=1)
+        return result
+    rejected = draw('legacy-matched', 'garden')
+    assert rejected.is_error and rejected.details['errorCode'] == 'invalid_prompt'
+    assert not service.peer.requests
+    assert client.get(path + '/generations').json()['usage']['accountAttempts'] == 0
+    with service.application.ledger.connect() as db:
+        assert {row['id']: row['value'] for row in db.execute(
+            'SELECT id,value FROM novelai_prompt_tags WHERE role_id=?', (role_id,))} == stored
+
+    unrelated = draw('legacy-unmatched', 'unrelated')
+    assert not unrelated.is_error and len(service.peer.requests) == 1
+    assert service.peer.requests[0]['body']['input'] == 'blue sky'
+    corrected = {**legacy, field: legacy[field].replace('\x7f', '')}
+    updated = client.put(tags_path + '/' + 'a' * 32, json=corrected)
+    assert updated.status_code == 200, updated.text
+    assert updated.json()['tag'][field] == corrected[field]
+    preview = client.post(tags_path + '/preview', json={'text': 'garden'})
+    assert preview.status_code == 200 and preview.json()[field] == corrected[field]
+    with service.application.ledger.connect() as db:
+        assert db.execute('SELECT value FROM novelai_prompt_tags WHERE role_id=? AND id=?',
+                          (role_id, 'b' * 32)).fetchone()['value'] == stored['b' * 32]
+
+
+def test_legacy_del_read_compatibility_preserves_other_stored_record_validation(novelai_main):
+    client, service = novelai_main
+    path = f'/api/roles/{service.role.id}/novelai/prompt-tags'
+    legacy = {'name': 'Legacy', 'keywords': ['garden'], 'prompt': 'portrait\x7f',
+              'negative_prompt': '', 'rating': 'general', 'enabled': True}
+    for changes in ({'prompt': 'portrait\x7f\n'}, {'prompt': '中文\x7f'}, {'prompt': 'x' * 4000 + '\x7f'},
+                    {'rating': 'invalid'}, {'enabled': 1}, {'unexpected': True}):
+        with service.application.ledger.connect() as db:
+            db.execute('INSERT OR REPLACE INTO novelai_prompt_tags(role_id,id,value) VALUES(?,?,?)',
+                       (service.role.id, 'a' * 32, json.dumps({**legacy, **changes})))
+        assert client.get(path).status_code == 422

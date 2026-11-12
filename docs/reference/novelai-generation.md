@@ -100,6 +100,8 @@ none/closed、冷却和重复视觉仍是已发生辅助调用的 CG 尝试，�
 
 聊天工具的描述和 schema 随冻结的有效模型提供语言说明，并列出可覆盖模型的语言约束。CG 转换使用 attempt 中冻结的模型。两者继续包含已知外观要求，正式准入重新验证标签扩写结果和模型许可。预览通过不会代替正式准入。工作台与聊天抽屉把当前选择模型传给标签预览，模型、角色或配置修订变化会丢弃旧预览结果和错误。
 
+旧版本曾允许保存含 DEL（U+007F）的 ASCII 标签。列表读取对此保留原始提示词，供主人查看和修正，数据库记录保持原文，其他字符与字段仍须通过校验。未命中或停用的旧标签按既有匹配规则跳过。新保存内容、已匹配的预览扩写和正式提交继续执行当前严格字符边界，含 DEL 时拒绝使用。
+
 [标签库](../../backend/app/novelai_generation/prompt_tags.py)仅由主人管理当前角色，最多250项；name/category最多80字符、keywords为1–16个各最多80字符的非空字面词、正负提示词各最多4000个 Unicode 码点，可在 V4.5 设置下保存多语言草稿，rating限定general/mature/explicit。标签可引用当前角色 workspace 中的图片附件 `reference_attachment_id`；保存时拒绝跨角色、缺失或非图片附件，列表只返回公共附件元数据，不暴露路径。匹配对当前消息做 NFKC/casefold 字面包含，不执行正则或表达式；同时过滤服务 `nsfwEnabled`（`explicit` 标签必须开启）、角色 `promptTagsEnabled`、`allowedPromptTagRatings` 和条目 enabled，按命中关键词数降序、名称/ID稳定排序后最多取5项。真实主人聊天工具使用当前主人消息自动扩写并冻结结果；工作台和重生成保持显式或历史冻结 prompt，不走这条隐式手动路径；场景 CG 使用候选中冻结的主人消息走独立 CG 扩写。预览与实际 CG 使用同一扩写，最终提示词仍受4000字符上限；库修改推进 revision，旧观察不能使用新标签结果继续生成。
 
 - GET/POST `/api/roles/{roleId}/novelai/prompt-tags`：最多50项分页及 owner 新增，返回 tags/revision/nextCursor 或 tag/revision；旧数据缺少 category/reference 字段时分别回退为 `composition`/`null`。
