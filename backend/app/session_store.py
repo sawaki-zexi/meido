@@ -2,6 +2,7 @@ import sqlite3
 import uuid
 import json
 import hashlib
+from copy import deepcopy
 from contextlib import closing
 from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
@@ -105,6 +106,7 @@ class AttachmentConflict(ValueError):
 class SessionStore:
     def __init__(self, database_path: str | Path) -> None:
         self.database_path = str(database_path)
+        self._natural_inputs: dict[str, dict] = {}
         with sqlite3.connect(self.database_path) as connection:
             connection.execute('''CREATE TABLE IF NOT EXISTS session_maintenance (
                 role_id TEXT NOT NULL, session_key TEXT NOT NULL, progress_json TEXT NOT NULL,
@@ -225,19 +227,51 @@ class SessionStore:
         return result
 
     def user_message_for_run(self, run_id: str) -> Message | None:
+        """Resolve a run's input from its active copy or canonical persisted source.
+
+        A bodyless text projection keeps frozen background authority usable after
+        temporary hearing expires. Callers can detect that with originalUnavailable.
+        """
         with sqlite3.connect(self.database_path) as connection:
             row = connection.execute(
                 "SELECT message_id, session_key, sequence, role, content, status, created_at, message_type, tool_call_id, tool_name, tool_arguments_json, tool_result_json, is_error, run_id, metadata_json "
                 "FROM messages WHERE run_id=? AND role='user' AND status='completed' ORDER BY sequence LIMIT 1",
                 (run_id,),
             ).fetchone()
-        return self._message(row) if row else None
+        if row is None:
+            self._natural_inputs.pop(run_id, None)
+            return None
+        message = self._message(row)
+        if not (message.role == 'user' and message.metadata.get('listening')):
+            return message
+        original = self._natural_inputs.get(run_id)
+        if original is None:
+            with sqlite3.connect(self.database_path) as connection:
+                saved = connection.execute(
+                    'SELECT content,metadata_json,created_at FROM channel_listening_records WHERE id=? AND thread_id=?',
+                    (message.id, message.metadata.get('threadId'))).fetchone()
+            if saved:
+                original = {'content': saved[0], 'metadata': json.loads(saved[1]), 'createdAt': saved[2]}
+        if original is not None:
+            return message.model_copy(update={'content': original['content'], 'metadata': deepcopy(original['metadata']),
+                'createdAt': datetime.fromisoformat(original['createdAt']), 'messageType': 'text'})
+        return message.model_copy(update={'content': '', 'messageType': 'text',
+            'metadata': {**self._natural_receipt_metadata(message.metadata), 'originalUnavailable': True}})
+
+    @staticmethod
+    def _natural_receipt_metadata(metadata):
+        # Receipts retain authority and replay identity, never quoted bodies or attachments.
+        keys = ('roleId', 'channel', 'threadId', 'chatId', 'chatType', 'accountId', 'direction',
+                'platformMessageId', 'listening', 'senderId', 'senderIsOwner', 'triggered',
+                'viaAccount', 'replyTo', 'groupReplyRevision', 'channelTurnState', 'naturalSourceFingerprint')
+        return {key: deepcopy(metadata[key]) for key in keys if key in metadata}
 
     def context_messages(self, session_key: str) -> list[Message]:
         return [
             message
             for message in self.list_messages(session_key)
             if message.messageType == "text"
+            and not (message.role == 'user' and message.metadata.get('listening'))
             and (message.role == "user" or message.status == "completed")
         ]
 
@@ -1164,7 +1198,7 @@ class SessionStore:
         return run, user_message, assistant_message
 
     def admit_natural_run(self, run: AgentRun, record: dict) -> AgentRun:
-        """Atomically bind the original hearing record, without a synthetic input.
+        """Atomically claim hearing with a bodyless receipt and an active input.
 
         The same physical input remains claimed after expiry/restart. Only its
         owning batch can resume expression; it keeps the run and tool facts.
@@ -1175,6 +1209,10 @@ class SessionStore:
                 or metadata.get('direction') != 'inbound' or metadata.get('internalEvent')
                 or run.sessionKey != 'thread:' + str(metadata.get('threadId'))):
             raise PermissionError('natural execution requires its original hearing record')
+        fingerprint = hashlib.sha256(json.dumps(
+            [record['id'], record['content'], record['createdAt'], metadata],
+            sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        receipt = {**self._natural_receipt_metadata(metadata), 'naturalSourceFingerprint': fingerprint}
         with sqlite3.connect(self.database_path) as connection:
             connection.execute('BEGIN IMMEDIATE')
             prior = connection.execute(
@@ -1184,11 +1222,16 @@ class SessionStore:
                 (run.sessionKey, metadata['accountId'], metadata['platformMessageId'])).fetchone()
             if prior:
                 existing = connection.execute('SELECT model_snapshot_json,status FROM agent_runs WHERE run_id=?', (prior[0],)).fetchone()
+                prior_metadata = json.loads(prior[4])
+                same_source = (prior_metadata.get('naturalSourceFingerprint') == fingerprint
+                    if 'naturalSourceFingerprint' in prior_metadata else
+                    (prior[1], prior[2], prior[3], prior_metadata) == (
+                        record['id'], record['content'], record['createdAt'], metadata))
                 if (prior[0] != run.runId or not existing or existing[1] != 'running'
                         or json.loads(existing[0]).get('batchId') != run.modelSnapshot['batchId']
-                        or (prior[1], prior[2], prior[3], json.loads(prior[4])) != (
-                            record['id'], record['content'], record['createdAt'], metadata)):
+                        or not same_source):
                     raise PermissionError('natural input was already admitted; do not replay it')
+                self._natural_inputs[run.runId] = deepcopy(record)
                 return run.model_copy(update={'modelSnapshot': {**json.loads(existing[0]), **run.modelSnapshot}})
             connection.execute(
                 'INSERT INTO agent_runs (run_id,role_id,session_key,status,model_configuration_id,model_snapshot_json,turn_count,started_at) VALUES(?,?,?,?,?,?,?,?)',
@@ -1196,11 +1239,12 @@ class SessionStore:
                  json.dumps(run.modelSnapshot, ensure_ascii=False),run.turnCount,run.startedAt.isoformat()))
             sequence = connection.execute('SELECT COALESCE(MAX(sequence),0)+1 FROM messages WHERE session_key=?', (run.sessionKey,)).fetchone()[0]
             connection.execute(
-                "INSERT INTO messages (message_id,session_key,sequence,role,content,status,created_at,message_type,run_id,metadata_json) VALUES(?,?,?,'user',?,'completed',?,'text',?,?)",
-                (record['id'],run.sessionKey,sequence,record['content'],record['createdAt'],run.runId,_dump(metadata)))
+                "INSERT INTO messages (message_id,session_key,sequence,role,content,status,created_at,message_type,run_id,metadata_json) VALUES(?,?,?,'user','','completed',?,'natural_input',?,?)",
+                (record['id'],run.sessionKey,sequence,record['createdAt'],run.runId,_dump(receipt)))
             connection.execute(
                 "INSERT INTO channel_events(event_id,thread_id,direction,external_message_id,created_at,metadata_json) VALUES(?,?,'inbound',?,?,?)",
-                ('event-' + uuid.uuid4().hex,metadata['threadId'],metadata['platformMessageId'],record['createdAt'],_dump(metadata)))
+                ('event-' + uuid.uuid4().hex,metadata['threadId'],metadata['platformMessageId'],record['createdAt'],_dump(receipt)))
+        self._natural_inputs[run.runId] = deepcopy(record)
         return run
 
     def delete_role_session(self, role_id: str) -> None:
@@ -1212,6 +1256,8 @@ class SessionStore:
             connection.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
             connection.execute("DELETE FROM agent_runs WHERE role_id = ?", (role_id,))
             connection.execute("DELETE FROM tool_audits WHERE role_id = ?", (role_id,))
+        self._natural_inputs = {run_id: record for run_id, record in self._natural_inputs.items()
+            if record['metadata'].get('roleId') != role_id}
 
     def start_tool_audit(
         self,
@@ -1462,6 +1508,7 @@ class SessionStore:
             current_status = str(current[2])
             terminal = {"completed", "failed", "cancelled", "max_turns"}
             if current_status in terminal:
+                self._natural_inputs.pop(run_id, None)
                 row = connection.execute("SELECT run_id, role_id, session_key, status, model_configuration_id, model_snapshot_json, turn_count, started_at, ended_at, cancel_reason, error FROM agent_runs WHERE run_id = ?", (run_id,)).fetchone()
                 return self._run(row)
             if current_status == "queued" and status not in {"queued", "created", "failed", "cancelled"}:
@@ -1472,6 +1519,8 @@ class SessionStore:
                 raise ValueError(f"invalid run transition: {current_status} -> {status}")
             connection.execute("UPDATE agent_runs SET status=?, turn_count=COALESCE(?, turn_count), ended_at=COALESCE(?, ended_at), cancel_reason=COALESCE(?, cancel_reason), error=COALESCE(?, error), model_snapshot_json=COALESCE(?, model_snapshot_json) WHERE run_id=?", (status, turn_count, ended_at.isoformat() if ended_at else None, cancel_reason, error, json.dumps(model_snapshot, ensure_ascii=False) if model_snapshot is not None else None, run_id))
             row = connection.execute("SELECT run_id, role_id, session_key, status, model_configuration_id, model_snapshot_json, turn_count, started_at, ended_at, cancel_reason, error FROM agent_runs WHERE run_id = ?", (run_id,)).fetchone()
+        if status in terminal:
+            self._natural_inputs.pop(run_id, None)
         return self._run(row)
 
     def record_run_error(self, run_id: str, error: str) -> None:
@@ -1506,6 +1555,7 @@ class SessionStore:
             current = self._run(run_row)
             terminal = {"completed", "failed", "cancelled", "max_turns"}
             if current.status in terminal:
+                self._natural_inputs.pop(run_id, None)
                 existing = self._find_terminal_assistant(connection, run_id, assistant_message_id)
                 if existing is None:
                     raise RuntimeError(f"terminal run {run_id} has no assistant message")
@@ -1550,6 +1600,7 @@ class SessionStore:
             ).fetchone()
             message_row = self._find_terminal_assistant(connection, run_id, assistant_message_id)
         assert run_row is not None and message_row is not None
+        self._natural_inputs.pop(run_id, None)
         return self._run(run_row), self._message(message_row)
 
     def _find_terminal_assistant(
@@ -1586,6 +1637,7 @@ class SessionStore:
             now = _now()
             connection.execute("UPDATE messages SET status='failed' WHERE status='streaming' AND (run_id IS NULL OR run_id IN (SELECT run_id FROM agent_runs WHERE status IN ('queued', 'created', 'running')))" )
             connection.execute("UPDATE agent_runs SET status='failed', ended_at=?, error=COALESCE(error, '服务重启时运行未完成') WHERE status IN ('queued', 'created', 'running')", (now,))
+        self._natural_inputs.clear()
 
     def _run(self, row: tuple[object, ...]) -> AgentRun:
         status = cast(Literal["queued", "created", "running", "completed", "failed", "cancelled", "max_turns"], str(row[3]))
