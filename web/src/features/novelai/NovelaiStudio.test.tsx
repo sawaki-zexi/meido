@@ -20,6 +20,32 @@ const page = (generations: unknown[]) => ({ generations, nextCursor: null, usage
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
+it('submits a selected V5 model and reuses its editable prompts while showing effective sent prompts', async () => {
+  const v5 = { ...record, parameters: { ...record.parameters, model: 'nai-diffusion-5-full',
+    effective_prompt: 'blue sky, very aesthetic, masterpiece, no text', effective_negative_prompt: 'rain',
+    params_version: 4, scale: 7, noise_schedule: 'karras' } };
+  const { calls } = fakeBackend({
+    'GET /api/services/novelai': () => ({ body: { ...configuration, allowedModels: ['nai-diffusion-4-5-curated', 'nai-diffusion-5-full'] } }),
+    'GET /api/roles/r1/generations': () => ({ body: page([]) }),
+    'POST /api/roles/r1/generations': () => ({ body: { generation: v5 } }),
+  });
+  const user = userEvent.setup();
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '角色' })]} initialRoleId="r1" />);
+  await screen.findByText('暂无生图历史。');
+  await user.type(screen.getByLabelText('工作台英文正向 tags'), 'blue sky');
+  await user.click(screen.getByText('高级参数'));
+  await user.selectOptions(screen.getByLabelText('工作台生图模型'), 'nai-diffusion-5-full');
+  await user.click(screen.getByRole('button', { name: '生成一张图片' }));
+  await screen.findByAltText('one.png');
+  expect(calls.find(call => call.method === 'POST')?.body).toMatchObject({ parameters: { model: 'nai-diffusion-5-full', prompt: 'blue sky' } });
+  await user.click(screen.getByText('图片信息'));
+  expect(within(screen.getByRole('region', { name: '当前作品参数' })).getByText(v5.parameters.effective_prompt)).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '复用参数' }));
+  expect(screen.getByLabelText('工作台英文正向 tags')).toHaveValue('blue sky');
+  expect(screen.getByLabelText('工作台生图模型')).toHaveValue('nai-diffusion-5-full');
+  expect(calls.filter(call => call.method === 'POST')).toHaveLength(1);
+});
+
 it('allows a fresh role to generate with configured credentials despite legacy consent fields', async () => {
   const { calls } = fakeBackend({
     'GET /api/services/novelai': () => ({ body: { ...configuration, manualEnabled: false, manualConsentRevision: 0 } }),

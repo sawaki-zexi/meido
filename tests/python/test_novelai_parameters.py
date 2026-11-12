@@ -89,3 +89,72 @@ def test_invalid_or_untrusted_generation_is_rejected_before_consumption(changes)
     from backend.app.novelai_generation.parameters import normalize_request
     with pytest.raises(ValueError):
         normalize_request({'prompt': '1girl', 'mode': 'txt2img', **changes}, NovelaiSettings())
+
+
+@pytest.mark.parametrize('model', ['nai-diffusion-5-curated', 'nai-diffusion-5-full'])
+@pytest.mark.parametrize('mode', ['txt2img', 'img2img'])
+def test_v5_freezes_effective_prompts_and_official_request_parameters(model, mode):
+    from backend.app.novelai_generation.config import NovelaiSettings
+    from backend.app.novelai_generation.parameters import normalize_request, generation_payload, replay_request
+    settings = NovelaiSettings(allowedModels=[model], defaultModel=model,
+        addQualityTags=True, undesiredContentPreset=1)
+    arguments = {'prompt': '1girl, blue sky', 'negative_prompt': 'text', 'mode': mode, 'seed': 0}
+    if mode == 'img2img':
+        arguments['base_attachment_id'] = 'a' * 32
+    request = normalize_request(arguments, settings)
+    payload = generation_payload(request, base_image=b'owned image')
+    assert payload['model'] == model
+    assert payload['action'] == ('img2img' if mode == 'img2img' else 'generate')
+    effective_prompt = '1girl, blue sky, very aesthetic, masterpiece, no text'
+    effective_negative = ('nsfw, ' if model.endswith('full') else '') + (
+        'lowres, bad hands, bad anatomy, artistic error, sepia, white haze, worst quality, '
+        'very displeasing, jpeg artifacts, 0::ai-generated::, text')
+    assert request['prompt'] == arguments['prompt']
+    assert request['effective_prompt'] == payload['input'] == effective_prompt
+    parameters = payload['parameters']
+    assert request['effective_negative_prompt'] == parameters['negative_prompt'] == effective_negative
+    assert parameters['v4_prompt']['caption'] == {'base_caption': effective_prompt, 'char_captions': []}
+    assert parameters['v4_negative_prompt'] == {
+        'caption': {'base_caption': effective_negative, 'char_captions': []}, 'legacy_uc': False}
+    assert parameters['params_version'] == request['params_version'] == 4
+    assert parameters['scale'] == request['scale'] == 7
+    assert parameters['noise_schedule'] == request['noise_schedule'] == 'karras'
+    assert parameters['tag_hint_qt'] == 1 and parameters['tag_hint_uc_preset'] == 3
+    assert 'qualityToggle' not in parameters and 'ucPreset' not in parameters
+    assert parameters['straight_alpha'] is True
+    if mode == 'img2img':
+        assert parameters['extra_noise_seed'] == -1 and parameters['color_correct'] is False
+    replayed = normalize_request(replay_request(request, {'seed': 0}), settings)
+    assert generation_payload(replayed, base_image=b'owned image') == payload
+
+
+def test_v5_full_nsfw_and_none_presets_do_not_add_an_unwanted_nsfw_negative():
+    from backend.app.novelai_generation.config import NovelaiSettings
+    from backend.app.novelai_generation.parameters import normalize_request, generation_payload
+    model = 'nai-diffusion-5-full'
+    settings = NovelaiSettings(allowedModels=[model], defaultModel=model)
+    request = normalize_request({'prompt': 'NSFW, 1girl', 'mode': 'txt2img', 'ucPreset': 2}, settings)
+    assert not request['effective_negative_prompt'].startswith('nsfw,')
+    request = normalize_request({'prompt': '1girl', 'negative_prompt': 'text', 'mode': 'txt2img',
+        'ucPreset': 0, 'qualityToggle': False}, settings)
+    payload = generation_payload(request)
+    assert payload['input'] == '1girl'
+    assert payload['parameters']['negative_prompt'] == 'text'
+    assert payload['parameters']['tag_hint_qt'] == payload['parameters']['tag_hint_uc_preset'] == 0
+
+
+@pytest.mark.parametrize(('prompt', 'expected'), [
+    ('{portrait}, 1.2::blue sky::|rain', '{portrait}, 1.2::blue sky::, very aesthetic, masterpiece, no text|rain'),
+    ('portrait text:HELLO', 'portrait, very aesthetic, masterpiece, no text text:HELLO'),
+    ('text:HELLO', 'very aesthetic, masterpiece, no text text:HELLO'),
+    ('||sun|rain||, portrait|room', '||sun|rain||, portrait, very aesthetic, masterpiece, no text|room'),
+])
+def test_v5_quality_preserves_prompt_chunks_weights_and_rendered_text(prompt, expected):
+    from backend.app.novelai_generation.config import NovelaiSettings
+    from backend.app.novelai_generation.parameters import normalize_request
+    settings = NovelaiSettings(allowedModels=['nai-diffusion-5-curated'], defaultModel='nai-diffusion-5-curated',
+        addQualityTags=True, undesiredContentPreset=2)
+    request = normalize_request({'prompt': prompt, 'negative_prompt': '|rain', 'mode': 'txt2img'}, settings)
+    assert request['prompt'] == prompt
+    assert request['effective_prompt'] == expected
+    assert request['effective_negative_prompt'].endswith('blank page|rain')

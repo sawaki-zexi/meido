@@ -325,6 +325,7 @@ class NovelaiApplication:
                     # newer service configuration while committing its image.
                     'qualityToggle': settings.addQualityTags,
                     'ucPreset': settings.undesiredContentPreset,
+                    'model': settings.nsfwModel if settings.nsfwEnabled else settings.defaultModel,
                 } if scene_input is not None else normalize_request(chat_arguments, settings))
                 if regeneration is not None and delivery_mode == 'replacement' and parameters.get('samples', 1) != 1:
                     raise ValueError('replacement delivery supports exactly one generated image')

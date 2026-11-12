@@ -79,6 +79,10 @@ export function GenerationDrawer(props: GenerationDrawerProps) {
         {item.purpose === 'scene_cg' && <p>{item.auxiliaryConsumption === 'possible' ? '辅助请求已出网，可能计费；未出图仍计入 CG 与账户尝试。' : item.auxiliaryConsumption === 'not_dispatched' ? '辅助请求尚未出网。' : '辅助消费状态尚未确认。'}</p>}
         {item.parameters ? <p>{item.parameters.model} · Seed {item.parameters.seed} · {item.parameters.width}×{item.parameters.height} · {item.parameters.steps} 步</p> : <p>尚无生图参数，本次可能仅进行场景观察。</p>}
         {item.parameters && <p>质量标签：{item.parameters.qualityToggle === undefined ? '未记录' : item.parameters.qualityToggle ? '开启' : '关闭'} · 负向预设：{undesiredContentPresetLabel(item.parameters.ucPreset)}</p>}
+        {item.parameters?.effective_prompt !== undefined && <details><summary>实际发送的提示词</summary>
+          <p>正向 tags {item.parameters.effective_prompt}</p><p>负向 tags {item.parameters.effective_negative_prompt || '（空）'}</p>
+          <p>Prompt Guidance {item.parameters.scale} · {item.parameters.noise_schedule}</p>
+        </details>}
         {item.writebackStatus && (item.purpose === 'scene_cg' ? writebackLabels : libraryWritebackLabels)[item.writebackStatus] && <p>{(item.purpose === 'scene_cg' ? writebackLabels : libraryWritebackLabels)[item.writebackStatus]}</p>}
         <p>投递：{generationDeliveryMessage(item)}</p>
         {item.errorCode && <p><span>{generationErrorMessage(item)}</span>（<code>{item.errorCode}</code>）</p>}

@@ -29,11 +29,19 @@ class Director:
             current_scene=StoryScene('room', '客厅', (context.role_snapshot['id'], 'player')))
 
 
-@pytest.mark.parametrize('allow_full', [False, True])
-def test_story_create_play_save_gallery_retry_and_reopen(novelai_service, tmp_path, allow_full):
+@pytest.mark.parametrize(('allow_full', 'v5_model', 'nsfw'), [
+    (False, None, False), (True, None, False),
+    (True, 'nai-diffusion-5-curated', False), (True, 'nai-diffusion-5-full', True),
+])
+def test_story_create_play_save_gallery_retry_and_reopen(novelai_service, tmp_path, allow_full, v5_model, nsfw):
     service = novelai_service
     if allow_full:
         service.application.settings.save({'allowedModels': ['nai-diffusion-4-5-curated', 'nai-diffusion-4-5-full']},
+            expected_revision=service.application.settings.public()['revision'])
+    if v5_model:
+        service.application.settings.save({'allowedModels': ['nai-diffusion-4-5-curated', 'nai-diffusion-4-5-full', v5_model],
+            'nsfwEnabled': nsfw, 'nsfwModel': v5_model,
+            'defaultModel': 'nai-diffusion-4-5-curated' if nsfw else v5_model},
             expected_revision=service.application.settings.public()['revision'])
     director = Director()
     # Integrate the real shared role library: mood-bound portrait must beat the
@@ -86,7 +94,8 @@ def test_story_create_play_save_gallery_retry_and_reopen(novelai_service, tmp_pa
             assert story['backgroundResource']['status'] == 'ready'
             assert (await client.get(story['backgroundResource']['path'])).headers['content-type'] == 'image/png'
             assert len(service.peer.requests) == 1
-            assert service.peer.requests[0]['body']['model'] == ('nai-diffusion-4-5-full' if allow_full else 'nai-diffusion-4-5-curated')
+            expected_model = v5_model or ('nai-diffusion-4-5-full' if allow_full else 'nai-diffusion-4-5-curated')
+            assert service.peer.requests[0]['body']['model'] == expected_model
             await command('stories.create', payload)  # Exact replay is read-only after commit.
             await story_app.drain()
             assert len(service.peer.requests) == 1
@@ -103,6 +112,7 @@ def test_story_create_play_save_gallery_retry_and_reopen(novelai_service, tmp_pa
             await command('stories.cg.regenerate', retry, request_id)
             await story_app.drain()
             assert len(service.peer.requests) == 3
+            assert all(request['body']['model'] == expected_model for request in service.peer.requests)
             assert len((await command('stories.get', {'story_id': story_id}))['story']['beats']) == 4
             await command('stories.archive', {'story_id': story_id, 'archived': True})
             assert not (await command('stories.list', {}))['stories']

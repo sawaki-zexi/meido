@@ -8,12 +8,15 @@ from novelai_fixtures import novelai_environment, novelai_main, novelai_service 
 
 
 @pytest.mark.parametrize('fault', ['foreign', 'path', 'changed', 'hardlink', 'two_inputs'])
-def test_role_image_generation_rejects_unowned_or_changed_references(novelai_service, fault):
+@pytest.mark.parametrize('model', ['nai-diffusion-4-5-curated', 'nai-diffusion-5-full'])
+def test_role_image_generation_rejects_unowned_or_changed_references(novelai_service, fault, model):
     from PIL import Image
     from backend.app.agent_runtime.provider import CancellationToken
     from backend.app.agent_runtime.tools import ToolContext
     from backend.app.models import AgentRun, RoleInput
     service = novelai_service
+    service.application.settings.save({'allowedModels': [model], 'defaultModel': model},
+        expected_revision=service.application.settings.public()['revision'])
     def picture(color):
         output = io.BytesIO()
         Image.new('RGB', (32, 32), color).save(output, format='PNG')

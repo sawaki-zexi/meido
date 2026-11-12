@@ -8,11 +8,21 @@
 
 对照 Shiori `d3acaed186b172a78a5892e0307e9affd89759f0` 的 `plugins/novelai/backend/service.py::regenerate` 与 `ui/useImageStudio.ts`：工作台和聊天抽屉恢复原图所有可变图像参数，包括 `qualityToggle` / `ucPreset`。公共偏好刷新不再静默改写已载入历史的模型、步数或其他参数；本次偏好可显式编辑或复制当前公共值。复用保留 seed；重新生成默认换 seed。
 
-服务端重生成先从角色归属的原 attempt 读取规范化图像快照，再应用本次明确编辑；`parameters: {}` 可重放原图而无需客户端重建参数。未编辑时出网内容仅 seed 改变，包括图生图底图、强度、噪声、采样、尺寸、模型、张数及质量/负向预设。当前模式、模型白名单、尺寸/步数、来源、底图归属、有限次数和新请求身份仍重新校验，旧记录不会授予新权限。图像参数不继承旧 scene 身份、投递或后台许可；替换单图仍只支持一张。
+服务端重生成先从角色归属的原 attempt 读取规范化图像快照，再应用本次明确编辑；`parameters: {}` 可重放原图而无需客户端重建参数。未编辑时出网内容仅 seed 及其派生的图生图噪声种子改变，包括图生图底图、强度、噪声、采样、尺寸、模型、张数及质量/负向预设。当前模式、模型白名单、尺寸/步数、来源、底图归属、有限次数和新请求身份仍重新校验，旧记录不会授予新权限。图像参数不继承旧 scene 身份、投递或后台许可；替换单图仍只支持一张。
 
 本次 `qualityToggle` / `ucPreset` 覆盖只允许明确的本地主人 API 操作，不提供给聊天模型工具。旧记录未存偏好时使用当时协议的 `false` / `0`，不伪称未知历史包含新设置。
 
 ## 配置与权限
+
+### V5 基础生图（2026-11-12，#356）
+
+服务支持 V4.5 Curated、V4.5 Full、V5 Curated 和 V5 Full。公开配置的 `modelCatalog` 返回当前支持的 `id` 与 `label`，设置页据此列出可允许模型。初始允许列表和默认仍为 V4.5 Curated，既有配置通过显式选择添加 V5。保存 `allowedModels` 时，新界面同时发送写入专用的 `managedModelIds`，服务保留旧允许列表中该界面未管理的模型。旧客户端省略该字段时管理范围为两个 V4.5 模型，完整提交旧列表也会保留已允许的 V5。读取后原样带回的 `modelCatalog` 作为只读字段忽略，修订冲突校验继续执行。
+
+V5 文生图和图生图经过同一准入、任务、账本、附件和原来源出口。请求冻结 `params_version=4`、`scale=7`、`noise_schedule=karras`，图生图额外噪声种子为主 seed 减一。原始 `prompt` / `negative_prompt` 保留供编辑和重用，`effective_prompt` / `effective_negative_prompt` 保存真正发送的质量及负向预设扩写结果。界面预设 0/1/2 分别为不使用/轻度/重度，V5 的供应商提示元数据为 0/3/2。新模型继续执行当前英文 ASCII 输入约束，后续多语言阶段单独交付。
+
+当前有效默认为 V5 时，故事插画使用该 V5。V4.5 设置沿用故事原有的 Full 优先规则。场景候选在辅助模型开始前保存实际生图模型，辅助提示词使用对应版本，并按冻结的质量、负向预设和模型归一化。V5 指定 WebP 与普通透明通道，受支持的 PNG/WebP 响应在保存和下载时保留原始字节。
+
+协议证据与真实账号验收边界见 [V5 规格](../specs/novelai-v5-integration-spec.md#11-基础阶段协议核验)。事实来源为[模型目录](../../backend/app/novelai_generation/model_catalog.py)、[请求构造](../../backend/app/novelai_generation/parameters.py)、[完整生成测试](../../tests/python/test_novelai_v5.py)、[历史重放测试](../../tests/python/test_novelai_regeneration.py)。
 
 应用服务固定 `https://image.novelai.net`；生产配置和工具不接受自定义 endpoint。独立系统 vault service 为 `meido.novelai`，键为 `token`。普通设置读取/保存、目录健康信息不读取旧 token，不访问账号诊断或试生成；只有明确设置、清空和实际单次 dispatch 使用凭据。设置/清空失败保留 cleanup pending 和不可用状态，不显示为已成功保存。
 
@@ -22,7 +32,7 @@
 
 角色 `agentConfig.novelai` 默认保留 `manualEnabled=false`、`manualDailyAttempts=10` 以兼容旧角色文件；当前运行时的聊天表情和主人手动工作台由插件公共设置 `enabled` 与 `manualDailyAttempts` 统一控制。角色侧实际生图配置为 `sceneCgEnabled=false`、`sceneCgDailyAttempts=3`、`scenePromptModelConfigurationId=null`、`sceneCgPromptInstructions=""`（最多2000字符）、`autoWritebackRoleAssets=false`、`promptTagsEnabled=false`、`allowedPromptTagRatings=[general]`、`consentRevision=0`。角色 `consentRevision` 保留兼容但不再影响新请求。CG 须开启角色开关、服务就绪、允许文生图，并明确选中存在的模型配置 ID，null/已删除 ID 不回退全局模型；补充要求只作为该角色的主人绘图偏好加入 CG 辅助模型 system prompt，不进入场景事实消息，也不影响聊天表情或手动工作台。宿主会在 CG 提交前追加并大小写去重第三人称、电影构图、角色入镜 tags 及第一人称/POV/自拍负向 tags。写回须同时启用 CG。降低额度不清除计数。旧客户端省略整个字段或只提交部分字段时保留既有许可；新增标签默认值不改变旧 #172 请求的权限指纹。实际许可变化在角色文件写入前推进私有持久 epoch，关闭再开启也不能复活旧冻结工具。手工写 enabledTools 不能绕过许可。
 
-工具 `generate_image` 为 direct / risk external / source builtin:novelai / external_allowed=false，外层330秒、输出4000字符。普通聊天只需要必填英文 `prompt` 和可选 `negative_prompt`：角色自己判断这一回合是否值得展示表情，决定调用时须把已知主体外貌、服饰与当前情绪、动作、场景、构图一并转成完整英文 tags；宿主不自动补入角色外观，不要求主人填写参数，也不应每回合调用。工具 schema 仍保留 mode、尺寸、模型等可选字段，以兼容主人明确要求的历史参数复用；普通聊天省略这些字段时，宿主固定 `txt2img`、一张图默认、默认模型/采样器/尺寸/步数/seed、`intent=chat_expression` 和原回复投递，显式高级字段仍受同一 allowlist 和来源校验。完整参数仍由主人手动工作台/API 使用。只接受宿主真实主人当前输入：桌面 SQLite run 必须由真实 `/messages` 写入 humanInputSource=desktop_owner；渠道须真实当前主人 owner context、账号/配对/目录代际及原线程。访客、定时、内部完成、主动或伪造 source 不能获得消费权。执行前、外部投递前和本地发布前均重新检查；冻结版本只能收权。
+工具 `generate_image` 为 direct / risk external / source builtin:novelai / external_allowed=true，外层330秒、输出4000字符。普通聊天只需要必填英文 `prompt` 和可选 `negative_prompt`：角色自己判断这一回合是否值得展示表情，决定调用时须把已知主体外貌、服饰与当前情绪、动作、场景、构图一并转成完整英文 tags；宿主不自动补入角色外观，不要求主人填写参数，也不应每回合调用。工具 schema 仍保留 mode、尺寸、模型等可选字段，以兼容主人明确要求的历史参数复用；普通聊天省略这些字段时，宿主固定 `txt2img`、一张图默认、默认模型/采样器/尺寸/步数/seed、`intent=chat_expression` 和原回复投递，显式高级字段仍受同一 allowlist 和来源校验。完整参数仍由主人手动工作台/API 使用。来源由宿主核验。桌面 SQLite run 须来自真实 `/messages` 主人输入，渠道执行使用当前真实输入的账号、身份、目录代际与原线程授权。符合现有渠道许可的群友可生图，自然回合沿用当前来源并采用受管后台交付。CG 仍限真实主人回合，`manage_image` 仍限主人。执行、外部投递和本地发布分别重查冻结授权。定时、内部完成、主动及伪造输入无法借用当前人类输入资格。[来源实现](../../backend/app/novelai_generation/context.py) · [自然来源回归](../../tests/python/channels/test_natural_tools_background.py)
 
 公开配置新增 `availability={available,code,message}`，仅判断本地配置，不读取凭据、不请求供应商。code 为 `ready`、`service_disabled`、`credential_missing`、`credential_cleanup_pending` 或 `generation_modes_disabled`。启用插件即注册 direct 工具；工具描述再结合角色和日额度解释暂不可用原因，缺凭据或额度不足不隐藏能力。执行时仍重查来源、修订、模式和额度，不能由描述授予权限。设置、插件列表与工作台显示对应状态；工作台还检查历史中的今日用量。参数/凭据变更允许未来的新请求，旧冻结任务仍被撤销。
 
