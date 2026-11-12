@@ -12,6 +12,7 @@ import { StudioProgress } from './StudioProgress';
 import { StudioBaseImage } from './StudioBaseImage';
 import { StudioPromptPreferences } from './StudioPromptPreferences';
 import { undesiredContentPresetLabel } from './promptPreferences';
+import { promptInputError, supportsUnicodePrompts } from './generationValidation';
 import { useGenerationDrawer } from './useGenerationDrawer';
 import { statusLabels, generationDeliveryMessage, generationErrorMessage, writebackLabels, libraryWritebackLabels } from './generationLabels';
 import './novelaiStudio.css';
@@ -55,6 +56,9 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
     watched, deliveryMode, setDeliveryMode, refresh, scope, isCurrent, clearSource, setAccepted, refreshConfiguration, configurationRefreshing, unavailableMessage } = studio;
   const txt2imgAllowed = configuration?.allowTxt2Img !== false;
   const img2imgAllowed = configuration?.allowImg2Img !== false;
+  const unicode = supportsUnicodePrompts(configuration, parameters.model);
+  const promptError = promptInputError(parameters.prompt, '正向提示词', unicode)
+    || promptInputError(parameters.negative_prompt ?? '', '负向提示词', unicode);
   const modeAllowed = studio.modeAllowed;
   const channelRegeneration = source?.generation.deliveryMessageId?.startsWith('thread:');
   const replacementLabel = source ? channelRegeneration ? '向原渠道再次发送媒体' : '替换原会话选中图片' : '交付到当前角色会话';
@@ -139,8 +143,10 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
             </div>
             <div id="studio-prompt-editor" className="studio-prompt-editor" role="tabpanel" aria-labelledby={promptTab === 'positive' ? 'positive-prompt-tab' : 'negative-prompt-tab'}>
               {promptTab === 'positive'
-                ? <textarea aria-label="工作台英文正向 tags" required maxLength={4000} placeholder="1girl, library, sunset light" value={parameters.prompt} onChange={(event) => patch({ prompt: event.target.value })} />
-                : <textarea aria-label="工作台英文负向 tags" maxLength={4000} placeholder="lowres, bad hands, blurry" value={parameters.negative_prompt ?? ''} onChange={(event) => patch({ negative_prompt: event.target.value })} />}
+                ? <textarea aria-label={unicode ? '工作台正向提示词' : '工作台英文正向 tags'} required placeholder={unicode ? '少女，図書館，sunset light' : '1girl, library, sunset light'} value={parameters.prompt} onChange={(event) => patch({ prompt: event.target.value })} />
+                : <textarea aria-label={unicode ? '工作台负向提示词' : '工作台英文负向 tags'} placeholder={unicode ? '模糊，文字，lowres' : 'lowres, bad hands, blurry'} value={parameters.negative_prompt ?? ''} onChange={(event) => patch({ negative_prompt: event.target.value })} />}
+              <p className="field-hint">{unicode ? '支持中文、日文、英文及混合提示词。' : '当前模型使用英文 ASCII tags。'}正负提示词各最多 4000 字符，组合字符分开计数，不能包含换行或控制字符。</p>
+              {promptError && error !== promptError && <p role="status">{promptError}</p>}
             </div>
             {!modeAllowed && <p role="status" className="field-hint">当前选择的生图模式已被服务设置关闭，请切换到已启用的模式。</p>}
             {!txt2imgAllowed && !img2imgAllowed && <p role="status" className="field-hint">文生图和图生图都已关闭，当前不能提交新的生图请求。</p>}
@@ -254,7 +260,7 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
     </div>
     {watched.length > 0 && <p className="studio-background-status" role="status">有 {watched.length} 条生成或交付仍在处理中，历史会自动更新。</p>}
     {promptTagsVisited && <div className="studio-tag-page" hidden={!promptTagsOpen} aria-label={`${role.name}的提示标签库`}>
-      <PromptTagManager key={role.id} roleId={role.id} expanded />
+      <PromptTagManager key={role.id} roleId={role.id} expanded configuration={configuration} model={parameters.model} />
     </div>}
   </section>;
 }

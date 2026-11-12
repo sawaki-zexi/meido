@@ -87,7 +87,7 @@ def test_tag_library_is_role_local_paginated_and_rejects_unbounded_or_executable
     assert client.get(other_path).json()['tags'] == []
     assert client.put(other_path + '/' + first, json=tag).status_code == 404
     assert client.delete(other_path + '/' + first).status_code == 404
-    for invalid in ({'name': '  '}, {'keywords': []}, {'keywords': ['x' * 81]}, {'prompt': '花'},
+    for invalid in ({'name': '  '}, {'keywords': []}, {'keywords': ['x' * 81]}, {'prompt': '花\n'},
                     {'prompt': 'x' * 4001}, {'rating': 'unrated'}, {'enabled': 1}, {'expression': '.*'}):
         assert client.post(path, json={**tag, **invalid}).status_code == 422
     assert client.get(path, params={'limit': 51}).status_code == 422
