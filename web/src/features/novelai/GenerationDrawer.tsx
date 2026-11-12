@@ -7,6 +7,7 @@ import { Notice, Placeholder } from '../../ui/Status';
 import { useGenerationDrawer, activeGenerationStatuses as activeStatuses, type GenerationDrawerProps } from './useGenerationDrawer';
 import { PromptTagManager } from './PromptTagManager';
 import { undesiredContentPresetLabel } from './promptPreferences';
+import { promptInputError, supportsUnicodePrompts } from './generationValidation';
 import { statusLabels as labels, generationDeliveryMessage, generationErrorMessage, writebackLabels, libraryWritebackLabels } from './generationLabels';
 export function GenerationDrawer(props: GenerationDrawerProps) {
   const { role, onClose } = props;
@@ -15,6 +16,9 @@ export function GenerationDrawer(props: GenerationDrawerProps) {
     isCurrent, watched, submit, upload, policy, allowed, modeAllowed, candidates, patch, manage, selectImage, refresh, unavailableMessage } = useGenerationDrawer(props);
   const txt2imgAllowed = configuration?.allowTxt2Img !== false;
   const img2imgAllowed = configuration?.allowImg2Img !== false;
+  const unicode = supportsUnicodePrompts(configuration, parameters.model);
+  const promptError = promptInputError(parameters.prompt, '正向提示词', unicode)
+    || promptInputError(parameters.negative_prompt ?? '', '负向提示词', unicode);
   return <Dialog title={`${role.name}的生图与历史`} variant="drawer" onClose={onClose}>
     {error && <Notice onDismiss={() => setError('')}>{error}</Notice>}
     {accepted && watched.length > 0 && <p role="status">后台生成已受理。关闭此面板后仍会继续，可在历史查询或停止。</p>}
@@ -35,8 +39,10 @@ export function GenerationDrawer(props: GenerationDrawerProps) {
           <label className="field"><span>交付方式</span><select aria-label={source ? '重生成交付方式' : '生成交付方式'} value={deliveryMode} onChange={(event) => setDeliveryMode(event.target.value as typeof deliveryMode)}>
             <option value="replacement">{source ? '替换选中图片' : '交付原会话'}</option><option value="history_only">仅保存历史</option>
           </select></label>
-          <label className="field"><span>英文正向 tags</span><textarea aria-label="英文正向 tags" required maxLength={4000} value={parameters.prompt} onChange={(event) => patch({ prompt: event.target.value })} /></label>
-          <label className="field"><span>英文负向 tags</span><textarea aria-label="英文负向 tags" maxLength={4000} value={parameters.negative_prompt ?? ''} onChange={(event) => patch({ negative_prompt: event.target.value })} /></label>
+          <label className="field"><span>{unicode ? '正向提示词' : '英文正向 tags'}</span><textarea aria-label={unicode ? '正向提示词' : '英文正向 tags'} required value={parameters.prompt} onChange={(event) => patch({ prompt: event.target.value })} /></label>
+          <label className="field"><span>{unicode ? '负向提示词' : '英文负向 tags'}</span><textarea aria-label={unicode ? '负向提示词' : '英文负向 tags'} value={parameters.negative_prompt ?? ''} onChange={(event) => patch({ negative_prompt: event.target.value })} /></label>
+          <p className="field-hint">{unicode ? '支持中文、日文、英文及混合提示词。' : '当前模型使用英文 ASCII tags。'}正负提示词各最多 4000 字符，组合字符分开计数，不能包含换行或控制字符。</p>
+          {promptError && error !== promptError && <p role="status">{promptError}</p>}
           <label className="field"><span>生成模式</span><select aria-label="生成模式" value={parameters.mode} onChange={(event) => {
             const { base_attachment_id: _base, strength: _strength, noise: _noise, ...rest } = parameters;
             setParameters(event.target.value === 'img2img' ? { ...rest, mode: 'img2img', strength: .7, noise: .2 } : { ...rest, mode: 'txt2img' });
@@ -68,7 +74,7 @@ export function GenerationDrawer(props: GenerationDrawerProps) {
         {attempt.current && !busy && <button type="button" onClick={() => { attempt.current = null; setConsent(false); setAccepted(false); setError(''); setSeed(''); setParameters({ ...parameters }); }}>另开一次生成</button>}
       </form>
     </>}
-    <PromptTagManager key={role.id} roleId={role.id} />
+    <PromptTagManager key={role.id} roleId={role.id} configuration={configuration} model={parameters.model} />
     <section aria-label="生图历史"><h3>历史</h3>
       {page?.generations.length === 0 && <p>暂无生图历史。</p>}
       {page?.generations.filter((item) => item.roleId === role.id).map((item) => <article key={item.attemptId} aria-label={`生成记录 ${item.attemptId}`}>

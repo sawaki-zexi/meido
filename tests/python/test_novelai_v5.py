@@ -65,7 +65,7 @@ def test_v5_generation_preserves_actual_parameters_and_transparency_through_down
 
 @pytest.mark.parametrize('changes', [
     {'model': 'unknown'}, {'model': 'nai-diffusion-5-full-medium'}, {'model': 'nai-diffusion-4-5-full'},
-    {'prompt': '中文'}, {'negative_prompt': 'line\nbreak'}, {'steps': 29},
+    {'prompt': '中文\n换行'}, {'negative_prompt': 'line\nbreak'}, {'steps': 29},
     {'mode': 'img2img', 'base_attachment_id': 'a' * 32},
     {'effective_prompt': 'injected'},
 ])

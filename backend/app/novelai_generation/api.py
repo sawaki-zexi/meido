@@ -15,6 +15,7 @@ from ..session_store import AttachmentConflict
 from .context import GenerationContext
 from .availability import GenerationUnavailable
 from .failures import GenerationBudgetExceeded
+from .prompts import PromptValidationError
 
 
 async def _body(request: Request, *, allow_empty=False):
@@ -89,6 +90,8 @@ async def _run_owner_action(request, application, source, action):
         raise HTTPException(403, '生图设置、来源或所选图片已改变，请刷新设置并检查归属历史') from None
     except AttachmentConflict:
         raise HTTPException(409, '原消息中的图片已改变；尚未新生成。请重新选图或明确选择仅保存历史') from None
+    except PromptValidationError as error:
+        raise HTTPException(422, str(error)) from None
     except ValueError:
         raise HTTPException(422, '生图参数、请求或版本冲突；同一输入不会自动再次消费') from None
     except (sqlite3.Error, OSError):
@@ -123,12 +126,15 @@ def novelai_router(application):
     @router.post('/api/roles/{role_id}/novelai/prompt-tags/preview')
     async def preview_tags(role_id: str, request: Request, application=Depends(current)):
         body = await _body(request)
-        if set(body) - {'text', 'prompt', 'negative_prompt'} or 'text' not in body:
+        if set(body) - {'text', 'prompt', 'negative_prompt', 'model'} or 'text' not in body:
             raise HTTPException(422, '请提供当前消息及有限提示词')
         try:
-            return application.tags.expand(role_id, body['text'], body.get('prompt', ''), body.get('negative_prompt', ''))
+            return application.tags.expand(role_id, body['text'], body.get('prompt', ''), body.get('negative_prompt', ''),
+                                           model=body.get('model'))
         except KeyError:
             raise HTTPException(404, '角色不存在') from None
+        except PromptValidationError as error:
+            raise HTTPException(422, str(error)) from None
         except ValueError:
             raise HTTPException(422, '标签匹配输入或扩写超出限制') from None
 

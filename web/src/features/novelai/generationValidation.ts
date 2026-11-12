@@ -1,11 +1,28 @@
 import type { GenerationParameters, NovelaiConfiguration } from '../../api/novelai';
 
+export function supportsUnicodePrompts(configuration: NovelaiConfiguration | null | undefined, model?: string): boolean {
+  const selected = model ?? (configuration?.nsfwEnabled ? configuration.nsfwModel : configuration?.defaultModel);
+  return configuration?.modelCatalog?.find((item) => item.id === selected)?.supportsUnicode === true;
+}
+
+export function promptInputError(value: string, label: string, unicode = true, required = false): string {
+  // JS string iteration counts codepoints, including supplementary characters.
+  // The u flag makes the surrogate range match only unpaired surrogate halves.
+  if (Array.from(value).length > 4000) return `${label}最多 4000 字符，组合字符分开计数。`;
+  if (/[\x00-\x1f\x7f-\x9f\ud800-\udfff\u2028\u2029]/u.test(value))
+    return `${label}不能包含换行、控制字符或无效 Unicode。`;
+  if (required && /^\p{White_Space}*$/u.test(value)) return '请填写正向提示词。';
+  if (!unicode && /[^\x00-\x7f]/.test(value)) return `${label}只能使用英文 ASCII，请选择支持多语言的 V5 或调整输入。`;
+  return '';
+}
+
 /** Validate editable input before reserving an attempt; the service remains authoritative. */
 export function generationInputError(parameters: GenerationParameters, seed: string, configuration: NovelaiConfiguration): string {
+  const unicode = supportsUnicodePrompts(configuration, parameters.model);
   for (const [label, value] of [['正向提示词', parameters.prompt], ['负向提示词', parameters.negative_prompt ?? '']]) {
-    if (value.length > 4000 || /[^\x20-\x7e]/.test(value)) return `${label}最多 4000 字符，只能使用英文 ASCII，不能包含换行或控制符。`;
+    const error = promptInputError(value, label, unicode, label === '正向提示词');
+    if (error) return error;
   }
-  if (!parameters.prompt.trim()) return '请填写正向提示词。';
   const preset = parameters.size_preset ?? 'square';
   const [width, height] = preset === 'custom' ? [parameters.custom_width ?? 0, parameters.custom_height ?? 0]
     : preset === 'portrait' ? [832, 1216] : preset === 'landscape' ? [1216, 832] : [1024, 1024];

@@ -92,7 +92,8 @@ class NovelaiSettingsStore:
         public = {**settings.model_dump(), 'manualEnabled': settings.enabled, 'revision': row[1],
                 'tokenConfigured': bool(row[2]), 'credentialCleanupPending': bool(row[3]), 'manualConsentRevision': row[4]}
         return {**public, 'availability': configuration_availability(public),
-                'modelCatalog': [{'id': identifier, 'label': model.label} for identifier, model in MODEL_CATALOG.items()]}
+                'modelCatalog': [{'id': identifier, 'label': model.label, 'supportsUnicode': model.supports_unicode}
+                                 for identifier, model in MODEL_CATALOG.items()]}
 
     def save(self, changes: dict[str, object], *, expected_revision: int) -> dict[str, object]:
         with self.lock, sqlite3.connect(self.database_path) as connection:

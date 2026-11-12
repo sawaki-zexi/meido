@@ -221,7 +221,10 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   const historicalInput = parameters.mode === 'img2img' && parameters.base_attachment_id
     ? [{ id: parameters.base_attachment_id, name: '历史底图（需仍可访问）', kind: 'image' as const, mediaType: 'image/*', size: 0 }] : [];
   const candidates = [...attachments, ...inputs, ...historicalInput].filter((item, index, all) => item.kind === 'image' && all.findIndex((other) => other.id === item.id) === index);
-  const patch = (changes: Partial<GenerationParameters>) => setParameters({ ...parameters, ...changes });
+  const patch = (changes: Partial<GenerationParameters>) => {
+    if (configuration && error === generationInputError(parameters, seed, configuration)) setError('');
+    setParameters({ ...parameters, ...changes });
+  };
   const manage = async (item: GenerationView, cancel = false) => {
     if (recordQueries.current.get(item.attemptId)?.stopping) return;
     const token = { stopping: cancel };

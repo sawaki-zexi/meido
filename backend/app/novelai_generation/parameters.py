@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, Stri
 
 from .config import NovelaiSettings
 from .model_catalog import MODEL_CATALOG
+from .prompts import validate_prompt
 
 
 V5_QUALITY_SUFFIX = 'very aesthetic, masterpiece, no text'
@@ -66,10 +67,15 @@ class GenerationRequest(BaseModel):
 
     @field_validator('prompt', 'negative_prompt')
     @classmethod
-    def ascii_prompt(cls, value: str):
-        if not value.isascii() or any(ord(character) < 32 for character in value):
-            raise ValueError('English ASCII tags required')
-        return value.strip()
+    def bounded_prompt(cls, value: str):
+        return validate_prompt(value)
+
+
+def resolve_model(settings: NovelaiSettings, model: str | None = None) -> str:
+    selected = model if model is not None else (settings.nsfwModel if settings.nsfwEnabled else settings.defaultModel)
+    if not isinstance(selected, str) or selected not in MODEL_CATALOG or selected not in settings.allowedModels:
+        raise ValueError('model not currently allowed')
+    return selected
 
 
 def normalize_request(arguments: dict[str, object], settings: NovelaiSettings) -> dict[str, object]:
@@ -79,7 +85,11 @@ def normalize_request(arguments: dict[str, object], settings: NovelaiSettings) -
         **arguments,
         'samples': settings.defaultSamples if 'samples' not in arguments else arguments['samples'],
     })
-    if not request.prompt or request.intent not in {'user_requested', 'chat_expression'} or request.scene_key is not None:
+    model = resolve_model(settings, request.model or None)
+    capabilities = MODEL_CATALOG[model]
+    validate_prompt(request.prompt, ascii_only=not capabilities.supports_unicode, required=True)
+    validate_prompt(request.negative_prompt, ascii_only=not capabilities.supports_unicode)
+    if request.intent not in {'user_requested', 'chat_expression'} or request.scene_key is not None:
         raise ValueError('scene generation requires a host-committed observation')
     if request.mode == 'txt2img' and not settings.allowTxt2Img:
         raise ValueError('txt2img mode is disabled')
@@ -101,7 +111,6 @@ def normalize_request(arguments: dict[str, object], settings: NovelaiSettings) -
     if width * height > settings.maxPixels:
         raise ValueError('pixel budget exceeded')
     steps = request.steps if request.steps is not None else settings.maxSteps
-    model = request.model or (settings.nsfwModel if settings.nsfwEnabled else settings.defaultModel)
     sampler = request.sampler or settings.defaultSampler
     if model not in settings.allowedModels or sampler not in settings.allowedSamplers or steps > settings.maxSteps:
         raise ValueError('model, sampler or steps not currently allowed')
@@ -113,7 +122,6 @@ def normalize_request(arguments: dict[str, object], settings: NovelaiSettings) -
     if request.mode == 'img2img':
         value.update(strength=request.strength if request.strength is not None else .7,
                      noise=request.noise if request.noise is not None else .2)
-    capabilities = MODEL_CATALOG[model]
     if capabilities.version == 'V5':
         prompt = request.prompt
         if value['qualityToggle']:
