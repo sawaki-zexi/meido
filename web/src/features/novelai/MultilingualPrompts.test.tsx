@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { NovelaiConfiguration, PromptTag, PromptTagInput } from '../../api/novelai';
@@ -17,7 +17,7 @@ const configuration: NovelaiConfiguration = {
   allowTxt2Img: true, allowImg2Img: true, allowedModels: [v45, v5], defaultModel: v5,
   nsfwEnabled: false, nsfwModel: v5, allowedSamplers: ['k_euler_ancestral'], defaultSampler: 'k_euler_ancestral',
   maxPixels: 1048576, maxSteps: 28, dailyAttemptLimit: 20, defaultSamples: 1, addQualityTags: false, undesiredContentPreset: 0,
-  modelCatalog: [{ id: v45, label: 'V4.5 Curated', supportsUnicode: false }, { id: v5, label: 'V5 Full', supportsUnicode: true }],
+  modelCatalog: [{ id: v45, label: 'V4.5 Curated', supportsUnicode: false }, { id: v5, label: 'V5 Full', supportsUnicode: true, intensities: ['high', 'medium'] }],
 };
 const generation = {
   generationId: 'generation', attemptId: 'attempt', roleId: 'r1', status: 'succeeded',
@@ -42,11 +42,13 @@ it('keeps multilingual studio drafts on V4.5 and restores V5 history prompts for
   fireEvent.change(screen.getByLabelText('工作台负向提示词'), { target: { value: negative } });
   await user.click(screen.getByText('高级参数'));
   await user.selectOptions(screen.getByLabelText('工作台生图模型'), v45);
+  expect(screen.queryByLabelText('工作台 V5 Full 强度')).not.toBeInTheDocument();
   expect(screen.getByLabelText('工作台英文负向 tags')).toHaveValue(negative);
   expect(screen.getByText(/正向提示词只能使用英文 ASCII/)).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: '生成一张图片' }));
   expect(calls.filter(call => call.method === 'POST')).toHaveLength(0);
   await user.selectOptions(screen.getByLabelText('工作台生图模型'), v5);
+  expect(screen.getByLabelText('工作台 V5 Full 强度')).toHaveValue('high');
   expect(screen.queryByText(/正向提示词只能使用英文 ASCII/)).not.toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: '生成一张图片' }));
   await screen.findByAltText('unicode.png');
@@ -140,4 +142,43 @@ it.each([false, true])('ignores a stale preview after model V5–V4.5–V5 switc
   expect(screen.queryByLabelText('标签扩写结果')).not.toBeInTheDocument();
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   expect(screen.getByLabelText('预览当前主人输入')).toHaveValue('garden');
+});
+
+it('keeps incompatible drafts visible while switching V5 Full intensity', async () => {
+  fakeBackend({
+    'GET /api/services/novelai': () => ({ body: configuration }),
+    'GET /api/roles/r1/generations': () => ({ body: page }),
+  });
+  const user = userEvent.setup();
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '角色' })]} initialRoleId="r1" />);
+  await screen.findByText('暂无生图历史。');
+  await user.click(screen.getByText('高级参数'));
+  const steps = screen.getByLabelText('工作台采样步数');
+  fireEvent.change(steps, { target: { value: '20' } });
+  await user.click(screen.getByRole('tab', { name: '负向提示词' }));
+  fireEvent.change(screen.getByLabelText('工作台负向提示词'), { target: { value: 'rain' } });
+  await user.selectOptions(screen.getByLabelText('工作台 V5 Full 强度'), 'medium');
+  expect(screen.getByLabelText('工作台负向提示词')).toHaveValue('rain');
+  expect(steps).toHaveValue(20);
+  expect(screen.getByText(/Medium 固定 14 步/)).toBeInTheDocument();
+  await user.selectOptions(screen.getByLabelText('工作台 V5 Full 强度'), 'high');
+  expect(screen.getByLabelText('工作台负向提示词')).toHaveValue('rain');
+  expect(steps).toHaveValue(20);
+});
+
+it('shows the saved V5 Full intensity and restores it when reusing history', async () => {
+  const mediumGeneration = { ...generation, parameters: { ...generation.parameters, negative_prompt: '', intensity: 'medium' as const, steps: 14, ucPreset: 0 } };
+  fakeBackend({
+    'GET /api/services/novelai': () => ({ body: configuration }),
+    'GET /api/roles/r1/generations': () => ({ body: { ...page, generations: [mediumGeneration] } }),
+  });
+  const user = userEvent.setup();
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '角色' })]} initialRoleId="r1" />);
+  await screen.findByAltText('unicode.png');
+  expect(screen.getByText('强度 medium')).toBeInTheDocument();
+  await user.click(screen.getByText('图片信息'));
+  expect(within(screen.getByRole('region', { name: '当前作品参数' })).getByText('medium')).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '复用参数' }));
+  expect(screen.getByLabelText('工作台 V5 Full 强度')).toHaveValue('medium');
+  expect(screen.getByLabelText('工作台采样步数')).toHaveValue(14);
 });

@@ -12,7 +12,7 @@ import { StudioProgress } from './StudioProgress';
 import { StudioBaseImage } from './StudioBaseImage';
 import { StudioPromptPreferences } from './StudioPromptPreferences';
 import { undesiredContentPresetLabel } from './promptPreferences';
-import { promptInputError, supportsUnicodePrompts } from './generationValidation';
+import { modelIntensities, promptInputError, supportsUnicodePrompts, V5_FULL_MEDIUM_SAMPLER, V5_FULL_MEDIUM_STEPS, V5_FULL_MODEL } from './generationValidation';
 import { useGenerationDrawer } from './useGenerationDrawer';
 import { statusLabels, generationDeliveryMessage, generationErrorMessage, writebackLabels, libraryWritebackLabels } from './generationLabels';
 import './novelaiStudio.css';
@@ -53,12 +53,14 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
     onGenerationAccepted: (generation) => setSelectedAttemptId(generation.attemptId) });
   const { configuration, page, parameters, setParameters, seed, setSeed, busy, uploading, error, setError,
     source, consent, setConsent, attempt, submit, upload, allowed, candidates, patch, reuseParameters, selectImage,
-    watched, deliveryMode, setDeliveryMode, refresh, scope, isCurrent, clearSource, setAccepted, refreshConfiguration, configurationRefreshing, unavailableMessage } = studio;
+    watched, deliveryMode, setDeliveryMode, refresh, scope, isCurrent, clearSource, setAccepted, refreshConfiguration, configurationRefreshing, unavailableMessage, setIntensity } = studio;
   const txt2imgAllowed = configuration?.allowTxt2Img !== false;
   const img2imgAllowed = configuration?.allowImg2Img !== false;
   const unicode = supportsUnicodePrompts(configuration, parameters.model);
   const promptError = promptInputError(parameters.prompt, '正向提示词', unicode)
     || promptInputError(parameters.negative_prompt ?? '', '负向提示词', unicode);
+  const intensities = modelIntensities(configuration, parameters.model);
+  const medium = parameters.intensity === 'medium';
   const modeAllowed = studio.modeAllowed;
   const channelRegeneration = source?.generation.deliveryMessageId?.startsWith('thread:');
   const replacementLabel = source ? channelRegeneration ? '向原渠道再次发送媒体' : '替换原会话选中图片' : '交付到当前角色会话';
@@ -162,6 +164,11 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
               <option value="txt2img" disabled={!txt2imgAllowed}>文生图{!txt2imgAllowed ? '（服务已关闭）' : ''}</option><option value="img2img" disabled={!img2imgAllowed}>图生图{!img2imgAllowed ? '（服务已关闭）' : ''}</option>
             </select></label>
             <label className="field"><span>模型</span><select aria-label="工作台生图模型" required value={configuration.allowedModels.includes(parameters.model ?? '') ? parameters.model : ''} onChange={(event) => patch({ model: event.target.value })}><option value="">选择当前允许的模型</option>{configuration.allowedModels.map((item) => <option key={item}>{item}</option>)}</select></label>
+            {parameters.model === V5_FULL_MODEL && <label className="field"><span>V5 Full 强度</span><select aria-label="工作台 V5 Full 强度" required value={parameters.intensity ?? (intensities.includes('high') ? 'high' : '')}
+              onChange={(event) => setIntensity(event.target.value as GenerationParameters['intensity'])}>
+              <option value="">当前服务未提供强度能力</option><option value="high" disabled={!intensities.includes('high')}>High</option><option value="medium" disabled={!intensities.includes('medium')}>Medium</option>
+            </select></label>}
+            {medium && <p role="status" className="field-hint">Medium 固定 {V5_FULL_MEDIUM_STEPS} 步和 {V5_FULL_MEDIUM_SAMPLER}；自定义负向提示词及非零负向预设会被拒绝。已保留当前草稿，请调整后再提交。</p>}
             <label className="field"><span>采样器</span><select aria-label="工作台采样器" required value={configuration.allowedSamplers.includes(parameters.sampler ?? '') ? parameters.sampler : ''} onChange={(event) => patch({ sampler: event.target.value })}><option value="">选择当前允许的采样器</option>{configuration.allowedSamplers.map((item) => <option key={item}>{item}</option>)}</select></label>
             <label className="field"><span>采样步数</span><input aria-label="工作台采样步数" type="number" min="1" max={configuration.maxSteps} step="1" required value={parameters.steps} onChange={(event) => patch({ steps: Number(event.target.value) })} /></label>
             <label className="field"><span>生成张数</span><select aria-label="工作台生成张数" value={parameters.samples ?? 1} onChange={(event) => patch({ samples: Number(event.target.value) })}>
@@ -192,7 +199,7 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
             : <Placeholder loading>正在加载作品…</Placeholder>}
         </div>
         {selected?.parameters && <div className="studio-stage-summary">
-              <div className="studio-stage-facts"><span>{dimensions(selected.parameters)}</span><span>{modeLabel(selected.parameters.mode)}</span><span>{selected.parameters.samples ?? 1} 张</span><span>{selected.parameters.model ?? '模型未记录'}</span><span>{selected.parameters.sampler ?? '采样器未记录'} · {selected.parameters.steps ?? '未知'} 步</span><span>Seed {selected.parameters.seed}</span></div>
+              <div className="studio-stage-facts"><span>{dimensions(selected.parameters)}</span><span>{modeLabel(selected.parameters.mode)}</span><span>{selected.parameters.samples ?? 1} 张</span><span>{selected.parameters.model ?? '模型未记录'}</span>{selected.parameters.model === V5_FULL_MODEL && <span>强度 {selected.parameters.intensity ?? '未知'}</span>}<span>{selected.parameters.sampler ?? '采样器未记录'} · {selected.parameters.steps ?? '未知'} 步</span><span>Seed {selected.parameters.seed}</span></div>
               <div className="studio-stage-actions">
                 {selectedImages.length > 1 && <label className="studio-role-picker"><span>当前图片</span><select aria-label="当前作品图片" value={selectedImage?.id ?? ''} disabled={busy || uploading || Boolean(attempt.current)} onChange={(event) => { setSelectedImageId(event.target.value); clearSource(); }}>
                   {selectedImages.map((image, index) => <option key={image.id} value={image.id}>{index + 1}. {image.name}</option>)}
@@ -227,6 +234,7 @@ function NovelaiStudioRole({ role, roles, roleId, setRoleId, onGenerated, onOpen
                 </>}
                 <div><dt>生成模式</dt><dd>{modeLabel(selected.parameters.mode)}</dd></div>
                 <div><dt>模型</dt><dd>{selected.parameters.model ?? '未记录'}</dd></div>
+                {selected.parameters.model === V5_FULL_MODEL && <div><dt>V5 Full 强度</dt><dd>{selected.parameters.intensity ?? '未知'}</dd></div>}
                 <div><dt>采样器</dt><dd>{selected.parameters.sampler ?? '未记录'}</dd></div>
                 <div><dt>采样步数</dt><dd>{selected.parameters.steps ?? '未记录'}</dd></div>
                 <div><dt>生成张数</dt><dd>{selected.parameters.samples ?? 1}</dd></div>

@@ -143,6 +143,54 @@ def test_v5_full_nsfw_and_none_presets_do_not_add_an_unwanted_nsfw_negative():
     assert payload['parameters']['tag_hint_qt'] == payload['parameters']['tag_hint_uc_preset'] == 0
 
 
+def test_v5_full_defaults_to_high_and_maps_medium_to_the_provider_model():
+    from backend.app.novelai_generation.config import NovelaiSettings
+    from backend.app.novelai_generation.parameters import generation_payload, normalize_request, replay_request
+
+    settings = NovelaiSettings(allowedModels=['nai-diffusion-5-full'], defaultModel='nai-diffusion-5-full')
+    high = normalize_request({'prompt': '1girl', 'mode': 'txt2img'}, settings)
+    assert high['model'] == 'nai-diffusion-5-full'
+    assert high['intensity'] == 'high'
+    assert generation_payload(high)['model'] == 'nai-diffusion-5-full'
+
+    medium = normalize_request({'prompt': '1girl', 'mode': 'txt2img', 'intensity': 'medium',
+                                'steps': 14, 'sampler': 'k_euler_ancestral', 'ucPreset': 0}, settings)
+    assert medium['intensity'] == 'medium'
+    assert medium['steps'] == 14 and medium['sampler'] == 'k_euler_ancestral'
+    assert generation_payload(medium)['model'] == 'nai-diffusion-5-full-medium'
+    replayed = normalize_request(replay_request(medium, {'seed': 1}), settings)
+    assert replayed['intensity'] == 'medium'
+    assert generation_payload(replayed)['model'] == 'nai-diffusion-5-full-medium'
+
+
+@pytest.mark.parametrize(('changes', 'message'), [
+    ({'steps': 13}, '14'),
+    ({'sampler': 'k_euler'}, 'Euler Ancestral'),
+    ({'negative_prompt': 'custom negative'}, 'negative'),
+    ({'ucPreset': 1}, 'preset'),
+])
+def test_v5_full_medium_rejects_non_fixed_parameters_before_generation(changes, message):
+    from backend.app.novelai_generation.config import NovelaiSettings
+    from backend.app.novelai_generation.parameters import normalize_request
+
+    settings = NovelaiSettings(allowedModels=['nai-diffusion-5-full'], defaultModel='nai-diffusion-5-full')
+    with pytest.raises(ValueError, match=message):
+        normalize_request({'prompt': '1girl', 'mode': 'txt2img', 'intensity': 'medium', **changes}, settings)
+
+
+def test_medium_is_only_valid_for_v5_full_and_requires_the_fixed_sampler_to_be_allowed():
+    from backend.app.novelai_generation.config import NovelaiSettings
+    from backend.app.novelai_generation.parameters import normalize_request
+
+    with pytest.raises(ValueError, match='intensity'):
+        normalize_request({'prompt': '1girl', 'mode': 'txt2img', 'intensity': 'medium'},
+                          NovelaiSettings(allowedModels=['nai-diffusion-5-curated'], defaultModel='nai-diffusion-5-curated'))
+    with pytest.raises(ValueError, match='sampler'):
+        normalize_request({'prompt': '1girl', 'mode': 'txt2img', 'intensity': 'medium'},
+                          NovelaiSettings(allowedModels=['nai-diffusion-5-full'], defaultModel='nai-diffusion-5-full',
+                                          allowedSamplers=['k_euler']))
+
+
 @pytest.mark.parametrize(('prompt', 'expected'), [
     ('{portrait}, 1.2::blue sky::|rain', '{portrait}, 1.2::blue sky::, very aesthetic, masterpiece, no text|rain'),
     ('portrait text:HELLO', 'portrait, very aesthetic, masterpiece, no text text:HELLO'),
