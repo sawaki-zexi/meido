@@ -16,9 +16,23 @@ from test_meme_turn import meme_turn  # noqa: F401
 from test_natural_turn import natural  # noqa: F401
 
 
+class MemoryCredentials:
+    def __init__(self):
+        self.values = {}
+
+    def get(self, key):
+        return self.values.get(key, "")
+
+    def set(self, key, value):
+        if value:
+            self.values[key] = value
+        else:
+            self.values.pop(key, None)
+
+
 def group_history(tmp_path):
     sessions = SessionStore(tmp_path / 'sessions.db')
-    channels = MultichannelStore(tmp_path / 'sessions.db', sessions)
+    channels = MultichannelStore(tmp_path / 'sessions.db', sessions, MemoryCredentials())
     channels.register_channel_account('role', 'qq', account_id='qq', enabled=True, allow_group=True)
     thread = channels.ensure_channel_thread('role', 'qq', 'qq', 'group', 'group')
     channels.set_group_listening('role', 'qq', 'group', True)
