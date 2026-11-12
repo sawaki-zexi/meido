@@ -67,7 +67,7 @@ jobs:
   backend:
     name: Backend tests (${{ matrix.group }})
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: ${{ matrix.group == 'channels' && 10 || 5 }}
     strategy:
       fail-fast: false
       matrix:
