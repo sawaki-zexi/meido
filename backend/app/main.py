@@ -3421,8 +3421,7 @@ async def _handle_channel_event_locked(event):
         heard = multichannel_store.listening.hear(thread, content, event.external_message_id, metadata,
             accepted_revision=event.metadata.get("naturalListeningRevision"), received_at=event.received_at)
         if heard is not None:
-            if heard["sequence"] is not None:
-                channel_memory_maintenance.heard(thread)
+            channel_memory_maintenance.heard(thread)
             _natural_accept(thread, event, heard, accepted_binding=accepted_binding)
         return
     if event.channel == "qq":
@@ -6505,10 +6504,13 @@ async def _ingest_owner_channel_memory(thread, user_message, assistant_message):
         private=thread.chat_type == 'private')
 
 
-async def _ingest_owner_listening_memory(thread, messages):
+async def _ingest_owner_listening_memory(thread, messages, *, authorized=lambda: True):
     if memory_worker.role_deletion_blocked(thread.role_id):
         return
-    await owner_channel_memory.commit(thread, messages, listening=True)
+    revision = multichannel_store.listening.revision(thread.thread_id)
+    await owner_channel_memory.commit(thread, messages, listening=True,
+        authorized=lambda: multichannel_store.listening.revision(thread.thread_id) == revision
+            and not memory_worker.role_deletion_blocked(thread.role_id) and authorized())
 
 
 def _owner_channel_layer(role_id, messages):
@@ -6538,6 +6540,8 @@ def _verify_owner_channel_memory(role_id, key, ids):
     if thread is None or account is None:
         return None
     if key.startswith('listening:'):
+        if not multichannel_store.group_listening(role_id, thread.account_id, thread.chat_id):
+            return None
         with multichannel_store._connect() as db:
             rows = db.execute('SELECT * FROM channel_listening_records WHERE thread_id=? ORDER BY sequence', (thread.thread_id,)).fetchall()
         messages = [multichannel_store.listening._message(row) for row in rows if row['id'] in ids]
