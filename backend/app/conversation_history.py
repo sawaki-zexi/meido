@@ -234,9 +234,11 @@ class ConversationHistoryView:
                 rows.extend(db.execute("SELECT rowid," + _COLUMNS + " FROM messages WHERE session_key=? ORDER BY sequence", (session,)).fetchall())
         entries = [(int(row[0]), self.sessions._message(tuple(row)[1:])) for row in rows]
         sources = {(message.sessionKey, message.runId): (order, message) for order, message in entries
-            if message.role == "user" and message.runId and message.messageType == "text"}
+            if message.role == "user" and message.runId and message.messageType in {'text', 'natural_input'}}
         selected = []
         for order, message in entries:
+            if message.role == 'user' and message.metadata.get('listening'):
+                continue
             message = delivered_message(message)
             if message is None:
                 continue

@@ -386,9 +386,13 @@ def test_revised_plan_keeps_one_admission_and_tool_fact_then_replay_is_denied(na
             await asyncio.wait_for(asyncio.gather(*pending), 10)
             assert len(calls) == 4 and len(executed) == 1 and run_ids == executed
             user = s.sessions.user_message_for_run(executed[0])
-            assert user.id == original['id'] and user.content == original['content']
+            assert user.id == original['id']
             assert user.createdAt.isoformat() == original['createdAt']
-            assert user.metadata == original['metadata']
+            if overflow:
+                assert user.content == '' and user.metadata['originalUnavailable'] is True
+            else:
+                assert user.content == original['content'] and user.metadata == original['metadata']
+            assert not s.sessions._natural_inputs
             ended = s.sessions.get_run(user.runId)
             assert ended.status == 'completed'
             with pytest.raises(PermissionError):

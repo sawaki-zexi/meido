@@ -148,7 +148,8 @@ def test_owner_statement_extractor_receives_only_owner_inputs_with_quote_attribu
 
     monkeypatch.setattr(main, '_complete_model_json', complete)
 
-    async def owner_statements(_thread, messages):
+    async def owner_statements(_thread, messages, *, authorized):
+        assert authorized()
         assert all(item['metadata']['senderIsOwner'] is True for item in messages)
         main._owner_channel_layer(s.role.id, messages)
 
