@@ -15,7 +15,7 @@ export const defaultNovelaiRoleConfig: NovelaiRoleConfig = {
 export type NovelaiAvailability = { available: boolean; code: string; message: string };
 export type NovelaiConfiguration = {
   availability?: NovelaiAvailability;
-  modelCatalog?: { id: string; label: string }[];
+  modelCatalog?: { id: string; label: string; supportsUnicode?: boolean }[];
   enabled: boolean; tokenConfigured: boolean; credentialCleanupPending: boolean; revision: number;
   allowTxt2Img: boolean; allowImg2Img: boolean;
   allowedModels: string[]; defaultModel: string; nsfwEnabled: boolean; nsfwModel: string; allowedSamplers: string[]; defaultSampler: string;
@@ -52,8 +52,8 @@ export const novelai = {
   savePromptTag: (roleId: string, tag: PromptTagInput, id?: string) => api<{ tag: PromptTag; revision: number }>(`${tagsPath(roleId)}${id ? `/${encodeURIComponent(id)}` : ''}`,
     { method: id ? 'PUT' : 'POST', body: JSON.stringify(tag) }),
   deletePromptTag: (roleId: string, id: string) => api<{ revision: number }>(`${tagsPath(roleId)}/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  previewPromptTags: (roleId: string, text: string, prompt: string, negative_prompt: string) => api<PromptTagPreview>(`${tagsPath(roleId)}/preview`,
-    { method: 'POST', body: JSON.stringify({ text, prompt, negative_prompt }) }),
+  previewPromptTags: (roleId: string, text: string, prompt: string, negative_prompt: string, model?: string) => api<PromptTagPreview>(`${tagsPath(roleId)}/preview`,
+    { method: 'POST', body: JSON.stringify({ text, prompt, negative_prompt, model }) }),
   configuration: () => api<NovelaiConfiguration>('/api/services/novelai'),
   saveConfiguration: (configuration: Partial<Omit<NovelaiConfiguration, 'revision' | 'tokenConfigured' | 'credentialCleanupPending' | 'manualConsentRevision' | 'availability' | 'modelCatalog'>> & { confirmManualConsumption?: boolean; managedModelIds?: string[] }, expectedRevision: number) =>
     api<NovelaiConfiguration>('/api/services/novelai', { method: 'PUT', body: JSON.stringify({ ...configuration, expectedRevision }) }),

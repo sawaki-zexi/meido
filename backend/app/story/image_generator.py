@@ -4,6 +4,7 @@ from __future__ import annotations
 from ..chat_attachments import resolve_attachment
 from ..novelai_generation.context import GenerationContext
 from ..novelai_generation.model_catalog import MODEL_CATALOG
+from ..novelai_generation.prompts import validate_prompt
 from ..task_runtime import TaskOrigin
 from .errors import StorySimulationError, StoryProviderUnavailableError, StoryInvalidOutputError
 
@@ -34,9 +35,6 @@ class StoryImageGenerator:
         reason = app.unavailable_reason(app.roles.get(role_id), include_usage=False)
         if reason:
             raise StoryProviderUnavailableError(reason)
-        prompt = str(resource['prompt']).strip()
-        if not prompt or not prompt.isascii():
-            raise StoryInvalidOutputError('视觉资源缺少英文 NovelAI tags')
         key = f"story:{story['id']}:{grant['request_id']}"
         source = GenerationContext(
             TaskOrigin(role_id, f'role:{role_id}', source_thread_id=f'desktop:{role_id}', source_scope_id=f"story:{story['id']}"),
@@ -46,6 +44,10 @@ class StoryImageGenerator:
         # Keep the established V4.5 story preference within that model family.
         if MODEL_CATALOG[model].version == 'V4.5' and 'nai-diffusion-4-5-full' in settings['allowedModels']:
             model = 'nai-diffusion-4-5-full'
+        try:
+            prompt = validate_prompt(resource['prompt'], ascii_only=not MODEL_CATALOG[model].supports_unicode, required=True)
+        except ValueError as error:
+            raise StoryInvalidOutputError(str(error)) from None
         try:
             result = await app.submit(source, {'prompt': prompt, 'mode': 'txt2img', 'size_preset': 'landscape',
                                               'samples': 1, 'background': False, 'intent': 'user_requested', 'model': model},
