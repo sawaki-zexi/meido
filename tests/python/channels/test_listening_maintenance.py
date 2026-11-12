@@ -322,6 +322,15 @@ def test_owner_and_members_share_daily_cap_and_only_durable_rows_are_consolidate
         assert (result['sequence'] is not None) == (number < 200)
     recent = store.listening.recent('role', thread.thread_id)
     assert len(recent) == 30 and recent[0]['content'] == '201'
+    late = store.listening.hear(thread, '超额成员资料也不落盘', 'late-member',
+        {'senderId': 'late-member', 'senderName': '超额成员', 'senderIsOwner': False})
+    assert late['sequence'] is None
+    with store._connect() as db:
+        assert db.execute(
+            'SELECT 1 FROM channel_external_member_sources s JOIN channel_external_members m '
+            'ON m.role_id=s.role_id AND m.member_key=s.member_key '
+            'WHERE s.thread_id=? AND m.sender_id=?',
+            (thread.thread_id, 'late-member')).fetchone() is None
 
     async def run():
         try:
