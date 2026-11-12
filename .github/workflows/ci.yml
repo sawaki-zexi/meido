@@ -135,6 +135,7 @@ jobs:
               tests/python/channels/test_natural_image_management.py
               tests/python/test_novelai_channel.py::test_guest_qq_turn_can_generate_and_deliver_only_to_its_original_group
               tests/python/channels/test_shared_owner_runtime.py
+              tests/python/channels/test_owner_group_speech_runtime.py
               tests/python/channels/test_natural_media.py
           - group: drift
             args: tests/python/test_drift_meme_api.py::test_owner_can_explicitly_enable_builtin_meme_maintenance_without_shell
@@ -203,6 +204,8 @@ jobs:
               tests/python/test_stream_preparation.py
               tests/python/test_owner_history_view.py
               tests/python/test_owner_history_view_api.py
+              tests/python/test_owner_group_speech.py
+              tests/python/test_owner_group_speech_api.py
               tests/python/test_context_inspection.py
               tests/python/test_context_windows.py
               tests/python/test_current_tool_registry.py
