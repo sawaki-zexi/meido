@@ -74,9 +74,9 @@ def _user_projection(message, quotes):
     return content, metadata
 
 
-def freeze_channel_history(channels, account):
+def freeze_channel_history(channels, account, *, group_speech=True):
     """Normalize no payload here: freeze the host account before adapter awaits."""
-    history = ConversationHistoryView(channels, role_id=account.role_id)
+    history = ConversationHistoryView(channels, role_id=account.role_id, group_speech=group_speech)
     return {"account": history._account(account.account_id), "history": history.snapshot(),
         "bindings": [{key: item[key] for key in ("identityId", "channel", "scope", "platformUserId", "accountId", "pairedAt", "chats")}
             for item in channels.list_identities() if item["channel"] == account.channel
@@ -122,7 +122,7 @@ def bind_channel_history(channels, thread, sender_id, intake):
 class ConversationHistoryView:
     """Capture grants before waiting; a later binding can never enlarge a turn."""
     def __init__(self, channels, *, role_id, thread_id=None, owner=True, through_message_id=None,
-                 attachment_resolver=None, authorized=lambda: True, snapshot=None):
+                 attachment_resolver=None, authorized=lambda: True, snapshot=None, group_speech=False):
         self.channels, self.sessions = channels, channels.sessions
         self.role_id, self.thread_id = role_id, thread_id or f"desktop:{role_id}"
         self.session_key = f"role:{role_id}" if self.thread_id == f"desktop:{role_id}" else f"thread:{self.thread_id}"
@@ -153,6 +153,10 @@ class ConversationHistoryView:
         self.source_account = snapshot.get("sourceAccount") if snapshot is not None else self._account(thread.account_id) if thread else None
         if self.session_key.startswith("thread:") and (thread is None or self.source_account is None):
             raise PermissionError("当前角色无权读取此会话历史")
+        self.group_speech = None
+        if self.shared and (group_speech or snapshot is not None and 'groupSpeech' in snapshot):
+            from .owner_group_speech import OwnerGroupSpeech
+            self.group_speech = OwnerGroupSpeech(self, snapshot.get('groupSpeech') if snapshot is not None else None)
 
     def _account(self, account_id):
         account = self.channels.get_account(account_id)
@@ -174,7 +178,12 @@ class ConversationHistoryView:
         return json.loads(json.dumps({"roleId": self.role_id, "sessionKey": self.session_key,
             "grants": self.grants, "fence": self.fence, "shared": self.shared,
             "sourceAccount": self.source_account, "currentId": self.current_id,
-            "admittedAt": self.admitted_at.isoformat()}))
+            "admittedAt": self.admitted_at.isoformat(),
+            **({'groupSpeech': self.group_speech.sources} if self.group_speech is not None else {})}))
+
+    def group_speech_blocks(self):
+        self.require_current()
+        return self.group_speech.blocks() if self.group_speech is not None else []
 
     @property
     def authority(self):
@@ -198,6 +207,8 @@ class ConversationHistoryView:
                 current = self._grants(db)
             if any(_grant_authority(current.get(session, {})) != _grant_authority(grant) for session, grant in self.grants.items()):
                 raise PermissionError("主人历史绑定已变化，请重新开始当前回合")
+        if self.group_speech is not None:
+            self.group_speech.require_current()
 
     def authorized(self):
         try:
@@ -208,6 +219,8 @@ class ConversationHistoryView:
 
     def require_snapshot_current(self):
         self.require_current()
+        if self.group_speech is not None:
+            self.group_speech.read()
         if self._sealed_ids is not None:
             self.read()
 
