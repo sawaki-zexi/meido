@@ -10,6 +10,7 @@ import time
 import uuid
 from threading import Lock, RLock
 from collections import deque
+from copy import deepcopy
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -110,6 +111,7 @@ class GroupListeningStore:
         with self._thread_lock(thread_id):
             self._revisions[thread_id] = self.revision(thread_id) + 1
             self._invalidated_at[thread_id] = self.clock()
+            self._windows.pop(thread_id, None)
         if self.on_invalidate is not None:
             self.on_invalidate(thread_id)
 
@@ -213,6 +215,11 @@ class GroupListeningStore:
         merged = list({item['id']: item for item in [*records, *self._windows.get(thread_id, ())]}.values())
         merged.sort(key=lambda item: datetime.fromisoformat(item["createdAt"]))
         return merged[-self.RECENT_LIMIT:]
+
+    def temporary(self, role_id: str, thread_id: str) -> list[dict[str, Any]]:
+        self.group(role_id, thread_id)
+        with self._thread_lock(thread_id):
+            return deepcopy(list(self._windows.get(thread_id, ())))
 
     def enrich_reply(self, thread, platform_message_id, updates, *, authorized):
         """Keep verified host quote facts with the original hearing source."""
