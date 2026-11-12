@@ -5,13 +5,13 @@ from datetime import datetime, timezone
 import json
 import uuid
 
-from ..agent_runtime.meido_provider import MeidoProvider
 from ..agent_runtime.provider import CancellationToken
 from ..agent_runtime.tools import ToolContext
 from ..agent_runtime.types import UserMessage
 from ..models import AgentRun
 from .conversation_context import ResponseContext, current_timeline, project_record
 from .natural import NaturalDecision, NaturalInput, NaturalPlan, RelatedTopic
+from .natural_context import NaturalContextProvider, excerpt
 from .reply_identity import capture_reply_identity
 
 
@@ -41,6 +41,7 @@ class NaturalConversation:
         self.context = None
         self.messages = []
         self.records = []
+        self.current_id = None
 
     async def prepare(self, inputs, authorized):
         batch, thread = self.batch, self.batch.thread
@@ -86,46 +87,59 @@ class NaturalConversation:
             if authorized(): self.channels.remember_quoted_member(thread, updates)
         self.records = current_timeline(self.channels, thread, inputs=inputs, limit=self.limits.max_inputs)
         self.context = ResponseContext(self.channels, thread, self.records, natural=True)
+        newest = next((record for record in reversed(self.records)
+            if str(record['metadata'].get('platformMessageId') or '') == inputs[-1].message_id), None)
+        self.current_id = newest['id'] if newest else None
+        self.messages = []
         remaining = self.limits.context_chars
-        for record in reversed(self.records):
+        # Admit the actual triggering input before older background, even if
+        # supplied timestamps place it earlier in the unified timeline.
+        ordered = sorted(self.records, key=lambda record: record['id'] == self.current_id)
+        admitted = {}
+        for record in reversed(ordered):
             meta = record['metadata']
             mid = str(meta.get('platformMessageId') or '')
             projected = project_record({**record, 'metadata': {**meta, **resolved_quotes.get(mid, {})}})
-            projected.update(text=projected['text'][:1000],
-                replyToContent=projected['replyToContent'][:1000],
+            projected.update(text=projected['text'] if record['id'] == self.current_id else excerpt(projected['text'], 1000),
+                replyToContent=excerpt(projected['replyToContent'], 1000),
                 hasImage=mid in batch.media.image_message_ids,
                 imageReadable=mid in batch.media.attachments_by_message_id)
             content = json.dumps(projected, ensure_ascii=False)
             if len(content) > remaining:
                 continue  # Never truncate necessary identity or relationship fields.
             remaining -= len(content)
-            self.messages.insert(0, UserMessage(content,
-                attachments=batch.media.attachments_by_message_id.get(mid, ()), source_message_ids=(record['id'],)))
+            admitted[record['id']] = UserMessage(content,
+                attachments=batch.media.attachments_by_message_id.get(mid, ()), source_message_ids=(record['id'],))
+        self.messages = [admitted[record['id']] for record in self.records if record['id'] in admitted]
         # If even the newest admitted input has no complete envelope, stop.
-        newest = next((record for record in reversed(self.records)
-            if str(record['metadata'].get('platformMessageId') or '') == inputs[-1].message_id), None)
         return bool(newest and any(newest['id'] in message.source_message_ids for message in self.messages))
 
     def _profiles(self, source_ids=None, member=None):
-        selected = [item for item in self.records if source_ids is None or item['id'] in source_ids]
+        source_ids = set(source_ids or ()) | {self.current_id}
+        selected = [item for item in self.records if item['id'] in source_ids]
         members = [member] if member else []
         for item in selected:
             source = project_record(item)
             members.extend([source['senderId'], *source['mentionedIds'], source['replyToSenderId']])
-        return self.memory_blocks(self.role.id, self.batch.thread.thread_id, '', natural=True,
+        current = next((item for item in self.records if item['id'] == self.current_id), None)
+        sender_id = project_record(current)['senderId'] if current else ''
+        return self.memory_blocks(self.role.id, self.batch.thread.thread_id, sender_id, natural=True,
             trigger_metadata={'contextMemberIds': list(dict.fromkeys(item for item in members if item))})
 
     async def request(self, instructions, messages, authorized, *, phase, plan=None):
         if not authorized(): return None
-        provider = MeidoProvider(self.adapter, self.role, self.configuration, '',
+        required_ids = {self.current_id, *(plan.selection.source_ids if plan else ())}
+        provider = NaturalContextProvider(self.adapter, self.role, self.configuration, '',
             PARTICIPATION + '\n' + instructions, structured_without_tools=True, max_response_tokens=600,
+            background_ids=[item['id'] for item in self.records], required_ids=required_ids,
             context_blocks=lambda: self._profiles(plan.selection.source_ids, plan.selection.relation['targetSenderId']) if plan else self._profiles())
         provider.request_observer = self.context.observe_request
         # Count only a real request, after media and complete-prompt capacity checks.
         # Dynamic blocks have their existing independent remaining-budget guard.
-        estimate = provider.estimate_request_tokens('', messages, ())
-        capacity = self.configuration.contextWindowTokens if self.configuration else None
-        if capacity and estimate + 600 >= capacity: return None
+        prepared, _ = provider.prepare_window('', messages, ())
+        estimate = provider.estimate_prepared(prepared).tokens
+        capacity = (self.configuration.contextWindowTokens if self.configuration else None) or 32768
+        if estimate + 600 >= capacity: return None
         revision = self.batch.revision if plan is None else plan.revision
         if not await self.reserve_request(self.batch, revision): return None
         if not authorized() or plan is not None and not self.valid(plan): return None
