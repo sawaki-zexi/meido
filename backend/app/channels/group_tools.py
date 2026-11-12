@@ -219,18 +219,25 @@ class MultichannelGroupRepository:
                 "source_page": source_page, "next_source_page": source_page + 1 if end < len(ordered) else None}
 
     def prompt_context(self, role_id: str, thread_id: str, sender_id: str = "", *, trigger_metadata: Mapping[str, Any] | None = None, concise=False) -> str:
+        blocks = self.prompt_blocks(role_id, thread_id, sender_id, trigger_metadata=trigger_metadata, concise=concise)
+        return "\n\n".join(blocks)[:20000]
+
+    def prompt_blocks(self, role_id: str, thread_id: str, sender_id: str = "", *, trigger_metadata: Mapping[str, Any] | None = None, concise=False) -> list[str]:
         """Read only the current thread's notes and relevant member profiles."""
+        from .natural_context import excerpt
 
         thread = self.store.get_thread(role_id, thread_id)
         if thread is None or thread.channel == "desktop" or self.store.external_memory.is_owner_thread(thread):
-            return ""
+            return []
         parts = []
         group_context = self.read_context(role_id, thread_id)
         label = "群" if thread.chat_type == "group" else "会话"
         if group_context.get("groupNote"):
-            parts.append(f"[当前{label}笔记]\n" + str(group_context["groupNote"])[:600 if concise else 12000])
+            note = excerpt(group_context['groupNote'], 600) if concise else str(group_context['groupNote'])[:12000]
+            parts.append(f"[当前{label}笔记]\n" + note)
         if group_context.get("summary"):
-            parts.append(f"[当前{label}近期摘要]\n" + str(group_context["summary"])[:600 if concise else 12000])
+            summary = excerpt(group_context['summary'], 600) if concise else str(group_context['summary'])[:12000]
+            parts.append(f"[当前{label}近期摘要]\n" + summary)
         trigger = trigger_metadata or {}
         # Match Shiori's relevance order: the speaker, mentions and quoted
         # speaker need full profiles; other recent participants need briefs.
@@ -252,6 +259,7 @@ class MultichannelGroupRepository:
                 *(item for item in metadata.get("mentionedIds", []) if isinstance(item, str))])
         members = []
         brief_chars = 1500
+        full_budget = 1500 // max(1, len([sender for sender in full_senders if sender]))
         for current_sender in dict.fromkeys([*full_senders, *brief_senders]):
             if not current_sender:
                 continue
@@ -260,21 +268,24 @@ class MultichannelGroupRepository:
             if not ((row["profile"] or row["shorthand"]) if full else row["shorthand"]):
                 continue
             member = {"senderId": current_sender, "name": row.get("name", current_sender),
-                "shorthand": str(row["shorthand"])[:200],
+                "shorthand": excerpt(row['shorthand'], 100) if concise else str(row['shorthand'])[:200],
                 "sources": [source["threadId"] for source in row.get("sources", [])]}
             if full:
-                member["profile"] = str(row["profile"])[:800 if concise else 4000]
                 member["nicknames"] = row.get("nicknames", [])
+                member['profile'] = ''
+                profile_chars = min(800, max(0, full_budget - len(json.dumps(member, ensure_ascii=False)) - 2))
+                member["profile"] = excerpt(row['profile'], profile_chars) if concise else str(row['profile'])[:4000]
             size = len(json.dumps(member, ensure_ascii=False))
-            if not full and size > brief_chars:
+            if concise and size + 2 > brief_chars:
+                continue
+            if not concise and not full and size > brief_chars:
                 break
             members.append(member)
-            brief_chars -= size
+            brief_chars -= size + (2 if concise else 0)
         if members:
             member_block = "[当前会话成员资料；同一平台身份在所列会话中观察所得]\n" + json.dumps(members, ensure_ascii=False)
-            if concise: parts.insert(0, member_block)
-            else: parts.append(member_block)
-        return "\n\n".join(parts)[:20000]
+            parts.append(member_block)
+        return parts
 
 
 class LookupGroupContextTool:
