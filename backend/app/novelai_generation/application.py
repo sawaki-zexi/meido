@@ -28,7 +28,7 @@ from .executor import GenerationExecutor
 from .http import GenerationHttpError, NovelaiHttp
 from .ledger import GenerationLedger, canonical
 from .media import import_response, owned_outputs, validate_image
-from .parameters import generation_payload, normalize_request, replay_request
+from .parameters import generation_payload, normalize_request, replay_request, resolve_model
 from .scene import SceneCoordinator
 from .prompt_tags import PromptTags
 from .assets import AssetWriteback
@@ -251,7 +251,7 @@ class NovelaiApplication:
         validate_image(content, max_pixels=16 * 1024 * 1024)
         return content
 
-    def _expand_chat_prompt_tags(self, source: GenerationContext, role, arguments):
+    def _expand_chat_prompt_tags(self, source: GenerationContext, role, arguments, settings):
         """Apply the role tag library to a real owner-turn expression request."""
         policy = role.agentConfig.novelai
         if source.ui_action or not policy.promptTagsEnabled:
@@ -260,7 +260,8 @@ class NovelaiApplication:
         if message is None or message.sessionKey != source.origin.session_key:
             raise PermissionError('current owner input is unavailable for prompt tag expansion')
         expanded = self.tags.expand(role.id, message.content,
-            arguments.get('prompt', ''), arguments.get('negative_prompt', ''))
+            arguments.get('prompt', ''), arguments.get('negative_prompt', ''),
+            model=resolve_model(settings, arguments.get('model') or None))
         return {**arguments, 'prompt': expanded['prompt'], 'negative_prompt': expanded['negative_prompt']}
 
     def _find_task(self, row, source):
@@ -317,7 +318,7 @@ class NovelaiApplication:
                     raise PermissionError('scene generation requires a current host candidate')
                 chat_arguments = arguments
                 if scene_input is None:
-                    chat_arguments = self._expand_chat_prompt_tags(source, role, arguments)
+                    chat_arguments = self._expand_chat_prompt_tags(source, role, arguments, settings)
                 parameters: dict[str, object] = ({
                     'background': True,
                     # Scene preferences are captured with the candidate. The

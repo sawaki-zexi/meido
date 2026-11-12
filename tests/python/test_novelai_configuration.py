@@ -101,6 +101,10 @@ def test_model_catalog_allows_v5_without_changing_existing_defaults(tmp_path):
     settings = NovelaiSettingsStore(tmp_path / 'novelai.db', Credentials())
     original = settings.public()
     identifiers = [model['id'] for model in original['modelCatalog']]
+    assert {model['id']: model['supportsUnicode'] for model in original['modelCatalog']} == {
+        'nai-diffusion-4-5-curated': False, 'nai-diffusion-4-5-full': False,
+        'nai-diffusion-5-curated': True, 'nai-diffusion-5-full': True,
+    }
     assert identifiers == ['nai-diffusion-4-5-curated', 'nai-diffusion-4-5-full',
                            'nai-diffusion-5-curated', 'nai-diffusion-5-full']
     assert original['allowedModels'] == ['nai-diffusion-4-5-curated']
