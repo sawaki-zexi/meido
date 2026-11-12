@@ -82,7 +82,8 @@ class ChannelMemoryMaintenance:
                 rows = db.execute('SELECT * FROM channel_listening_records WHERE thread_id=? AND sequence<=? ORDER BY sequence', (thread.thread_id, through)).fetchall()
             messages = [store.listening._message(row) for row in rows]
         else:
-            messages = [item.model_dump(mode='json') for item in store.sessions.list_messages(thread.session_key) if item.sequence <= through]
+            messages = [item.model_dump(mode='json') for item in store.sessions.list_messages(thread.session_key)
+                if item.sequence <= through and not (item.role == 'user' and item.metadata.get('listening'))]
         senders = {str(item['metadata'].get('senderId') or '') for item in messages if item['role'] == 'user'}
         owners = {}
         for sender in senders:
@@ -184,13 +185,32 @@ class ChannelMemoryMaintenance:
             return False
         wanted = set(message_ids)
         selected = [item for item in store.sessions.list_messages(session_key) if item.id in wanted]
-        if {item.id for item in selected} != wanted:
+        ordinary = [item for item in selected if not (item.role == 'user' and item.metadata.get('listening'))]
+        listening_ids = wanted - {item.id for item in ordinary}
+        sources = []
+        if listening_ids:
+            placeholders = ','.join('?' for _ in listening_ids)
+            with store._connect() as db:
+                sources = db.execute(
+                    f'SELECT id,sequence FROM channel_listening_records WHERE thread_id=? AND id IN ({placeholders})',
+                    (thread.thread_id, *listening_ids)).fetchall()
+        if {row['id'] for row in sources} != listening_ids:
             return False
-        through = max((item.sequence for item in selected), default=0)
-        await self.consolidate(thread.thread_id, listening=False, through_sequence=through)
-        with store._connect() as db:
-            row = db.execute('SELECT sequence FROM channel_memory_cursors WHERE thread_id=?', (thread.thread_id,)).fetchone()
-        return row is not None and row[0] >= through
+        targets = ((False, max((item.sequence for item in ordinary), default=0)),
+                   (True, max((row['sequence'] for row in sources), default=0)))
+        for listening, through in targets:
+            if not through:
+                continue
+            table = 'channel_listening_cursors' if listening else 'channel_memory_cursors'
+            while True:
+                changed = await self.consolidate(thread.thread_id, listening=listening, through_sequence=through)
+                with store._connect() as db:
+                    row = db.execute(f'SELECT sequence FROM {table} WHERE thread_id=?', (thread.thread_id,)).fetchone()
+                if row and row[0] >= through:
+                    break
+                if not changed:
+                    return False
+        return True
 
     async def consolidate(self, thread_id: str, *, listening: bool, today: str | None = None, through_sequence=None) -> bool:
         async with self._locks.setdefault(thread_id, asyncio.Lock()):
@@ -235,9 +255,14 @@ class ChannelMemoryMaintenance:
             if listening:
                 rows = db.execute("SELECT * FROM channel_listening_records WHERE thread_id=? AND sequence>? ORDER BY sequence LIMIT ?", (thread_id, cursor, self.BATCH_SIZE)).fetchall()
                 day = today or datetime.fromtimestamp(self.clock()).astimezone().date().isoformat()
-                batch = [store.listening._message(row) for row in rows] if self._listening_ready(store, thread, rows, day) else []
+                ready = through_sequence is not None or self._listening_ready(store, thread, rows, day)
+                if through_sequence is not None:
+                    rows = [row for row in rows if row['sequence'] <= through_sequence]
+                batch = [store.listening._message(row) for row in rows] if ready else []
             else:
-                messages = [item for item in store.sessions.list_messages(thread.session_key) if item.sequence > cursor and item.status == "completed" and item.messageType == "text"]
+                messages = [item for item in store.sessions.list_messages(thread.session_key)
+                    if item.sequence > cursor and item.status == "completed" and item.messageType == "text"
+                    and not (item.role == 'user' and item.metadata.get('listening'))]
                 # Preserve a stable recent transcript, as the desktop maintenance does.
                 selected = ([item for item in messages if item.sequence <= through_sequence] if through_sequence is not None else
                             messages[:-20][:self.BATCH_SIZE] if len(messages) >= 30 else [])
@@ -262,7 +287,8 @@ class ChannelMemoryMaintenance:
                 current_batch = [store.listening._message(row) for row in current_rows]
             else:
                 current_batch = [item.model_dump(mode='json') for item in store.sessions.list_messages(thread.session_key)
-                    if cursor < item.sequence <= up_to and item.status == 'completed' and item.messageType == 'text']
+                    if cursor < item.sequence <= up_to and item.status == 'completed' and item.messageType == 'text'
+                    and not (item.role == 'user' and item.metadata.get('listening'))]
             return json.dumps(source_messages(current_batch), sort_keys=True, ensure_ascii=False) == frozen
 
         # Failed/invalidated batches remain durable. Automatic arrivals and the

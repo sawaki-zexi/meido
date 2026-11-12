@@ -201,7 +201,8 @@ def record_fingerprint(record):
 def _timeline_record(message):
     """Admission and dispatch share confirmed content and invalidation rules."""
     from .delivery_projection import delivered_message
-    if message.metadata.get('channelTurnState') == 'invalidated':
+    if (message.metadata.get('channelTurnState') == 'invalidated'
+            or message.role == 'user' and message.metadata.get('listening')):
         return None
     delivered = delivered_message(message)
     if (delivered is None or delivered.messageType != 'text' or delivered.status != 'completed'
