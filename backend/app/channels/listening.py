@@ -111,6 +111,7 @@ class GroupListeningStore:
         with self._thread_lock(thread_id):
             self._revisions[thread_id] = self.revision(thread_id) + 1
             self._invalidated_at[thread_id] = self.clock()
+            self._windows.pop(thread_id, None)
         if self.on_invalidate is not None:
             self.on_invalidate(thread_id)
 

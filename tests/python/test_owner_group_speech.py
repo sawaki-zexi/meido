@@ -102,6 +102,10 @@ def test_disabling_listening_keeps_saved_speech_available_to_new_turns(tmp_path)
     current = ConversationHistoryView(channels, role_id='r1', group_speech=True)
     assert 'SAVED_OWNER' in str(current.group_speech_blocks())
     assert 'TEMPORARY_OWNER' not in str(current.group_speech_blocks())
+    channels.set_group_listening('r1', 'qq', 'group', True)
+    reopened = ConversationHistoryView(channels, role_id='r1', group_speech=True)
+    assert 'SAVED_OWNER' in str(reopened.group_speech_blocks())
+    assert 'TEMPORARY_OWNER' not in str(reopened.group_speech_blocks())
 
 
 @pytest.mark.parametrize('change', ['content', 'identity', 'reply'])
