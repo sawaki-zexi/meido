@@ -67,7 +67,7 @@ jobs:
   backend:
     name: Backend tests (${{ matrix.group }})
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: ${{ matrix.group == 'channels' && 10 || 5 }}
     strategy:
       fail-fast: false
       matrix:
@@ -111,6 +111,7 @@ jobs:
               tests/python/channels/test_runtime_delivery.py::test_real_channel_runtime_commits_reply_only_after_confirmed_delivery
               tests/python/channels/test_conversation_relations.py
               tests/python/channels/test_natural_turn.py
+              tests/python/channels/test_natural_context.py
               tests/python/channels/test_qq_failure_feedback.py
               tests/python/test_novelai_background_channel.py::test_background_owner_channel_returns_text_then_one_original_media_receipt[fallback_journal_failure]
               tests/python/channels/test_natural_capability_scope.py
