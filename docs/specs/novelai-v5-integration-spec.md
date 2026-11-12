@@ -75,7 +75,7 @@
 - 从 High 切换到 Medium 时，已有负向提示词及不兼容的参数不能静默消失或被伪称生效：界面展示限制并让主人处理；切回 High 后可恢复未提交的草稿。已保存历史不受切换影响。
 - 实际强度及有效参数随新生成记录保存，复用和重生成能够恢复；不自动把 High 改为 Medium，也不以本地次数估算 NovelAI 费用。
 
-实现使用用户可见的 `model=nai-diffusion-5-full` 与显式 `intensity=high|medium`。未提供强度的全新 Full 请求兼容解析为 High 并写入冻结记录；未含强度字段的旧记录仍显示未知。Medium 只在服务目录明确公布该能力时展示，实际出网模型映射为 `nai-diffusion-5-full-medium`，该 provider 标识不会成为可选 allowlist 模型。Medium 的有效步数与采样器固定为 14 和 `k_euler_ancestral`；非空自定义负向提示词、非零负向预设、其他步数或采样器在普通额度预留前拒绝。切换强度只改变草稿选择，保留原输入供主人调整；切离 Full 时清除不适用的强度字段，切回时默认为 High。
+实现使用用户可见的 `model=nai-diffusion-5-full` 与显式 `intensity=high|medium`。未提供强度的全新 Full 请求兼容解析为 High 并写入冻结记录；未含强度字段的旧记录仍显示未知，复用或重生成时要求主人明确选择后才允许提交。Medium 只在服务目录明确公布该能力时展示，实际出网模型映射为 `nai-diffusion-5-full-medium`，该 provider 标识不会成为可选 allowlist 模型。Medium 的有效步数与采样器固定为 14 和 `k_euler_ancestral`；非空自定义负向提示词、非零负向预设、其他步数或采样器在普通额度预留前拒绝。切换强度只改变草稿选择，保留原输入供主人调整；切离 Full 时清除不适用的强度字段，切回时默认为 High。
 
 ## 5. 拟议实现边界与数据流
 

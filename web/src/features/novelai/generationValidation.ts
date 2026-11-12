@@ -34,7 +34,7 @@ export function promptInputError(value: string, label: string, unicode = true, r
 }
 
 /** Validate editable input before reserving an attempt; the service remains authoritative. */
-export function generationInputError(parameters: GenerationParameters, seed: string, configuration: NovelaiConfiguration): string {
+export function generationInputError(parameters: GenerationParameters, seed: string, configuration: NovelaiConfiguration, intensityUnknown = false): string {
   const unicode = supportsUnicodePrompts(configuration, parameters.model);
   for (const [label, value] of [['正向提示词', parameters.prompt], ['负向提示词', parameters.negative_prompt ?? '']]) {
     const error = promptInputError(value, label, unicode, label === '正向提示词');
@@ -49,6 +49,8 @@ export function generationInputError(parameters: GenerationParameters, seed: str
   if (parameters.model !== undefined && !configuration.allowedModels.includes(parameters.model)) return '请选择当前允许的模型（高级参数）。';
   const selectedModel = parameters.model ?? (configuration.nsfwEnabled ? configuration.nsfwModel : configuration.defaultModel);
   const selectedCatalog = configuration.modelCatalog?.find((item) => item.id === selectedModel);
+  if (intensityUnknown && selectedModel === V5_FULL_MODEL && parameters.intensity === undefined)
+    return '这条历史记录的 V5 Full 强度未知，请明确选择 High 或 Medium 后再生成。';
   if (parameters.intensity === 'medium' && selectedModel === V5_FULL_MODEL && !selectedCatalog?.intensities)
     return '当前服务未公布 V5 Full Medium 能力，请刷新生图设置。';
   if (parameters.intensity !== undefined && !modelIntensities(configuration, selectedModel).includes(parameters.intensity))

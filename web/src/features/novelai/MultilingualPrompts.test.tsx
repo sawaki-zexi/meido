@@ -182,3 +182,18 @@ it('shows the saved V5 Full intensity and restores it when reusing history', asy
   expect(screen.getByLabelText('工作台 V5 Full 强度')).toHaveValue('medium');
   expect(screen.getByLabelText('工作台采样步数')).toHaveValue(14);
 });
+
+it('requires an explicit intensity when reusing a legacy V5 Full record without evidence', async () => {
+  fakeBackend({
+    'GET /api/services/novelai': () => ({ body: configuration }),
+    'GET /api/roles/r1/generations': () => ({ body: { ...page, generations: [generation] } }),
+  });
+  const user = userEvent.setup();
+  render(<NovelaiStudio roles={[role({ id: 'r1', name: '角色' })]} initialRoleId="r1" />);
+  await screen.findByAltText('unicode.png');
+  await user.click(screen.getByRole('button', { name: '复用参数' }));
+  await user.click(screen.getByText('高级参数'));
+  expect(screen.getByLabelText('工作台 V5 Full 强度')).toHaveValue('');
+  await user.click(screen.getByRole('button', { name: '生成一张图片' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('强度未知，请明确选择 High 或 Medium');
+});

@@ -28,6 +28,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   const historicalParameters = useRef(false);
   const [page, setPage] = useState<GenerationPage | null>(null);
   const [parameters, setParameters] = useState<GenerationParameters>({ prompt: '', mode: 'txt2img', negative_prompt: '', samples: 1, size_preset: 'square' });
+  const [intensityUnknown, setIntensityUnknown] = useState(false);
   const [seed, setSeed] = useState('');
   const [inputs, setInputs] = useState<ChatAttachment[]>([]);
   const [busy, setBusy] = useState(false);
@@ -58,7 +59,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
     historicalParameters.current = false;
     attempt.current = null; setSource(null); setConsent(false); setAccepted(false); setDeliveryMode(defaultDeliveryMode);
     recordQueries.current = new Map();
-    setParameters({ prompt: '', mode: 'txt2img', negative_prompt: '', size_preset: 'square' }); setSeed('');
+    setParameters({ prompt: '', mode: 'txt2img', negative_prompt: '', size_preset: 'square' }); setIntensityUnknown(false); setSeed('');
     void Promise.all([novelai.configuration(), novelai.history(identifier)]).then(([config, history]) => {
       if (!isCurrent(owner)) return;
       setPage(history);
@@ -86,6 +87,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
           steps: value.steps === previous?.steps ? defaults.steps : Math.min(value.steps ?? defaults.steps, config.maxSteps),
         };
       });
+      setIntensityUnknown(false);
     }
   };
   const refreshConfiguration = async (preferences?: Partial<Pick<NovelaiConfiguration, 'nsfwEnabled' | 'addQualityTags' | 'undesiredContentPreset'>>) => {
@@ -168,7 +170,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
       return;
     }
     if (!attempt.current) {
-      const inputError = generationInputError(parameters, seed, configuration);
+      const inputError = generationInputError(parameters, seed, configuration, intensityUnknown);
       if (inputError) { setError(inputError); return; }
     }
     const identifier = role.id;
@@ -228,11 +230,12 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
     ? [{ id: parameters.base_attachment_id, name: '历史底图（需仍可访问）', kind: 'image' as const, mediaType: 'image/*', size: 0 }] : [];
   const candidates = [...attachments, ...inputs, ...historicalInput].filter((item, index, all) => item.kind === 'image' && all.findIndex((other) => other.id === item.id) === index);
   const patch = (changes: Partial<GenerationParameters>) => {
-    if (configuration && error === generationInputError(parameters, seed, configuration)) setError('');
+    if (configuration && error === generationInputError(parameters, seed, configuration, intensityUnknown)) setError('');
     const next = { ...changes };
     if ('model' in changes) {
       if (changes.model !== V5_FULL_MODEL) next.intensity = undefined;
       else if (parameters.intensity === undefined) next.intensity = 'high';
+      setIntensityUnknown(false);
     }
     setParameters({ ...parameters, ...next });
   };
@@ -241,6 +244,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
     // admission rule, so switching strength must not silently discard a
     // pending step/sampler/negative-prompt choice; the form explains what
     // needs changing and High can restore the same draft unchanged.
+    setIntensityUnknown(false);
     setParameters((value) => ({ ...value, ...(intensity === undefined ? { intensity: undefined } : { intensity }) }));
   };
   const manage = async (item: GenerationView, cancel = false) => {
@@ -269,6 +273,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
     historicalParameters.current = true;
     const size = width === 1024 && height === 1024 ? 'square' : width === 1216 && height === 832 ? 'landscape'
       : width === 832 && height === 1216 ? 'portrait' : 'custom';
+    setIntensityUnknown(model === V5_FULL_MODEL && intensity === undefined);
     setParameters({ prompt, negative_prompt, mode, model, ...(intensity ? { intensity } : {}), sampler, steps, samples: samples ?? 1, qualityToggle: qualityToggle ?? false, ucPreset: ucPreset ?? 0, ...(reuseSeed ? { background } : {}), size_preset: size,
       ...(mode === 'img2img' ? { base_attachment_id, strength, noise } : {}),
       ...(size === 'custom' ? { custom_width: width, custom_height: height } : {}) });
@@ -286,5 +291,5 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   return { configuration, setConfiguration, page, parameters, setParameters, seed, setSeed, busy, uploading, error, setError,
     source, consent, setConsent, accepted, setAccepted, deliveryMode, setDeliveryMode, attempt, controller, scope,
     isCurrent, watched, submit, upload, policy, allowed, modeAllowed, candidates, patch, manage, selectImage, loadParameters, reuseParameters,
-    clearSource, refresh, refreshConfiguration, configurationRefreshing, unavailableMessage, setIntensity };
+    clearSource, refresh, refreshConfiguration, configurationRefreshing, unavailableMessage, setIntensity, intensityUnknown };
 }

@@ -13,7 +13,7 @@ export function GenerationDrawer(props: GenerationDrawerProps) {
   const { role, onClose } = props;
   const { configuration, page, parameters, setParameters, seed, setSeed, busy, uploading, error, setError,
     source, consent, setConsent, accepted, setAccepted, deliveryMode, setDeliveryMode, attempt, controller, scope,
-    isCurrent, watched, submit, upload, policy, allowed, modeAllowed, candidates, patch, manage, selectImage, refresh, unavailableMessage, setIntensity } = useGenerationDrawer(props);
+    isCurrent, watched, submit, upload, policy, allowed, modeAllowed, candidates, patch, manage, selectImage, refresh, unavailableMessage, setIntensity, intensityUnknown } = useGenerationDrawer(props);
   const txt2imgAllowed = configuration?.allowTxt2Img !== false;
   const img2imgAllowed = configuration?.allowImg2Img !== false;
   const unicode = supportsUnicodePrompts(configuration, parameters.model);
@@ -61,9 +61,9 @@ export function GenerationDrawer(props: GenerationDrawerProps) {
           }}><option value="square">方形 1024×1024</option><option value="landscape">横图 1216×832</option><option value="portrait">竖图 832×1216</option><option value="custom">自定义</option></select></label>
           {parameters.size_preset === 'custom' && <>{(['custom_width', 'custom_height'] as const).map((name) => <label className="field" key={name}><span>{name === 'custom_width' ? '宽度' : '高度'}</span><input aria-label={name === 'custom_width' ? '生图宽度' : '生图高度'} type="number" min="64" max="1024" step="64" required value={parameters[name]} onChange={(event) => patch({ [name]: Number(event.target.value) })} /></label>)}</>}
           <label className="field"><span>模型</span><select aria-label="生图模型" required value={configuration.allowedModels.includes(parameters.model ?? '') ? parameters.model : ''} onChange={(event) => patch({ model: event.target.value })}><option value="">选择当前允许的模型</option>{configuration.allowedModels.map((item) => <option key={item}>{item}</option>)}</select></label>
-          {parameters.model === V5_FULL_MODEL && <label className="field"><span>V5 Full 强度</span><select aria-label="V5 Full 强度" required value={parameters.intensity ?? (intensities.includes('high') ? 'high' : '')}
+          {parameters.model === V5_FULL_MODEL && <label className="field"><span>V5 Full 强度</span><select aria-label="V5 Full 强度" required value={parameters.intensity ?? (intensityUnknown ? '' : intensities.includes('high') ? 'high' : '')}
             onChange={(event) => setIntensity(event.target.value as GenerationParameters['intensity'])}>
-            <option value="">当前服务未提供强度能力</option><option value="high" disabled={!intensities.includes('high')}>High</option><option value="medium" disabled={!intensities.includes('medium')}>Medium</option>
+            <option value="">{intensityUnknown ? '历史强度未知，请明确选择' : '当前服务未提供强度能力'}</option><option value="high" disabled={!intensities.includes('high')}>High</option>{intensities.includes('medium') && <option value="medium">Medium</option>}
           </select></label>}
           {medium && <p role="status" className="field-hint">Medium 固定 {V5_FULL_MEDIUM_STEPS} 步和 {V5_FULL_MEDIUM_SAMPLER}；自定义负向提示词及非零负向预设会被拒绝。已保留当前草稿，请调整后再提交。</p>}
           <label className="field"><span>采样器</span><select aria-label="生图采样器" required value={configuration.allowedSamplers.includes(parameters.sampler ?? '') ? parameters.sampler : ''} onChange={(event) => patch({ sampler: event.target.value })}><option value="">选择当前允许的采样器</option>{configuration.allowedSamplers.map((item) => <option key={item}>{item}</option>)}</select></label>

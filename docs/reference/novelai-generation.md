@@ -16,11 +16,11 @@
 
 ### V5 基础生图（2026-11-12，#356）
 
-服务支持 V4.5 Curated、V4.5 Full、V5 Curated 和 V5 Full。公开配置的 `modelCatalog` 返回当前支持的 `id` 与 `label`，设置页据此列出可允许模型。初始允许列表和默认仍为 V4.5 Curated，既有配置通过显式选择添加 V5。保存 `allowedModels` 时，新界面同时发送写入专用的 `managedModelIds`，服务保留旧允许列表中该界面未管理的模型。旧客户端省略该字段时管理范围为两个 V4.5 模型，完整提交旧列表也会保留已允许的 V5。读取后原样带回的 `modelCatalog` 作为只读字段忽略，修订冲突校验继续执行。
+服务支持 V4.5 Curated、V4.5 Full、V5 Curated 和 V5 Full。公开配置的 `modelCatalog` 返回当前支持的 `id`、`label`、`supportsUnicode` 和 `intensities` 能力字段，设置页据此列出可允许模型；没有强度能力的模型返回空数组。初始允许列表和默认仍为 V4.5 Curated，既有配置通过显式选择添加 V5。保存 `allowedModels` 时，新界面同时发送写入专用的 `managedModelIds`，服务保留旧允许列表中该界面未管理的模型。旧客户端省略该字段时管理范围为两个 V4.5 模型，完整提交旧列表也会保留已允许的 V5。读取后原样带回的 `modelCatalog` 作为只读字段忽略，修订冲突校验继续执行。
 
 V5 文生图和图生图经过同一准入、任务、账本、附件和原来源出口。请求冻结 `params_version=4`、`scale=7`、`noise_schedule=karras`，图生图额外噪声种子为主 seed 减一。原始 `prompt` / `negative_prompt` 保留供编辑和重用，`effective_prompt` / `effective_negative_prompt` 保存真正发送的质量及负向预设扩写结果。界面预设 0/1/2 分别为不使用/轻度/重度，V5 的供应商提示元数据为 0/3/2。V5 支持中文、日文、英文及混合 Unicode 提示词，V4.5 保留英文 ASCII 约束。公开模型目录的 `supportsUnicode` 标明此能力，前端缺少该字段时沿用 ASCII 检查。
 
-V5 Full 的用户模型仍是 `nai-diffusion-5-full`，强度以冻结的 `intensity=high|medium` 保存；缺少该字段的新请求按兼容规则冻结为 High，旧记录没有证据时在工作台和抽屉显示“未知”。只有 Full 能力目录返回 `medium` 时才显示 Medium。Medium 出网时映射为 provider 模型 `nai-diffusion-5-full-medium`，内部固定 `steps=14` 和 `sampler=k_euler_ancestral`，并拒绝自定义负向提示词及非零负向预设；服务端设置仍须允许该采样器和步数。切换强度保留未提交的提示词、步数、采样器和预设草稿，限制以校验消息说明，切回 High 后可继续编辑；切离 Full 会清除不适用的强度字段。旧服务响应缺少 `intensities` 时前端只安全回退为 High，不猜测 Medium。
+V5 Full 的用户模型仍是 `nai-diffusion-5-full`，强度以冻结的 `intensity=high|medium` 保存；缺少该字段的新请求按兼容规则冻结为 High，旧记录没有证据时在工作台和抽屉显示“未知”，复用或重生成这类记录必须明确选择强度后才能提交。只有 Full 能力目录返回 `medium` 时才显示 Medium。Medium 出网时映射为 provider 模型 `nai-diffusion-5-full-medium`，内部固定 `steps=14` 和 `sampler=k_euler_ancestral`，并拒绝自定义负向提示词及非零负向预设；服务端设置仍须允许该采样器和步数。切换强度保留未提交的提示词、步数、采样器和预设草稿，限制以校验消息说明，切回 High 后可继续编辑；切离 Full 会清除不适用的强度字段。旧服务响应缺少 `intensities` 时前端只安全回退为 High，不猜测 Medium。
 
 当前有效默认为 V5 时，故事插画使用该 V5。V4.5 设置沿用故事原有的 Full 优先规则。场景候选在辅助模型开始前保存实际生图模型，辅助提示词使用对应版本，并按冻结的质量、负向预设和模型归一化。V5 指定 WebP 与普通透明通道，受支持的 PNG/WebP 响应在保存和下载时保留原始字节。
 
