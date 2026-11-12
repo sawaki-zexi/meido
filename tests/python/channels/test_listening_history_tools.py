@@ -199,13 +199,14 @@ def test_cached_quote_body_does_not_bypass_original_visibility(tmp_path):
 def test_duplicate_physical_sources_keep_both_original_references_resolvable(tmp_path):
     sessions, channels, thread, context = group_history(tmp_path)
     heard = hear(channels, thread, '同一条平台原文', 'same-platform')
-    addressed = sessions.append_message(thread.session_key, 'user', heard['content'],
+    addressed = sessions.append_message(thread.session_key, 'user', '旧副本正文',
         metadata={**heard['metadata'], 'listening': False, 'triggered': True})
     search, fetch = history_tools(sessions, channels, thread)
     assert execute(search, {'query': '平台原文'}, context)['count'] == 1
     result = execute(fetch, {'ids': [heard['id'], addressed.id]}, context)
     assert result['matched_count'] == result['count'] == 1
     assert result['messages'][0]['content'] == heard['content']
+    assert result['messages'][0]['id'] == heard['id']
     assert 'missing_source_refs' not in result
 
 

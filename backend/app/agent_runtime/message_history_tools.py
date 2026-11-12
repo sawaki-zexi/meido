@@ -97,7 +97,10 @@ class ConversationHistory:
         listening = self._listening_messages()
         if self._listening_scope is not None:
             unique = {}
-            for message in [*messages, *listening]:
+            # The listening table is the authority for a physical platform
+            # message. Legacy session copies are aliases, even when their
+            # cached body or metadata drifted from the original.
+            for message in [*listening, *messages]:
                 key = (message.sessionKey, message.metadata.get('accountId'),
                     message.metadata.get('platformMessageId') or message.id)
                 canonical = unique.setdefault(key, message)
