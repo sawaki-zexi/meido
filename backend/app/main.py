@@ -6037,9 +6037,10 @@ def _external_activity_blocks(role_id, thread_id=""):
 def _channel_memory_blocks(role_id, thread_id, sender_id, *, natural=False, trigger_metadata=None):
     if store.get(role_id) is None or role_id in _channel_roles_deleting:
         return []
-    current = group_repository.prompt_context(role_id, thread_id, sender_id, trigger_metadata=trigger_metadata, concise=natural)
     if natural:
-        current = current[:3000]
+        return group_repository.prompt_blocks(role_id, thread_id, sender_id,
+            trigger_metadata=trigger_metadata, concise=True) + _external_activity_blocks(role_id, thread_id)
+    current = group_repository.prompt_context(role_id, thread_id, sender_id, trigger_metadata=trigger_metadata)
     return ([current] if current else []) + _external_activity_blocks(role_id, thread_id)
 
 
