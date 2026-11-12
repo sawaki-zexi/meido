@@ -259,7 +259,9 @@ class MultichannelGroupRepository:
                 *(item for item in metadata.get("mentionedIds", []) if isinstance(item, str))])
         members = []
         brief_chars = 1500
-        full_budget = 1500 // max(1, len([sender for sender in full_senders if sender]))
+        # Reserve room for the speaker and selected response member first.
+        # Additional related people compete as complete entries afterward.
+        full_budget = 750 if len([sender for sender in full_senders if sender]) > 1 else 1500
         for current_sender in dict.fromkeys([*full_senders, *brief_senders]):
             if not current_sender:
                 continue
@@ -276,7 +278,15 @@ class MultichannelGroupRepository:
                 profile_chars = min(800, max(0, full_budget - len(json.dumps(member, ensure_ascii=False)) - 2))
                 member["profile"] = excerpt(row['profile'], profile_chars) if concise else str(row['profile'])[:4000]
             size = len(json.dumps(member, ensure_ascii=False))
-            if concise and size + 2 > brief_chars:
+            # JSON escaping also consumes the per-member allocation. Reduce
+            # only prose, keeping the sender and complete source references.
+            while concise and full and size + 2 > full_budget and member['profile']:
+                profile_chars //= 2
+                member['profile'] = excerpt(row['profile'], profile_chars) if profile_chars > 5 else ''
+                size = len(json.dumps(member, ensure_ascii=False))
+            if concise and not (member.get('profile') or member['shorthand']):
+                continue
+            if concise and (size + 2 > brief_chars or full and size + 2 > full_budget):
                 continue
             if not concise and not full and size > brief_chars:
                 break

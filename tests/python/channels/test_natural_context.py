@@ -4,6 +4,8 @@ import json
 from dataclasses import replace
 from time import perf_counter
 
+import pytest
+
 from backend.app import main
 from backend.app.agent_runtime.meido_provider import MeidoProvider
 from backend.app.agent_runtime.usage_anchor import InputEstimate
@@ -15,7 +17,8 @@ from test_meme_turn import meme_turn
 from test_natural_turn import natural
 
 
-def test_natural_memory_budget_keeps_notes_and_complete_member_entries(natural):
+@pytest.mark.parametrize('shorthand', ['', '成员速记' * 30], ids=['profile-only', 'with-shorthand'])
+def test_natural_memory_budget_keeps_notes_and_complete_member_entries(natural, shorthand):
     s = natural
 
     async def run():
@@ -25,7 +28,7 @@ def test_natural_memory_budget_keeps_notes_and_complete_member_entries(natural):
                 profile = s.channels.external_memory.members.profile(s.thread, str(22 + index))
                 with s.channels._connect() as db:
                     s.channels.external_memory.members.write_in(db, s.thread, profile['key'],
-                        profile='成员详细资料' * 200, shorthand='成员速记' * 30)
+                        profile=f'PROFILE_{22 + index}_' + '成员详细资料"\\\n' * 200, shorthand=shorthand)
             main.group_repository.update_context(s.role.id, s.thread.thread_id,
                 group_note='GROUP_NOTE' + '约定' * 600, summary='GROUP_ACTIVITY' + '动态' * 600)
             blocks = main._channel_memory_blocks(s.role.id, s.thread.thread_id, '33', natural=True,
@@ -34,9 +37,15 @@ def test_natural_memory_budget_keeps_notes_and_complete_member_entries(natural):
             assert any(block.startswith('[当前群近期摘要]') for block in blocks)
             member_block = next(block for block in blocks if block.startswith('[当前会话成员资料'))
             members = json.loads(member_block.split('\n', 1)[1])
-            assert members[0]['senderId'] == '33'
+            # The current speaker and first response candidate retain useful
+            # facts even when twelve relevant profiles compete for capacity.
+            assert [member['senderId'] for member in members[:2]] == ['33', '22']
+            assert members[0]['profile'].startswith('PROFILE_33_')
+            assert members[1]['profile'].startswith('PROFILE_22_')
+            assert all(member.get('profile') or member['shorthand'] for member in members)
             assert len(member_block) <= 1600
             assert all('sources' in member and 'senderId' in member for member in members)
+            assert all(member['sources'] == [s.thread.thread_id] for member in members)
             assert '摘录' in str(blocks)
         finally:
             await s.scheduler.close()
