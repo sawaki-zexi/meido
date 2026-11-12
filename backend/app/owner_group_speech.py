@@ -2,9 +2,9 @@
 from datetime import datetime, timedelta, timezone
 import json
 
-from .channels.conversation_context import project_record
+from .channels.conversation_context import project_record, record_fingerprint
 from .channels.delivery_projection import delivered_message
-from .channels.source_authority import channel_owner_binding, source_messages
+from .channels.source_authority import channel_owner_binding
 from .context_windows import _stamp
 
 
@@ -46,8 +46,9 @@ class OwnerGroupSpeech:
                         or message.metadata.get('deliveryProjection') is True):
                     continue
                 records.append(message.model_dump(mode='json'))
-        if thread.channel == 'qq' and self.channels.group_listening(thread.role_id, thread.account_id, thread.chat_id):
+        if thread.channel == 'qq':
             records.extend(self.channels.listening._message(row) for row in heard)
+        if thread.channel == 'qq' and self.channels.group_listening(thread.role_id, thread.account_id, thread.chat_id):
             records.extend(self.channels.listening.temporary(thread.role_id, thread.thread_id))
         return [record for record in records if (identifiers is None or record['id'] in identifiers)
             and (moment := _time(record.get('createdAt'))) is not None
@@ -127,7 +128,7 @@ class OwnerGroupSpeech:
                     'platformMessageId': record['metadata'].get('platformMessageId'),
                     'account': self.history._account(thread.account_id), 'binding': binding,
                     'listeningEpoch': self._listening_epoch(thread),
-                    'fingerprint': _stamp(source_messages(selected))})
+                    'fingerprint': _stamp([record_fingerprint(item) for item in selected])})
         candidates.sort(key=lambda item: (_time(item['timestamp']), item['messageId']), reverse=True)
         unique = {}
         for item in candidates:
@@ -166,7 +167,7 @@ class OwnerGroupSpeech:
             statement = records[source['messageId']]
             if self._owner(thread, account, statement) != source['binding']:
                 raise PermissionError('主人近期群发言身份已变化')
-            if _stamp(source_messages([records[identifier] for identifier in ids])) != source['fingerprint']:
+            if _stamp([record_fingerprint(records[identifier]) for identifier in ids]) != source['fingerprint']:
                 raise PermissionError('主人近期群发言在本轮中已变化')
             projection = project_record(statement)
             result.append({'group': thread.title or thread.chat_id, 'time': source['timestamp'],

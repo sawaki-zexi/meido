@@ -89,6 +89,47 @@ def test_temporary_owner_speech_expires_with_window_and_restart(tmp_path):
     assert 'TEMPORARY_OWNER' not in str(restored.group_speech_blocks())
 
 
+def test_disabling_listening_keeps_saved_speech_available_to_new_turns(tmp_path):
+    _, channels, thread = group_history(tmp_path)
+    channels.listening.set_cap('r1', thread.thread_id, 1)
+    hear(channels, thread, 'saved', 'SAVED_OWNER')
+    hear(channels, thread, 'temporary', 'TEMPORARY_OWNER')
+    frozen = ConversationHistoryView(channels, role_id='r1', group_speech=True)
+    assert 'TEMPORARY_OWNER' in str(frozen.group_speech_blocks())
+    channels.set_group_listening('r1', 'qq', 'group', False)
+    with pytest.raises(PermissionError):
+        frozen.require_snapshot_current()
+    current = ConversationHistoryView(channels, role_id='r1', group_speech=True)
+    assert 'SAVED_OWNER' in str(current.group_speech_blocks())
+    assert 'TEMPORARY_OWNER' not in str(current.group_speech_blocks())
+
+
+@pytest.mark.parametrize('change', ['content', 'identity', 'reply'])
+def test_binding_run_preserves_frozen_speech_but_source_edits_invalidate_it(tmp_path, change):
+    from backend.app.models import AgentRun
+    sessions, channels, thread = group_history(tmp_path)
+    _, original = channels.append_event(thread, direction='inbound', content='OWNER_SOURCE',
+        external_message_id='direct', metadata={'senderId': 'owner', 'senderIsOwner': True})
+    reply = sessions.append_message(thread.session_key, 'assistant', 'CONFIRMED_REPLY',
+        metadata={'channel': 'qq', 'deliveryStatus': 'sent',
+            'responseRelation': {'triggerSourceMessageId': original.id}})
+    view = ConversationHistoryView(channels, role_id='r1', group_speech=True)
+    before = view.group_speech_blocks()
+    sessions.create_run_with_existing_user_message(AgentRun(runId='bound-run', roleId='r1',
+        sessionKey=thread.session_key, status='created', startedAt=datetime.now(timezone.utc)), original.id)
+    view.require_snapshot_current()
+    assert view.group_speech_blocks() == before
+    with channels._connect() as db:
+        if change == 'identity':
+            metadata = {**original.metadata, 'senderIsOwner': False}
+            db.execute('UPDATE messages SET metadata_json=? WHERE message_id=?', (json.dumps(metadata), original.id))
+        else:
+            identifier = reply.id if change == 'reply' else original.id
+            db.execute('UPDATE messages SET content=? WHERE message_id=?', ('CHANGED', identifier))
+    with pytest.raises(PermissionError):
+        view.require_snapshot_current()
+
+
 def test_direct_owner_speech_preserves_quote_and_confirmed_reply(tmp_path):
     sessions, channels, thread = group_history(tmp_path)
     _, original = channels.append_event(thread, direction='inbound', content='请回答我引用的群友',
