@@ -11,7 +11,7 @@ export function MemoryInspector({ memory, onEdit, onSimilar, onAction, onOpenSou
       <h3><Icon name="chat" size={15} />来源</h3>
       {origins.some(origin => origin.messageIds?.length || origin.messageRange)
         ? origins.map((origin, index) => <div className="memory-origin-card" key={`${origin.stableSourceKey}-${index}`}>
-          <span>{sourceLabels[origin.kind] ?? origin.kind}{origin.messageRange ? ` · 消息 ${origin.messageRange[0]}–${origin.messageRange[1]}` : ''}</span>
+          <span>{sourceLabels[origin.kind] ?? '对话来源'}{origin.messageRange ? ` · 消息 ${origin.messageRange[0]}–${origin.messageRange[1]}` : ''}</span>
           <div>{(origin.messageIds ?? []).map((messageId, itemIndex) => <button type="button" className="memory-source-link" key={messageId} onClick={() => onOpenSource(origin, messageId)}>
             定位到消息{origin.messageIds.length > 1 ? ` ${itemIndex + 1}` : ''}<span aria-hidden="true">↗</span></button>)}
           {!origin.messageIds?.length && origin.messageRange && <button type="button" className="memory-source-link" onClick={() => onOpenSource(origin)}>定位到回合<span aria-hidden="true">↗</span></button>}</div>

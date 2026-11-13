@@ -1433,7 +1433,6 @@ button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: v
 .memory-entry-editor textarea { resize: vertical; min-width: 0; line-height: 1.8; }
 .memory-entry-editor .field input, .memory-entry-editor .field select, .memory-entry-editor .field textarea { width: 100%; background: var(--surface-input); }
 .memory-entry-editor textarea:disabled { color: var(--ink-soft); opacity: 1; }
-.memory-entry-editor .memory-json { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 .memory-entry-editor .form-actions { padding-top: 12px; border-top: 1px solid var(--line); }
 .memory-entry-editor button.primary { background: var(--rose); color: white; }
 .memory-entry-editor button.primary:hover:not(:disabled) { background: var(--accent-hover); color: white; }
@@ -1450,12 +1449,28 @@ button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: v
 .memory-similar-list p { font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; }
 .memory-similar-list .memory-type { background: var(--hover); color: var(--rose-deep); padding: 3px 8px; border-radius: 5px; font-size: 11px; }
 .dialog-compact .dialog-panel:has(.memory-entry-editor), .dialog-compact .dialog-panel:has(.memory-similar-intro) { width: min(520px, 100%); max-height: min(88dvh, 840px); }
-.memory-document-select { display: flex; align-items: center; gap: 12px; color: var(--ink-faint); font-size: 13px; }
-.memory-document-select select { width: min(100%, 230px); font-size: 14px; background: var(--surface-card); }
-.memory-document-paper { min-width: 0; margin-top: 28px; }
-.memory-document-paper h2 { margin: 0 0 8px; font-size: 22px; font-weight: 600; }
-.memory-document-paper header > p { margin: 0; color: var(--ink-faint); font-size: 13px; }
-.memory-document-text { margin: 28px 0 0; font-family: inherit; font-size: 16px; line-height: 2; color: var(--ink-soft); white-space: pre-wrap; overflow-wrap: anywhere; }
+.memory-document-layout { display: grid; grid-template-columns: 170px minmax(0, 1fr); align-items: start; gap: 32px; min-width: 0; }
+.memory-document-layout.is-compact { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+.memory-document-nav { display: grid; align-content: start; gap: 6px; min-width: 0; }
+.memory-document-nav > .memory-eyebrow { margin: 8px 10px; }
+.memory-document-nav > .memory-eyebrow:not(:first-child) { margin-top: 20px; }
+.memory-document-nav > button { display: grid; gap: 5px; padding: 10px; border: 0; border-radius: 10px; background: transparent; color: var(--ink-soft); text-align: left; font-size: 14px; }
+.memory-document-nav > button small { font-size: 11px; line-height: 1.6; color: var(--ink-faint); }
+.memory-document-nav > button:hover { background: var(--hover); }
+.memory-document-nav > button[aria-current="page"] { background: var(--role-soft); color: var(--rose-deep); }
+.memory-document-select { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; color: var(--ink-faint); font-size: 13px; }
+.memory-document-select select { width: min(100%, 260px); min-width: 0; font-size: 14px; background: var(--surface-card); }
+.memory-document-paper { min-width: 0; width: 100%; max-width: 74ch; margin-inline: auto; }
+.memory-document-paper > header { padding-bottom: 20px; border-bottom: 1px solid var(--line); }
+.memory-document-paper > header h2 { margin: 0 0 8px; font-size: 22px; font-weight: 600; }
+.memory-document-paper header > p { margin: 0; color: var(--ink-faint); font-size: 13px; line-height: 1.7; }
+.memory-document-text { margin: 26px 0 0; font-size: 16px; line-height: 1.95; color: var(--ink-soft); }
+.memory-document-text .message-markdown h3 { margin-block: 1.6em .8em; color: var(--ink); font-size: 1.2em; }
+.memory-document-text .message-markdown h4 { margin-block: 1.6em .7em; color: var(--ink); font-size: 1.05em; }
+.memory-document-text .message-markdown > :first-child { margin-top: 0; }
+.memory-document-text .message-markdown li + li { margin-top: .7em; }
+.memory-document-text .message-markdown .memory-document-source { margin-block: .35em .8em; color: var(--ink-faint); font-size: 12px; line-height: 1.7; }
+.memory-document-provenance { margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--ink-faint); font-size: 12px; line-height: 1.7; }
 .memory-document-empty { display: grid; place-content: center; min-height: 180px; text-align: center; color: var(--ink-faint); }
 .memory-document-empty p { font-size: 15px; }
 .memory-document-empty span { font-size: 13px; }
@@ -1480,6 +1495,11 @@ button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: v
   .memory-management > button { margin-left: 0; }
   .dialog-compact:has(.memory-entry-editor), .dialog-compact:has(.memory-similar-intro) { padding: 12px; }
   .memory-entry-editor { padding: 20px; }
+  .memory-document-layout { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .memory-document-nav { display: flex; overflow-x: auto; gap: 6px; padding-bottom: 8px; }
+  .memory-document-nav > .memory-eyebrow, .memory-document-nav > button small { display: none; }
+  .memory-document-nav > button { flex: none; align-items: center; white-space: nowrap; font-size: 13px; }
+  .memory-document-text { font-size: 15px; line-height: 1.9; }
 }
 
 /* NovelAI settings: scoped form layout, shared settings surfaces. */
@@ -1739,8 +1759,7 @@ button.settings-switch[aria-checked="true"]:hover:not(:disabled) { background: v
 .memory-panel.is-embedded .memory-empty > p, .memory-panel.is-embedded .memory-empty > .ghost { font-size: 13px; }
 .memory-panel.is-embedded .memory-filter-panel { grid-template-columns: minmax(0, 1fr) auto; }
 .memory-panel.is-embedded .memory-document-paper { margin-top: 0; }
-.memory-panel.is-embedded .memory-document-select + .memory-document-paper { margin-top: 24px; }
-.memory-panel.is-embedded .memory-document-paper h2 { font-size: 18px; }
+.memory-panel.is-embedded .memory-document-paper > header h2 { font-size: 18px; }
 @media (max-width: 1180px) {
   .memory-panel.is-embedded .memory-toolbar { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .memory-panel.is-embedded .memory-search { grid-column: span 2; }

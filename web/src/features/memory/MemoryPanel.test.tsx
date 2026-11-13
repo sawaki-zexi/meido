@@ -110,9 +110,11 @@ it('在列表原位置展开来源和操作，编辑时才打开表单', async (
   await user.click(detail.getByRole('button', { name: '编辑记录' }));
   const editor = within(await screen.findByRole('dialog', { name: '编辑记忆' }));
   expect(editor.getByLabelText('内容')).toBeDisabled();
-  expect(editor.getByLabelText('扩展字段（JSON）')).not.toBeVisible();
+  expect(editor.queryByLabelText('扩展字段（JSON）')).not.toBeInTheDocument();
+  expect(editor.queryByLabelText('来源（JSON）')).not.toBeInTheDocument();
   await user.click(editor.getByText('高级字段'));
-  expect(editor.getByLabelText('扩展字段（JSON）')).toBeVisible();
+  expect(editor.queryByText(/JSON|role:r1|message:m1/)).not.toBeInTheDocument();
+  expect(editor.getByLabelText('情绪权重')).toBeVisible();
   expect(calls.every(call => call.method === 'GET')).toBe(true);
 });
 
@@ -201,31 +203,41 @@ it('记忆文档单独读取，标题可读，切回条目后保留搜索草稿'
   await user.click(screen.getByRole('tab', { name: '记忆文档' }));
   expect(await screen.findByText('喜欢红茶，周末一起看电影。')).toBeVisible();
   expect(screen.getByRole('heading', { name: '长期记忆' })).toBeVisible();
-  await user.selectOptions(screen.getByRole('combobox', { name: '选择记忆文档' }), 'journal:2026-10-19');
+  await user.click(screen.getByRole('button', { name: /整理日志.*2026/ }));
   expect(screen.getByText('今天整理了偏好。')).toBeVisible();
   await user.click(screen.getByRole('tab', { name: '记忆条目' }));
   expect(screen.getByRole('textbox', { name: '搜索记忆' })).toHaveValue('未提交的草稿');
 });
 
-it('编辑状态保留原时间精度和来源，忘记操作取消不提交', async () => {
-  const original = { ...item, happenedAt: '2026-10-19T00:15:39.123Z', extra: { domain: 'life', retained: 7 } };
+it('编辑状态保留未展示的完整元数据、原时间精度和来源，忘记操作取消不提交', async () => {
+  const rangeOrigin = { kind: 'consolidation', sessionKey: 'role:r1', messageIds: [], messageRange: [12, 24] as [number, number], stableSourceKey: 'consolidation-private' };
+  const original = { ...item, happenedAt: '2026-10-19T00:15:39.123Z', extra: { domain: 'life', retained: 7, provenance: { key: 'private-extra', values: [false, null, 353] } },
+    sourceRef: { ...item.sourceRef, sourceKeys: ['private-source-a', 'private-source-b'], sources: [origin, rangeOrigin] } };
+  const onSource = vi.fn();
   const { calls } = fakeBackend({
     'GET /api/roles/r1/memories.*': () => ({ body: { memories: [original], total: 1 } }),
     'PATCH /api/roles/r1/memory-admin/items/one': () => ({ body: original }),
   });
   const user = userEvent.setup();
-  render(<MemoryPanel role={owner} onBack={() => {}} onOpenSource={() => {}} />);
+  render(<MemoryPanel role={owner} onBack={() => {}} onOpenSource={onSource} />);
   await user.click(await screen.findByRole('button', { name: `查看记忆：${item.summary}` }));
+  expect(screen.getByText(/消息 12–24/)).toBeVisible();
+  await user.click(screen.getByRole('button', { name: '定位到回合' }));
+  expect(onSource).toHaveBeenCalledWith(rangeOrigin);
   await user.click(screen.getByText('更多操作与信息'));
   await user.click(screen.getByRole('button', { name: '忘记' }));
   await user.click(within(screen.getByRole('dialog', { name: '忘记这条记忆' })).getByRole('button', { name: '取消' }));
   expect(calls.every(call => call.method === 'GET')).toBe(true);
   await user.click(screen.getByRole('button', { name: '编辑记录' }));
+  expect(screen.queryByText(/private-extra|private-source|consolidation-private|message:m1/)).not.toBeInTheDocument();
   await user.selectOptions(screen.getByLabelText('状态'), 'forgotten');
+  await user.click(screen.getByText('高级字段'));
+  await user.clear(screen.getByLabelText('情绪权重'));
+  await user.type(screen.getByLabelText('情绪权重'), '3');
   await user.click(screen.getByRole('button', { name: '保存' }));
   await waitFor(() => expect(calls.some(call => call.method === 'PATCH')).toBe(true));
   expect(calls.find(call => call.method === 'PATCH')?.body).toMatchObject({
-    status: 'forgotten', happenedAt: original.happenedAt, extraJson: original.extra, sourceRef: original.sourceRef,
+    status: 'forgotten', happenedAt: original.happenedAt, emotionalWeight: 3, extraJson: original.extra, sourceRef: original.sourceRef,
   });
 });
 
@@ -238,6 +250,33 @@ it('加载失败不伪装成空库，可以重新读取', async () => {
   expect(screen.queryByText('暂无记忆')).not.toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: '重新加载' }));
   expect(await screen.findByText(item.summary)).toBeVisible();
+});
+
+it('角色切换丢弃旧文档请求，新角色的加载、错误和空文档可以独立恢复', async () => {
+  let releaseOld!: (reply: { body: unknown }) => void;
+  let reads = 0;
+  fakeBackend({
+    'GET /api/roles/r[12]/memories.*': () => ({ body: { memories: [], total: 0 } }),
+    'GET /api/roles/r1/memory-documents': () => new Promise(resolve => { releaseOld = resolve; }),
+    'GET /api/roles/r2/memory-documents': () => ++reads === 1 ? { status: 500, body: { detail: '文档暂时离线' } }
+      : { body: { documents: [{ name: 'SELF.md', content: '## 澪的自我认识\n\n喜欢绘画。' }], journals: [] } },
+  });
+  const user = userEvent.setup();
+  const panel = render(<MemoryPanel key={owner.id} role={owner} onBack={() => {}} onOpenSource={() => {}} />);
+  await user.click(screen.getByRole('tab', { name: '记忆文档' }));
+  expect(screen.getByText('正在读取记忆文档…')).toBeVisible();
+  const next = role({ id: 'r2', name: '澪' });
+  panel.rerender(<MemoryPanel key={next.id} role={next} onBack={() => {}} onOpenSource={() => {}} />);
+  await user.click(screen.getByRole('tab', { name: '记忆文档' }));
+  expect(await screen.findByText('暂时无法读取文档')).toBeVisible();
+  expect(screen.getByText('文档暂时离线')).toBeVisible();
+  await user.click(screen.getByRole('button', { name: '重新加载' }));
+  expect(await screen.findByText('这里还没有内容')).toBeVisible();
+  releaseOld({ body: { documents: [{ name: 'MEMORY.md', content: '旧角色的未完成请求' }], journals: [] } });
+  await user.click(screen.getByRole('button', { name: /自我认识/ }));
+  expect(screen.getByRole('heading', { name: '澪的自我认识' })).toBeVisible();
+  expect(screen.queryByText('旧角色的未完成请求')).not.toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: '澪的记忆' })).toBeVisible();
 });
 
 it('选择后切换筛选失败，会清掉不可见的旧选择并禁用批量删除', async () => {
