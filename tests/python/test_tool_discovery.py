@@ -313,6 +313,48 @@ def test_live_revocation_blocks_execution_without_mutating_issued_schema_version
     asyncio.run(execute())
 
 
+def test_external_scope_filters_provider_schema_and_rechecks_forged_execution():
+    class PublicTool:
+        definition = ToolDefinition(
+            "public.read",
+            "公开资料",
+            {"type": "object", "properties": {}, "additionalProperties": False},
+            external_allowed=True,
+        )
+
+        async def execute(self, arguments, context, on_update=None):
+            del arguments, context, on_update
+            return AgentToolResult("public")
+
+    class PrivateTool:
+        definition = ToolDefinition(
+            "private.read",
+            "主人资料",
+            {"type": "object", "properties": {}, "additionalProperties": False},
+        )
+
+        async def execute(self, arguments, context, on_update=None):
+            del arguments, context, on_update
+            return AgentToolResult("private")
+
+    registry = CapabilityRegistry([PublicTool(), PrivateTool()])
+    capabilities = registry.resolve(
+        role_id="role",
+        session_key="thread:group",
+        run_id="run",
+        enabled_tools={"public.read", "private.read"},
+        external_only=True,
+    )
+    context = ToolContext("role", "thread:group", "run", CancellationToken())
+
+    assert {item["function"]["name"] for item in capabilities.provider_schemas()} == {"public.read"}
+    assert capabilities.get("private.read") is None
+    assert capabilities.authorization_denial(PrivateTool.definition, context, {}) == (
+        "tool is not allowed for external context"
+    )
+    assert capabilities.authorization_denial(PublicTool.definition, context, {}) is None
+
+
 def test_entered_tool_finishes_naturally_after_registry_permission_changes(tmp_path):
     initialize_databases(tmp_path)
     sessions = SessionStore(tmp_path / "sessions.db")
