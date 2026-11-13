@@ -13,7 +13,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, field_validator
 
 from .config import NovelaiSettings
-from .model_catalog import MODEL_CATALOG
+from .model_catalog import (MODEL_CATALOG, V5_FULL_MEDIUM_PROVIDER_MODEL,
+                            V5_FULL_MEDIUM_SAMPLER, V5_FULL_MEDIUM_STEPS)
 from .prompts import validate_prompt
 
 
@@ -57,6 +58,7 @@ class GenerationRequest(BaseModel):
     samples: StrictInt = Field(default=1, ge=1, le=4)
     sampler: str | None = None
     model: str | None = None
+    intensity: Literal['high', 'medium'] | None = None
     strength: StrictFloat | None = Field(default=None, ge=.01, le=1, allow_inf_nan=False)
     noise: StrictFloat | None = Field(default=None, ge=0, le=.99, allow_inf_nan=False)
     intent: Literal['user_requested', 'chat_expression', 'scene_cg'] = 'user_requested'
@@ -87,8 +89,34 @@ def normalize_request(arguments: dict[str, object], settings: NovelaiSettings) -
     })
     model = resolve_model(settings, request.model or None)
     capabilities = MODEL_CATALOG[model]
+    if request.intensity is not None and request.intensity not in capabilities.intensities:
+        raise ValueError('intensity is not supported by the selected model')
+    intensity = request.intensity
+    if model == 'nai-diffusion-5-full':
+        # Existing clients do not know about the strength field. Their
+        # explicit Full requests remain High and the frozen record makes that
+        # effective choice visible for future replay.
+        intensity = intensity or 'high'
+    elif intensity is not None:
+        raise ValueError('intensity is only supported by V5 Full')
+    medium = intensity == 'medium'
     validate_prompt(request.prompt, ascii_only=not capabilities.supports_unicode, required=True)
     validate_prompt(request.negative_prompt, ascii_only=not capabilities.supports_unicode)
+    if medium:
+        if request.negative_prompt.strip(' '):
+            raise ValueError('V5 Full Medium does not allow a custom negative prompt')
+        effective_uc_preset = (request.ucPreset if request.ucPreset is not None
+                               else settings.undesiredContentPreset)
+        if effective_uc_preset != 0:
+            raise ValueError('V5 Full Medium requires the built-in negative preset')
+        if request.steps is not None and request.steps != V5_FULL_MEDIUM_STEPS:
+            raise ValueError('V5 Full Medium requires 14 steps')
+        if request.sampler is not None and request.sampler != V5_FULL_MEDIUM_SAMPLER:
+            raise ValueError('V5 Full Medium requires Euler Ancestral')
+        if settings.maxSteps < V5_FULL_MEDIUM_STEPS:
+            raise ValueError('V5 Full Medium requires 14 steps within the current limit')
+        if V5_FULL_MEDIUM_SAMPLER not in settings.allowedSamplers:
+            raise ValueError('V5 Full Medium sampler is not currently allowed')
     if request.intent not in {'user_requested', 'chat_expression'} or request.scene_key is not None:
         raise ValueError('scene generation requires a host-committed observation')
     if request.mode == 'txt2img' and not settings.allowTxt2Img:
@@ -110,8 +138,9 @@ def normalize_request(arguments: dict[str, object], settings: NovelaiSettings) -
         width, height = {'square': (1024, 1024), 'landscape': (1216, 832), 'portrait': (832, 1216)}[request.size_preset]
     if width * height > settings.maxPixels:
         raise ValueError('pixel budget exceeded')
-    steps = request.steps if request.steps is not None else settings.maxSteps
-    sampler = request.sampler or settings.defaultSampler
+    steps = (V5_FULL_MEDIUM_STEPS if medium
+             else request.steps if request.steps is not None else settings.maxSteps)
+    sampler = (V5_FULL_MEDIUM_SAMPLER if medium else request.sampler or settings.defaultSampler)
     if model not in settings.allowedModels or sampler not in settings.allowedSamplers or steps > settings.maxSteps:
         raise ValueError('model, sampler or steps not currently allowed')
     value = request.model_dump(exclude_none=True)
@@ -119,6 +148,8 @@ def normalize_request(arguments: dict[str, object], settings: NovelaiSettings) -
                  seed=request.seed if request.seed is not None else secrets.randbelow(2**32),
                  qualityToggle=request.qualityToggle if request.qualityToggle is not None else settings.addQualityTags,
                  ucPreset=request.ucPreset if request.ucPreset is not None else settings.undesiredContentPreset)
+    if model == 'nai-diffusion-5-full':
+        value['intensity'] = intensity
     if request.mode == 'img2img':
         value.update(strength=request.strength if request.strength is not None else .7,
                      noise=request.noise if request.noise is not None else .2)
@@ -166,7 +197,12 @@ def generation_payload(request: dict[str, object], *, base_image: bytes | None =
         parameters.update(image=base64.b64encode(base_image).decode('ascii'), strength=request['strength'], noise=request['noise'])
         if capabilities.version == 'V5':
             parameters.update(extra_noise_seed=request['seed'] - 1, color_correct=False)
-    return {'input': prompt, 'model': request['model'],
+    provider_model = request['model']
+    if request.get('intensity') == 'medium':
+        if request['model'] != 'nai-diffusion-5-full':
+            raise ValueError('intensity is only supported by V5 Full')
+        provider_model = V5_FULL_MEDIUM_PROVIDER_MODEL
+    return {'input': prompt, 'model': provider_model,
             'action': 'img2img' if request['mode'] == 'img2img' else 'generate', 'parameters': parameters}
 
 

@@ -7,18 +7,20 @@ import { Notice, Placeholder } from '../../ui/Status';
 import { useGenerationDrawer, activeGenerationStatuses as activeStatuses, type GenerationDrawerProps } from './useGenerationDrawer';
 import { PromptTagManager } from './PromptTagManager';
 import { undesiredContentPresetLabel } from './promptPreferences';
-import { promptInputError, supportsUnicodePrompts } from './generationValidation';
+import { modelIntensities, promptInputError, supportsUnicodePrompts, V5_FULL_MEDIUM_SAMPLER, V5_FULL_MEDIUM_STEPS, V5_FULL_MODEL } from './generationValidation';
 import { statusLabels as labels, generationDeliveryMessage, generationErrorMessage, writebackLabels, libraryWritebackLabels } from './generationLabels';
 export function GenerationDrawer(props: GenerationDrawerProps) {
   const { role, onClose } = props;
   const { configuration, page, parameters, setParameters, seed, setSeed, busy, uploading, error, setError,
     source, consent, setConsent, accepted, setAccepted, deliveryMode, setDeliveryMode, attempt, controller, scope,
-    isCurrent, watched, submit, upload, policy, allowed, modeAllowed, candidates, patch, manage, selectImage, refresh, unavailableMessage } = useGenerationDrawer(props);
+    isCurrent, watched, submit, upload, policy, allowed, modeAllowed, candidates, patch, manage, selectImage, refresh, unavailableMessage, setIntensity, intensityUnknown } = useGenerationDrawer(props);
   const txt2imgAllowed = configuration?.allowTxt2Img !== false;
   const img2imgAllowed = configuration?.allowImg2Img !== false;
   const unicode = supportsUnicodePrompts(configuration, parameters.model);
   const promptError = promptInputError(parameters.prompt, '正向提示词', unicode)
     || promptInputError(parameters.negative_prompt ?? '', '负向提示词', unicode);
+  const intensities = modelIntensities(configuration, parameters.model);
+  const medium = parameters.intensity === 'medium';
   return <Dialog title={`${role.name}的生图与历史`} variant="drawer" onClose={onClose}>
     {error && <Notice onDismiss={() => setError('')}>{error}</Notice>}
     {accepted && watched.length > 0 && <p role="status">后台生成已受理。关闭此面板后仍会继续，可在历史查询或停止。</p>}
@@ -59,6 +61,11 @@ export function GenerationDrawer(props: GenerationDrawerProps) {
           }}><option value="square">方形 1024×1024</option><option value="landscape">横图 1216×832</option><option value="portrait">竖图 832×1216</option><option value="custom">自定义</option></select></label>
           {parameters.size_preset === 'custom' && <>{(['custom_width', 'custom_height'] as const).map((name) => <label className="field" key={name}><span>{name === 'custom_width' ? '宽度' : '高度'}</span><input aria-label={name === 'custom_width' ? '生图宽度' : '生图高度'} type="number" min="64" max="1024" step="64" required value={parameters[name]} onChange={(event) => patch({ [name]: Number(event.target.value) })} /></label>)}</>}
           <label className="field"><span>模型</span><select aria-label="生图模型" required value={configuration.allowedModels.includes(parameters.model ?? '') ? parameters.model : ''} onChange={(event) => patch({ model: event.target.value })}><option value="">选择当前允许的模型</option>{configuration.allowedModels.map((item) => <option key={item}>{item}</option>)}</select></label>
+          {parameters.model === V5_FULL_MODEL && <label className="field"><span>V5 Full 强度</span><select aria-label="V5 Full 强度" required value={parameters.intensity ?? (intensityUnknown ? '' : intensities.includes('high') ? 'high' : '')}
+            onChange={(event) => setIntensity(event.target.value as GenerationParameters['intensity'])}>
+            <option value="">{intensityUnknown ? '历史强度未知，请明确选择' : '当前服务未提供强度能力'}</option><option value="high" disabled={!intensities.includes('high')}>High</option>{intensities.includes('medium') && <option value="medium">Medium</option>}
+          </select></label>}
+          {medium && <p role="status" className="field-hint">Medium 固定 {V5_FULL_MEDIUM_STEPS} 步和 {V5_FULL_MEDIUM_SAMPLER}；自定义负向提示词及非零负向预设会被拒绝。已保留当前草稿，请调整后再提交。</p>}
           <label className="field"><span>采样器</span><select aria-label="生图采样器" required value={configuration.allowedSamplers.includes(parameters.sampler ?? '') ? parameters.sampler : ''} onChange={(event) => patch({ sampler: event.target.value })}><option value="">选择当前允许的采样器</option>{configuration.allowedSamplers.map((item) => <option key={item}>{item}</option>)}</select></label>
           <label className="field"><span>采样步数</span><input aria-label="生图采样步数" type="number" min="1" max={configuration.maxSteps} step="1" required value={parameters.steps} onChange={(event) => patch({ steps: Number(event.target.value) })} /></label>
           <label className="field"><span>生成张数</span><select aria-label="生成张数" value={parameters.samples ?? 1} onChange={(event) => patch({ samples: Number(event.target.value) })}>
@@ -83,7 +90,7 @@ export function GenerationDrawer(props: GenerationDrawerProps) {
         <p>{labels[item.status] ?? item.status} · {new Date(item.createdAt).toLocaleString()}</p>
         <p>消费：{item.consumption === 'possible' ? '已出网，可能计费；未确认实际扣费。' : item.consumption === 'not_dispatched' ? '生成请求尚未出网。' : '消费状态尚未确认。'}</p>
         {item.purpose === 'scene_cg' && <p>{item.auxiliaryConsumption === 'possible' ? '辅助请求已出网，可能计费；未出图仍计入 CG 与账户尝试。' : item.auxiliaryConsumption === 'not_dispatched' ? '辅助请求尚未出网。' : '辅助消费状态尚未确认。'}</p>}
-        {item.parameters ? <p>{item.parameters.model} · Seed {item.parameters.seed} · {item.parameters.width}×{item.parameters.height} · {item.parameters.steps} 步</p> : <p>尚无生图参数，本次可能仅进行场景观察。</p>}
+        {item.parameters ? <p>{item.parameters.model}{item.parameters.model === V5_FULL_MODEL ? ` · 强度 ${item.parameters.intensity ?? '未知'}` : ''} · Seed {item.parameters.seed} · {item.parameters.width}×{item.parameters.height} · {item.parameters.steps} 步</p> : <p>尚无生图参数，本次可能仅进行场景观察。</p>}
         {item.parameters && <p>质量标签：{item.parameters.qualityToggle === undefined ? '未记录' : item.parameters.qualityToggle ? '开启' : '关闭'} · 负向预设：{undesiredContentPresetLabel(item.parameters.ucPreset)}</p>}
         {item.parameters?.effective_prompt !== undefined && <details><summary>实际发送的提示词</summary>
           <p>正向 tags {item.parameters.effective_prompt}</p><p>负向 tags {item.parameters.effective_negative_prompt || '（空）'}</p>

@@ -81,3 +81,26 @@ def test_v5_invalid_or_unowned_inputs_do_not_use_an_attempt(novelai_main, change
     assert not service.peer.requests
     history = client.get(path).json()
     assert not history['generations'] and history['usage']['accountAttempts'] == 0
+
+
+def test_v5_full_medium_freezes_intensity_and_provider_model_in_the_real_generation_path(novelai_main):
+    client, service = novelai_main
+    configuration = client.get('/api/services/novelai').json()
+    saved = client.put('/api/services/novelai', json={'expectedRevision': configuration['revision'],
+        'allowedModels': ['nai-diffusion-5-full'], 'defaultModel': 'nai-diffusion-5-full',
+        'undesiredContentPreset': 0})
+    assert saved.status_code == 200, saved.text
+    parameters = {**service.request, 'model': 'nai-diffusion-5-full', 'intensity': 'medium',
+                  'sampler': 'k_euler_ancestral', 'steps': 14, 'ucPreset': 0}
+    path = f'/api/roles/{service.role.id}/generations'
+    response = client.post(path, json={'requestId': '35835835835835835835835835835835',
+        'expectedRevision': saved.json()['revision'], 'parameters': parameters})
+    assert response.status_code == 200, response.text
+    result = response.json()['generation']
+    assert result['status'] == 'succeeded'
+    assert result['parameters']['model'] == 'nai-diffusion-5-full'
+    assert result['parameters']['intensity'] == 'medium'
+    assert result['parameters']['steps'] == 14
+    assert result['parameters']['sampler'] == 'k_euler_ancestral'
+    assert service.peer.requests[0]['body']['model'] == 'nai-diffusion-5-full-medium'
+    assert service.peer.requests[0]['body']['parameters']['steps'] == 14

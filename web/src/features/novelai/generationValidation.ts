@@ -1,5 +1,22 @@
 import type { GenerationParameters, NovelaiConfiguration } from '../../api/novelai';
 
+export const V5_FULL_MODEL = 'nai-diffusion-5-full';
+export const V5_FULL_MEDIUM_SAMPLER = 'k_euler_ancestral';
+export const V5_FULL_MEDIUM_STEPS = 14;
+
+export function modelIntensities(configuration: NovelaiConfiguration | null | undefined, model?: string): ('high' | 'medium')[] {
+  const selected = model ?? (configuration?.nsfwEnabled ? configuration.nsfwModel : configuration?.defaultModel);
+  const catalog = configuration?.modelCatalog?.find((item) => item.id === selected);
+  if (catalog?.intensities) return catalog.intensities;
+  // Older service responses have no capability entry. Keep their safe legacy
+  // behavior: Full requests can be High, but never assume Medium is available.
+  return selected === V5_FULL_MODEL ? ['high'] : [];
+}
+
+export function mediumIntensityAvailable(configuration: NovelaiConfiguration | null | undefined, model?: string): boolean {
+  return modelIntensities(configuration, model).includes('medium');
+}
+
 export function supportsUnicodePrompts(configuration: NovelaiConfiguration | null | undefined, model?: string): boolean {
   const selected = model ?? (configuration?.nsfwEnabled ? configuration.nsfwModel : configuration?.defaultModel);
   return configuration?.modelCatalog?.find((item) => item.id === selected)?.supportsUnicode === true;
@@ -17,7 +34,7 @@ export function promptInputError(value: string, label: string, unicode = true, r
 }
 
 /** Validate editable input before reserving an attempt; the service remains authoritative. */
-export function generationInputError(parameters: GenerationParameters, seed: string, configuration: NovelaiConfiguration): string {
+export function generationInputError(parameters: GenerationParameters, seed: string, configuration: NovelaiConfiguration, intensityUnknown = false): string {
   const unicode = supportsUnicodePrompts(configuration, parameters.model);
   for (const [label, value] of [['正向提示词', parameters.prompt], ['负向提示词', parameters.negative_prompt ?? '']]) {
     const error = promptInputError(value, label, unicode, label === '正向提示词');
@@ -30,6 +47,24 @@ export function generationInputError(parameters: GenerationParameters, seed: str
     return '自定义尺寸需为 64–1024 之间的 64 的倍数。';
   if (width * height > configuration.maxPixels) return '图片尺寸超过当前像素上限，请缩小尺寸。';
   if (parameters.model !== undefined && !configuration.allowedModels.includes(parameters.model)) return '请选择当前允许的模型（高级参数）。';
+  const selectedModel = parameters.model ?? (configuration.nsfwEnabled ? configuration.nsfwModel : configuration.defaultModel);
+  const selectedCatalog = configuration.modelCatalog?.find((item) => item.id === selectedModel);
+  if (intensityUnknown && selectedModel === V5_FULL_MODEL && parameters.intensity === undefined)
+    return '这条历史记录的 V5 Full 强度未知，请明确选择 High 或 Medium 后再生成。';
+  if (parameters.intensity === 'medium' && selectedModel === V5_FULL_MODEL && !selectedCatalog?.intensities)
+    return '当前服务未公布 V5 Full Medium 能力，请刷新生图设置。';
+  if (parameters.intensity !== undefined && !modelIntensities(configuration, selectedModel).includes(parameters.intensity))
+    return '当前模型不支持所选 V5 强度，请切换模型或强度。';
+  if (parameters.intensity === 'medium') {
+    if (selectedModel !== V5_FULL_MODEL) return 'Medium 强度仅适用于 V5 Full。';
+    if (!mediumIntensityAvailable(configuration, selectedModel)) return '当前服务未公布 V5 Full Medium 能力，请刷新生图设置。';
+    if ((parameters.negative_prompt ?? '').replace(/^ +| +$/g, '')) return 'V5 Full Medium 不支持自定义负向提示词，请清空后再生成。';
+    if ((parameters.ucPreset ?? configuration.undesiredContentPreset ?? 0) !== 0) return 'V5 Full Medium 只使用固定负向预设，请选择无预设。';
+    if (parameters.steps !== undefined && parameters.steps !== V5_FULL_MEDIUM_STEPS) return 'V5 Full Medium 固定 14 步，请先调整采样步数。';
+    if (parameters.sampler !== undefined && parameters.sampler !== V5_FULL_MEDIUM_SAMPLER) return 'V5 Full Medium 固定 Euler Ancestral，请先调整采样器。';
+    if (!configuration.allowedSamplers.includes(V5_FULL_MEDIUM_SAMPLER)) return '当前服务未允许 V5 Full Medium 所需的 Euler Ancestral。';
+    if (configuration.maxSteps < V5_FULL_MEDIUM_STEPS) return '当前服务步数上限不足以使用 V5 Full Medium。';
+  }
   if (parameters.sampler !== undefined && !configuration.allowedSamplers.includes(parameters.sampler)) return '请选择当前允许的采样器（高级参数）。';
   if (parameters.steps !== undefined && (!Number.isInteger(parameters.steps) || parameters.steps < 1 || parameters.steps > configuration.maxSteps))
     return `采样步数需为 1–${configuration.maxSteps} 之间的整数（高级参数）。`;

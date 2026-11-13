@@ -7,7 +7,7 @@ const v5 = 'nai-diffusion-5-full';
 const configuration = {
   allowedModels: [v45, v5], defaultModel: v5, nsfwEnabled: false, nsfwModel: v5,
   modelCatalog: [{ id: v45, label: 'V4.5 Curated', supportsUnicode: false },
-    { id: v5, label: 'V5 Full', supportsUnicode: true }],
+    { id: v5, label: 'V5 Full', supportsUnicode: true, intensities: ['high', 'medium'] }],
   maxPixels: 1048576, maxSteps: 28, allowedSamplers: ['k_euler_ancestral'],
 } as NovelaiConfiguration;
 
@@ -35,4 +35,19 @@ it('uses the effective NSFW model and keeps missing catalog capabilities conserv
   const parameters = { prompt: '蓝色长发', mode: 'txt2img' as const };
   expect(generationInputError(parameters, '', { ...configuration, defaultModel: v45, nsfwEnabled: true })).toBe('');
   expect(generationInputError(parameters, '', { ...configuration, modelCatalog: undefined })).toContain('ASCII');
+});
+
+it('validates V5 Full Medium restrictions without mutating the draft', () => {
+  const parameters = { prompt: '蓝色长发', negative_prompt: 'rain', mode: 'txt2img' as const,
+    model: v5, intensity: 'medium' as const, steps: 28, sampler: 'k_euler_ancestral', ucPreset: 0 };
+  expect(generationInputError(parameters, '', configuration)).toContain('负向');
+  expect(parameters.negative_prompt).toBe('rain');
+  expect(parameters.steps).toBe(28);
+  expect(generationInputError({ ...parameters, negative_prompt: '', steps: 14 }, '', configuration)).toBe('');
+  expect(generationInputError({ ...parameters, negative_prompt: '', steps: 14, sampler: 'k_euler' }, '', configuration)).toContain('Euler');
+});
+
+it('does not infer Medium when an older service omits intensity capabilities', () => {
+  const parameters = { prompt: '蓝色长发', mode: 'txt2img' as const, model: v5, intensity: 'medium' as const };
+  expect(generationInputError(parameters, '', { ...configuration, modelCatalog: configuration.modelCatalog?.map(({ intensities: _intensities, ...item }) => item) })).toContain('能力');
 });

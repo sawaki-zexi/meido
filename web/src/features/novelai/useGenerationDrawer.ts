@@ -4,7 +4,7 @@ import { novelai, type GenerationPage, type GenerationParameters, type Generatio
 import { uploadChatAttachment } from '../../api/chat';
 import { errorMessage } from '../../api/client';
 import { generationAvailability } from './availability';
-import { generationInputError } from './generationValidation';
+import { generationInputError, V5_FULL_MODEL } from './generationValidation';
 
 export const activeGenerationStatuses = ['prepared', 'dispatching', 'received', 'local_pending'];
 export type GenerationDrawerProps = {
@@ -15,8 +15,10 @@ export type GenerationDrawerProps = {
 
 function serviceDefaults(config: NovelaiConfiguration) {
   const mode: GenerationParameters['mode'] = config.allowTxt2Img !== false ? 'txt2img' : config.allowImg2Img !== false ? 'img2img' : 'txt2img';
-  return { mode, samples: config.defaultSamples ?? 1, model: config.nsfwEnabled ? config.nsfwModel : config.defaultModel,
-    sampler: config.defaultSampler, steps: config.maxSteps };
+  const model = config.nsfwEnabled ? config.nsfwModel : config.defaultModel;
+  return { mode, samples: config.defaultSamples ?? 1, model,
+    sampler: config.defaultSampler, steps: config.maxSteps,
+    ...(model === V5_FULL_MODEL ? { intensity: 'high' as const } : {}) };
 }
 
 export function useGenerationDrawer({ role, onGenerated, attachments = [], selectedImage, defaultDeliveryMode = 'replacement', onGenerationAccepted }: GenerationDrawerProps) {
@@ -26,6 +28,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   const historicalParameters = useRef(false);
   const [page, setPage] = useState<GenerationPage | null>(null);
   const [parameters, setParameters] = useState<GenerationParameters>({ prompt: '', mode: 'txt2img', negative_prompt: '', samples: 1, size_preset: 'square' });
+  const [intensityUnknown, setIntensityUnknown] = useState(false);
   const [seed, setSeed] = useState('');
   const [inputs, setInputs] = useState<ChatAttachment[]>([]);
   const [busy, setBusy] = useState(false);
@@ -56,7 +59,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
     historicalParameters.current = false;
     attempt.current = null; setSource(null); setConsent(false); setAccepted(false); setDeliveryMode(defaultDeliveryMode);
     recordQueries.current = new Map();
-    setParameters({ prompt: '', mode: 'txt2img', negative_prompt: '', size_preset: 'square' }); setSeed('');
+    setParameters({ prompt: '', mode: 'txt2img', negative_prompt: '', size_preset: 'square' }); setIntensityUnknown(false); setSeed('');
     void Promise.all([novelai.configuration(), novelai.history(identifier)]).then(([config, history]) => {
       if (!isCurrent(owner)) return;
       setPage(history);
@@ -74,12 +77,17 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
     if (!attempt.current && !historicalParameters.current && config.revision !== configuration?.revision) {
       const previous = configuration && serviceDefaults(configuration);
       const defaults = serviceDefaults(config);
-      setParameters((value) => ({ ...value,
-        model: value.model === previous?.model || !config.allowedModels.includes(value.model ?? '') ? defaults.model : value.model,
-        sampler: value.sampler === previous?.sampler || !config.allowedSamplers.includes(value.sampler ?? '') ? defaults.sampler : value.sampler,
-        samples: value.samples === previous?.samples || value.samples === undefined ? defaults.samples : value.samples,
-        steps: value.steps === previous?.steps ? defaults.steps : Math.min(value.steps ?? defaults.steps, config.maxSteps),
-      }));
+      setParameters((value) => {
+        const model = value.model === previous?.model || !config.allowedModels.includes(value.model ?? '') ? defaults.model : value.model;
+        return { ...value,
+          model,
+          intensity: model === V5_FULL_MODEL ? (value.model === model ? value.intensity ?? 'high' : 'high') : undefined,
+          sampler: value.sampler === previous?.sampler || !config.allowedSamplers.includes(value.sampler ?? '') ? defaults.sampler : value.sampler,
+          samples: value.samples === previous?.samples || value.samples === undefined ? defaults.samples : value.samples,
+          steps: value.steps === previous?.steps ? defaults.steps : Math.min(value.steps ?? defaults.steps, config.maxSteps),
+        };
+      });
+      setIntensityUnknown(false);
     }
   };
   const refreshConfiguration = async (preferences?: Partial<Pick<NovelaiConfiguration, 'nsfwEnabled' | 'addQualityTags' | 'undesiredContentPreset'>>) => {
@@ -162,7 +170,7 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
       return;
     }
     if (!attempt.current) {
-      const inputError = generationInputError(parameters, seed, configuration);
+      const inputError = generationInputError(parameters, seed, configuration, intensityUnknown);
       if (inputError) { setError(inputError); return; }
     }
     const identifier = role.id;
@@ -222,8 +230,22 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
     ? [{ id: parameters.base_attachment_id, name: '历史底图（需仍可访问）', kind: 'image' as const, mediaType: 'image/*', size: 0 }] : [];
   const candidates = [...attachments, ...inputs, ...historicalInput].filter((item, index, all) => item.kind === 'image' && all.findIndex((other) => other.id === item.id) === index);
   const patch = (changes: Partial<GenerationParameters>) => {
-    if (configuration && error === generationInputError(parameters, seed, configuration)) setError('');
-    setParameters({ ...parameters, ...changes });
+    if (configuration && error === generationInputError(parameters, seed, configuration, intensityUnknown)) setError('');
+    const next = { ...changes };
+    if ('model' in changes) {
+      if (changes.model !== V5_FULL_MODEL) next.intensity = undefined;
+      else if (parameters.intensity === undefined) next.intensity = 'high';
+      setIntensityUnknown(false);
+    }
+    setParameters({ ...parameters, ...next });
+  };
+  const setIntensity = (intensity: GenerationParameters['intensity']) => {
+    // Keep all editable values in the draft. Medium's fixed values are an
+    // admission rule, so switching strength must not silently discard a
+    // pending step/sampler/negative-prompt choice; the form explains what
+    // needs changing and High can restore the same draft unchanged.
+    setIntensityUnknown(false);
+    setParameters((value) => ({ ...value, ...(intensity === undefined ? { intensity: undefined } : { intensity }) }));
   };
   const manage = async (item: GenerationView, cancel = false) => {
     if (recordQueries.current.get(item.attemptId)?.stopping) return;
@@ -247,11 +269,12 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   };
   const loadParameters = (generation: GenerationView, reuseSeed = false) => {
     if (busy || uploading || !generation.parameters) return;
-    const { width, height, prompt, negative_prompt, mode, model, sampler, steps, samples, base_attachment_id, strength, noise, background, qualityToggle, ucPreset } = generation.parameters;
+    const { width, height, prompt, negative_prompt, mode, model, intensity, sampler, steps, samples, base_attachment_id, strength, noise, background, qualityToggle, ucPreset } = generation.parameters;
     historicalParameters.current = true;
     const size = width === 1024 && height === 1024 ? 'square' : width === 1216 && height === 832 ? 'landscape'
       : width === 832 && height === 1216 ? 'portrait' : 'custom';
-    setParameters({ prompt, negative_prompt, mode, model, sampler, steps, samples: samples ?? 1, qualityToggle: qualityToggle ?? false, ucPreset: ucPreset ?? 0, ...(reuseSeed ? { background } : {}), size_preset: size,
+    setIntensityUnknown(model === V5_FULL_MODEL && intensity === undefined);
+    setParameters({ prompt, negative_prompt, mode, model, ...(intensity ? { intensity } : {}), sampler, steps, samples: samples ?? 1, qualityToggle: qualityToggle ?? false, ucPreset: ucPreset ?? 0, ...(reuseSeed ? { background } : {}), size_preset: size,
       ...(mode === 'img2img' ? { base_attachment_id, strength, noise } : {}),
       ...(size === 'custom' ? { custom_width: width, custom_height: height } : {}) });
     setSeed(reuseSeed && generation.parameters.seed !== undefined ? String(generation.parameters.seed) : '');
@@ -268,5 +291,5 @@ export function useGenerationDrawer({ role, onGenerated, attachments = [], selec
   return { configuration, setConfiguration, page, parameters, setParameters, seed, setSeed, busy, uploading, error, setError,
     source, consent, setConsent, accepted, setAccepted, deliveryMode, setDeliveryMode, attempt, controller, scope,
     isCurrent, watched, submit, upload, policy, allowed, modeAllowed, candidates, patch, manage, selectImage, loadParameters, reuseParameters,
-    clearSource, refresh, refreshConfiguration, configurationRefreshing, unavailableMessage };
+    clearSource, refresh, refreshConfiguration, configurationRefreshing, unavailableMessage, setIntensity, intensityUnknown };
 }
