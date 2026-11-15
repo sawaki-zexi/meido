@@ -13,6 +13,9 @@ const basisLabels = { owner_confirmed: '主人确认', model_observation: '模�
 const supportedImage = (file: File) => ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type)
   || (!file.type && /\.(png|jpe?g|webp|gif)$/i.test(file.name));
 const requiresRead = (cause: unknown) => !(cause instanceof ApiError) || cause.status === 409 || cause.status >= 500;
+type ObservedMaterial = RoleMaterial & { observedRevision: string };
+type LibraryObservation = Omit<MaterialLibrary, 'materials'> & { materials: ObservedMaterial[] };
+const observe = (material: RoleMaterial, revision: string): ObservedMaterial => ({ ...material, observedRevision: revision });
 
 /** A role switch disposes all previous reads, drafts, dialogs and mutation feedback. */
 export function RoleMaterialLibrary(props: { roleId: string; roleName: string }) {
@@ -20,7 +23,7 @@ export function RoleMaterialLibrary(props: { roleId: string; roleName: string })
 }
 
 function MaterialLibraryContent({ roleId, roleName }: { roleId: string; roleName: string }) {
-  const [library, setLibrary] = useState<MaterialLibrary | null>(null);
+  const [library, setLibrary] = useState<LibraryObservation | null>(null);
   const [loading, setLoading] = useState(true);
   const [readError, setReadError] = useState('');
   const [feedback, setFeedback] = useState('');
@@ -31,7 +34,7 @@ function MaterialLibraryContent({ roleId, roleName }: { roleId: string; roleName
   const [offset, setOffset] = useState(0);
   const filtersRef = useRef({ query, category, offset, source, enabled });
   filtersRef.current = { query, category, offset, source, enabled };
-  const [preview, setPreview] = useState<RoleMaterial | null>(null);
+  const [preview, setPreview] = useState<ObservedMaterial | null>(null);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [file, setFile] = useState<File | null>(null);
@@ -54,7 +57,7 @@ function MaterialLibraryContent({ roleId, roleName }: { roleId: string; roleName
   const libraryRoot = useRef<HTMLElement>(null);
   const gallery = useRef<HTMLDivElement>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (removedId?: string) => {
     const version = ++readVersion.current;
     readController.current?.abort();
     const controller = new AbortController();
@@ -62,19 +65,24 @@ function MaterialLibraryContent({ roleId, roleName }: { roleId: string; roleName
     setLoading(true); setReadError('');
     try {
       const result = await materials.list(roleId, controller.signal, filtersRef.current);
-      const activePreview = previewRef.current;
-      let refreshedPreview = activePreview ? result.materials.find(item => item.id === activePreview.id) : null;
+      const observation: LibraryObservation = { ...result, materials: result.materials.map(item => observe(item, result.revision)) };
+      const activePreview = previewRef.current?.id === removedId ? null : previewRef.current;
+      let refreshedPreview = activePreview ? observation.materials.find(item => item.id === activePreview.id) : null;
       if (activePreview && !refreshedPreview) {
         try {
           const detail = await materials.get(roleId, activePreview.id, controller.signal);
-          refreshedPreview = detail.material; result.revision = detail.revision;
+          // Detail and list can observe different revisions. A detail token
+          // authorizes only the material returned with it, never older cards.
+          refreshedPreview = observe(detail.material, detail.revision);
         } catch (cause) { if (!(cause instanceof ApiError && cause.status === 404)) throw cause; }
       }
       if (!alive.current || version !== readVersion.current) return;
-      setLibrary(result); setNeedsRead(false); setActionError(''); setRemoveOpen(false);
+      setLibrary(observation); setNeedsRead(false); setActionError(''); setRemoveOpen(false);
       setPreview(current => current?.id === activePreview?.id ? refreshedPreview ?? null : current);
+      return true;
     } catch (cause) {
       if (alive.current && version === readVersion.current) setReadError(errorMessage(cause, '无法读取素材库'));
+      return false;
     } finally {
       if (alive.current && version === readVersion.current) setLoading(false);
     }
@@ -103,7 +111,7 @@ function MaterialLibraryContent({ roleId, roleName }: { roleId: string; roleName
       if (!alive.current) return;
       setFocusAfterMutation(importOpenRef.current);
       setImportOpen(false); setFile(null); setDescription(''); setImportCategory('');
-      setLibrary(current => current ? { ...current, revision: result.revision, materials: [...current.materials.filter(item => item.id !== result.material.id), result.material] } : current);
+      setLibrary(current => current ? { ...current, materials: [...current.materials.filter(item => item.id !== result.material.id), observe(result.material, result.revision)] } : current);
       setFeedback(collectionFeedback(result, result.deduplicated ? '这张图片已在素材库中，没有重复导入。' : '素材已导入当前角色的素材库。'));
       await load();
     } catch (cause) {
@@ -118,13 +126,13 @@ function MaterialLibraryContent({ roleId, roleName }: { roleId: string; roleName
     if (!preview || !library || busyRef.current || loading || needsRead) return;
     busyRef.current = true; setBusy('remove'); setActionError(''); setFeedback('');
     try {
-      const result = await materials.remove(roleId, preview.id, library.revision);
+      await materials.remove(roleId, preview.id, preview.observedRevision);
       if (!alive.current) return;
       setFocusAfterMutation(previewRef.current?.id === preview.id);
       setRemoveOpen(false); setPreview(current => current?.id === preview.id ? null : current);
-      setLibrary(current => current ? { ...current, revision: result.revision, materials: current.materials.filter(item => item.id !== preview.id) } : current);
+      setLibrary(current => current ? { ...current, materials: current.materials.filter(item => item.id !== preview.id) } : current);
       setFeedback('已移出素材库，原图保留在本地恢复区；聊天中的图片不受影响。');
-      await load();
+      await load(preview.id);
     } catch (cause) {
       if (alive.current) { setActionError(errorMessage(cause, '无法移出素材')); setNeedsRead(requiresRead(cause)); }
     } finally {
@@ -133,15 +141,19 @@ function MaterialLibraryContent({ roleId, roleName }: { roleId: string; roleName
     }
   };
 
-  const onEdit = async (item: RoleMaterial, changes: MaterialChanges) => {
+  const onEdit = async (item: ObservedMaterial, changes: MaterialChanges) => {
     if (!library || busyRef.current || loading || needsRead) return;
     busyRef.current = true; setBusy('edit'); setActionError(''); setFeedback('');
     try {
-      const result = await materials.edit(roleId, item.id, library.revision, changes);
+      const result = await materials.edit(roleId, item.id, item.observedRevision, changes);
       if (!alive.current) return;
-      setLibrary(current => current ? { ...current, revision: result.revision, materials: current.materials.map(value => value.id === item.id ? result.material : value) } : current);
-      setPreview(current => current?.id === item.id ? result.material : current);
+      const updated = observe(result.material, result.revision);
+      setLibrary(current => current ? { ...current, materials: current.materials.map(value => value.id === item.id ? updated : value) } : current);
+      setPreview(current => current?.id === item.id ? updated : current);
       setFeedback('素材说明与聊天设置已保存。');
+      // Fetch the other cards before enabling another edit. Their observations
+      // cannot inherit this response's revision even after our own mutation.
+      if (!await load() && alive.current) setNeedsRead(true);
     } catch (cause) {
       if (alive.current) { setActionError(errorMessage(cause, '无法修改素材')); setNeedsRead(requiresRead(cause)); }
     } finally { busyRef.current = false; if (alive.current) setBusy(null); }

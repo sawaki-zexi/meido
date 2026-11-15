@@ -65,10 +65,12 @@ it('acknowledges a duplicate upload that fills the pending description', async (
 
 it('edits a pending meaning and disables chatting using the last acknowledged revision', async () => {
   let item = material({ description: '', semanticStatus: 'pending' });
-  const { calls } = fakeBackend({ ...routes(library([item])), 'PATCH /api/roles/r1/materials/m1': init => {
+  let revision = 'rev1';
+  const { calls } = fakeBackend({ 'GET /api/roles/r1/materials': () => ({ body: library([item], revision) }), 'PATCH /api/roles/r1/materials/m1': init => {
     const { expectedRevision, ...changes } = JSON.parse(String(init?.body));
     expect(expectedRevision).toBe(calls.filter(call => call.method === 'PATCH').length === 1 ? 'rev1' : 'rev2');
     item = { ...item, ...changes, semanticStatus: 'ready', basis: { kind: 'owner_confirmed' } };
+    revision = 'rev2';
     return { body: { material: item, revision: 'rev2' } };
   } });
   const user = userEvent.setup();
@@ -82,6 +84,7 @@ it('edits a pending meaning and disables chatting using the last acknowledged re
   await user.click(screen.getByRole('button', { name: '保存修改' }));
   expect(await screen.findByRole('dialog', { name: '编译失败' })).toBeVisible();
   await user.keyboard('{Escape}');
+  await waitFor(() => expect(screen.getByRole('checkbox', { name: '编译失败用于聊天' })).toBeEnabled());
   await user.click(screen.getByRole('checkbox', { name: '编译失败用于聊天' }));
   expect(await screen.findByText('已停用')).toBeVisible();
   expect(calls.filter(call => call.method === 'PATCH')).toHaveLength(2);
@@ -100,6 +103,109 @@ it('retains the edited draft on revision conflict and requires reading before re
   expect(screen.getByRole('textbox', { name: '素材说明' })).toHaveValue('后来纠正');
   expect(screen.getByRole('button', { name: '保存修改' })).toBeDisabled();
   expect(calls.filter(call => call.method === 'PATCH')).toHaveLength(1);
+});
+
+it('refreshes real observations so sequential toggles of different cards need no manual recovery', async () => {
+  let revision = 'rev1';
+  let items = [material({ id: 'm1', name: '第一张.png' }), material({ id: 'm2', name: '第二张.png' })];
+  let conflicts = 0;
+  const { calls } = fakeBackend({
+    'GET /api/roles/r1/materials': () => ({ body: library(items, revision) }),
+    'PATCH /api/roles/r1/materials/(m1|m2)': (init, match) => {
+      const { expectedRevision, ...changes } = JSON.parse(String(init?.body));
+      if (expectedRevision !== revision) { conflicts++; return { status: 409, body: { detail: '旧版本' } }; }
+      items = items.map(item => item.id === match[1] ? { ...item, ...changes } : item);
+      revision = revision === 'rev1' ? 'rev2' : 'rev3';
+      return { body: { material: items.find(item => item.id === match[1]), revision } };
+    },
+  });
+  const user = userEvent.setup();
+  render(<RoleMaterialLibrary roleId="r1" roleName="爱丽丝" />);
+  await user.click(await screen.findByRole('checkbox', { name: '第一张.png用于聊天' }));
+  await waitFor(() => expect(screen.getByRole('checkbox', { name: '第二张.png用于聊天' })).toBeEnabled());
+  await user.click(screen.getByRole('checkbox', { name: '第二张.png用于聊天' }));
+  await waitFor(() => expect(calls.filter(call => call.method === 'PATCH')).toHaveLength(2));
+  expect(conflicts).toBe(0);
+  await waitFor(() => expect(screen.getByRole('checkbox', { name: '第二张.png用于聊天' })).not.toBeChecked());
+  expect(screen.getByRole('checkbox', { name: '第一张.png用于聊天' })).not.toBeChecked();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+
+it('keeps recovery visible and old cards disabled when post-edit observation refresh fails', async () => {
+  let edited = false;
+  const second = material({ id: 'm2', name: '另一张.png' });
+  const { calls } = fakeBackend({
+    'GET /api/roles/r1/materials': () => edited ? { status: 503, body: { detail: '保存成功，但重新读取暂不可用' } } : { body: library([material(), second]) },
+    'PATCH /api/roles/r1/materials/m1': () => { edited = true; return { body: { material: material({ enabled: false }), revision: 'rev2' } }; },
+  });
+  const user = userEvent.setup();
+  render(<RoleMaterialLibrary roleId="r1" roleName="爱丽丝" />);
+  await user.click(await screen.findByRole('checkbox', { name: '开心.gif用于聊天' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('保存成功，但重新读取暂不可用');
+  expect(screen.getByRole('checkbox', { name: '开心.gif用于聊天' })).not.toBeChecked();
+  expect(screen.getByRole('checkbox', { name: '另一张.png用于聊天' })).toBeDisabled();
+  expect(screen.getByText(/编辑草稿会保留/)).toBeVisible();
+  expect(calls.filter(call => call.method === 'PATCH')).toHaveLength(1);
+});
+
+it.each([
+  ['detail refresh', 'edit'], ['detail refresh', 'remove'],
+  ['successful edit', 'edit'], ['successful edit', 'remove'],
+] as const)('keeps another card observation when %s returns a newer revision before %s', async (refreshPath, action) => {
+  const first = material({ id: 'm1', name: '列表旧图.png', description: '读取列表时的说明' });
+  const preview = material({ id: 'm2', name: '详情图.png', description: '修改前的详情' });
+  let changed = false;
+  let silentlyAccepted = 0;
+  const mutation = (expectedRevision: string) => {
+    // Another client changed m1 after the list snapshot. A newer token would
+    // wrongly accept a mutation of the old card without observing that change.
+    if (expectedRevision === (refreshPath === 'detail refresh' ? 'rev2' : 'rev3')) {
+      silentlyAccepted++;
+      return { body: { material: { ...first, enabled: false }, removed: true, recoverable: true, revision: 'rev3' } };
+    }
+    return { status: 409, body: { detail: '这张图已被其他页面修改，请重新读取' } };
+  };
+  const { calls } = fakeBackend({
+    // The active preview is now outside this page. While the follow-up detail
+    // is read, another writer changes m1 again, producing the newer token.
+    'GET /api/roles/r1/materials': () => ({ body: changed
+      ? library([first], refreshPath === 'detail refresh' ? 'rev1' : 'rev2') : library([first, preview], 'rev0') }),
+    'GET /api/roles/r1/materials/m2': () => ({ body: { material: { ...preview, description: '最新详情' }, revision: refreshPath === 'detail refresh' ? 'rev2' : 'rev3' } }),
+    'PATCH /api/roles/r1/materials/m2': () => {
+      changed = true;
+      return refreshPath === 'detail refresh'
+        ? { status: 409, body: { detail: '当前详情发生冲突' } }
+        : { body: { material: { ...preview, description: '保存后的详情' }, revision: 'rev2' } };
+    },
+    'PATCH /api/roles/r1/materials/m1': init => mutation(JSON.parse(String(init?.body)).expectedRevision),
+    'DELETE /api/roles/r1/materials/m1\\?.*': (_init, match) => mutation(new URLSearchParams(match[0].split('?')[1]).get('expectedRevision') ?? ''),
+  });
+  const user = userEvent.setup();
+  render(<RoleMaterialLibrary roleId="r1" roleName="爱丽丝" />);
+  await user.click(await screen.findByRole('button', { name: '预览详情图.png' }));
+  await user.click(screen.getByText('编辑说明'));
+  await user.clear(screen.getByLabelText('素材说明')); await user.type(screen.getByLabelText('素材说明'), '我的编辑草稿');
+  await user.click(screen.getByRole('button', { name: '保存修改' }));
+  if (refreshPath === 'detail refresh') {
+    await screen.findByText('当前详情发生冲突');
+    await user.click(screen.getByRole('button', { name: '重新读取素材库' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存修改' })).toBeEnabled());
+    expect(screen.getByLabelText('素材说明')).toHaveValue('我的编辑草稿');
+    expect(within(screen.getByRole('dialog')).getByText('最新详情')).toBeVisible();
+  } else {
+    await screen.findByText('素材说明与聊天设置已保存。');
+  }
+  await user.keyboard('{Escape}');
+  if (action === 'edit') {
+    await user.click(screen.getByRole('checkbox', { name: '列表旧图.png用于聊天' }));
+  } else {
+    await user.click(screen.getByRole('button', { name: '预览列表旧图.png' }));
+    await user.click(screen.getByRole('button', { name: '移出素材库' }));
+    await user.click(screen.getByRole('button', { name: '确认移出' }));
+  }
+  await waitFor(() => expect(calls.some(call => call.path.startsWith('/api/roles/r1/materials/m1') && call.method !== 'GET')).toBe(true));
+  expect(silentlyAccepted).toBe(0);
+  expect(await screen.findByRole('alert')).toHaveTextContent('这张图已被其他页面修改');
 });
 
 it('shows owner-scoped storage, category/search, original GIF preview and returns focus after closing', async () => {
