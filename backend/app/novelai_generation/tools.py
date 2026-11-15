@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from copy import deepcopy
 from dataclasses import replace
 
 from ..agent_runtime.tools import AgentToolResult, ToolDefinition, ToolRegistry
@@ -12,6 +13,8 @@ from .context import capture_tool_context
 from .parameters import GenerationRequest
 from .availability import GenerationUnavailable
 from .failures import GenerationBudgetExceeded
+from .model_catalog import MODEL_CATALOG
+from .prompts import PromptValidationError
 
 _SCHEMA = GenerationRequest.model_json_schema()
 _SCHEMA.pop('title', None)
@@ -28,14 +31,14 @@ _SCHEMA['required'] = ['prompt']
 # image below, so a static Pydantic default would be misleading to a model.
 _SCHEMA['properties']['samples'].pop('default', None)
 _SCHEMA['properties']['samples']['description'] = '生成张数（1–4）；普通聊天省略时由宿主固定为一张。'
-_SCHEMA['properties']['prompt']['description'] = '逗号分隔的完整英文 NovelAI tags：主体外貌（发色、发型、眼睛、服饰等已知特征）以及此刻的表情、动作、场景与构图。宿主不会自动补入角色外观。'
+_SCHEMA['properties']['prompt']['description'] = '完整 NovelAI 提示词，包含主体外貌（发色、发型、眼睛、服饰等已知特征）以及此刻的表情、动作、场景与构图。宿主不会自动补入角色外观。'
 
 
 class GenerateImageTool:
     definition = ToolDefinition(name='generate_image',
         description=('Generate one approved NovelAI expression image during the current conversation when an image adds value to the reply. '
             'Decide yourself whether to call it; do not call it every turn and do not ask the owner to fill image parameters. '
-            'Provide complete comma-separated English NovelAI tags, including the subject\'s known appearance, clothing, emotion, pose, scene and framing. '
+            'Provide complete NovelAI prompts, including the subject\'s known appearance, clothing, emotion, pose, scene and framing. '
             'For self-portraits, preserve your appearance from the role profile/SELF and inspect_role_image references; never invent it from an image filename. '
             'When asked to draw from your existing portrait, use mode=img2img and base_role_image_id from inspect_role_image (avatar, card, or an illustration ID). '
             'This sends the actual reference pixels; vision support is not required. Choose the relevant portrait, not an unrelated scene. '
@@ -48,13 +51,27 @@ class GenerateImageTool:
     def __init__(self, application, role_id, *, is_owner, source_thread_id=None, source_account_id=None, frozen_role=None):
         self.application, self.role_id, self.is_owner = application, role_id, is_owner
         self.source_thread_id, self.source_account_id = source_thread_id, source_account_id
-        self.service_revision = application.settings.public()['revision']
+        service = application.settings.public()
+        self.service_revision = service['revision']
+        model = service['nsfwModel'] if service['nsfwEnabled'] else service['defaultModel']
+        multilingual = MODEL_CATALOG[model].supports_unicode
+        language = ('Chinese, Japanese, English or mixed Unicode prompts' if multilingual else 'comma-separated English ASCII tags')
+        schema = deepcopy(_SCHEMA)
+        prompt_language = '支持中文、日文、英文及混合提示词。' if multilingual else '只接受英文 ASCII tags。'
+        schema['properties']['prompt']['description'] += '当前默认模型' + prompt_language
+        schema['properties']['negative_prompt']['description'] = '负向提示词。当前默认模型' + prompt_language
+        schema['properties']['model']['description'] = '省略时使用 ' + model + '。可选模型及提示词要求为 ' + '、'.join(
+            identifier + ('（多语言 Unicode）' if MODEL_CATALOG[identifier].supports_unicode else '（英文 ASCII）')
+            for identifier in service['allowedModels'])
         role = frozen_role or application.roles.get(role_id)
         self.role_images = role_image_catalog(role) if role is not None else []
         availability = application.availability(role)
         self.definition = replace(self.definition, description=(self.definition.description
+            + f'\nThe current default model is {model}; use {language}. '
+            + 'When explicitly selecting another allowed model, follow its prompt language requirements in the model field. '
+            + 'Each prompt is limited to 4000 Unicode codepoints, with no newlines or control characters. '
             + '\n当前 NovelAI 状态：' + availability['message']
-            + ' 已接入不等于当前可以生成；不可用时说明具体原因，不要声称没有生图工具。'))
+            + ' 已接入不等于当前可以生成；不可用时说明具体原因，不要声称没有生图工具。'), input_schema=schema)
         self.role_revision = application._role_revision(role) if role is not None else ''
         self.bound_run = None
         self.bound_source = None
@@ -116,6 +133,9 @@ class GenerateImageTool:
         except (GenerationUnavailable, GenerationBudgetExceeded) as error:
             return AgentToolResult(str(error),
                 details={'status': 'rejected', 'errorCode': error.code, 'errorMessage': str(error)}, is_error=True)
+        except PromptValidationError as error:
+            return AgentToolResult(str(error),
+                details={'status': 'rejected', 'errorCode': 'invalid_prompt', 'errorMessage': str(error)}, is_error=True)
         except (ValueError, PermissionError, KeyError, OSError, RuntimeError, sqlite3.Error):
             return AgentToolResult('生图请求未完成；请检查当前来源、配置、参数与归属历史。设置改变后需刷新工具，已出网的请求可能计费，不会自动重试。',
                 details={'status': 'rejected', 'errorCode': 'generation_not_available'}, is_error=True)

@@ -93,10 +93,13 @@ def test_regeneration_keeps_an_explicit_new_seed_and_rejects_reusing_the_old_see
 
 
 @pytest.mark.parametrize('mode', ['txt2img', 'img2img', 'role_img2img'])
-def test_regeneration_restores_all_original_image_parameters_after_defaults_change(novelai_main, mode):
+@pytest.mark.parametrize('model', ['nai-diffusion-4-5-curated', 'nai-diffusion-5-curated', 'nai-diffusion-5-full'])
+def test_regeneration_restores_all_original_image_parameters_after_defaults_change(novelai_main, mode, model):
     import io
     from PIL import Image
     client, service = novelai_main
+    service.application.settings.save({'allowedModels': list(dict.fromkeys(['nai-diffusion-4-5-curated', model])),
+        'defaultModel': model}, expected_revision=service.application.settings.public()['revision'])
     path = f'/api/roles/{service.role.id}/generations'
     revision = service.application.settings.public()['revision']
     parameters = {**service.request, 'negative_prompt': 'rain', 'steps': 18,
@@ -123,7 +126,7 @@ def test_regeneration_restores_all_original_image_parameters_after_defaults_chan
         service.roles.set_avatar(service.role.id, image.getvalue(), 'image/png')
     changed = client.put('/api/services/novelai', json={'expectedRevision': revision,
         'defaultSamples': 3, 'defaultSampler': 'k_euler_ancestral', 'addQualityTags': False,
-        'undesiredContentPreset': 0})
+        'undesiredContentPreset': 0, 'defaultModel': 'nai-diffusion-4-5-curated'})
     assert changed.status_code == 200, changed.text
     body = {'requestId': '27227227227227227227227227227229', 'expectedRevision': changed.json()['revision'],
         'sourceAttemptId': original['attemptId'], 'expectedAttachmentId': original['attachments'][0]['id'],
@@ -134,6 +137,9 @@ def test_regeneration_restores_all_original_image_parameters_after_defaults_chan
     before, after = [item['body'] for item in service.peer.requests]
     assert before['parameters']['seed'] != after['parameters']['seed']
     after['parameters']['seed'] = before['parameters']['seed']
+    if 'extra_noise_seed' in after['parameters']:
+        assert after['parameters']['extra_noise_seed'] != before['parameters']['extra_noise_seed']
+        after['parameters']['extra_noise_seed'] = before['parameters']['extra_noise_seed']
     assert after == before  # Includes img2img bytes, strengths, model, samples and preferences.
     assert client.post(endpoint, json=body).status_code == 200
     assert len(service.peer.requests) == 2

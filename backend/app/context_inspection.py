@@ -66,7 +66,7 @@ def _definitions(candidates, policy):
 
 def _read(host, role_id):
     facts = _facts(host, role_id)
-    history = host._owner_history(role_id, readonly=True)
+    history = host._owner_history(role_id, readonly=True, group_speech=True)
     configuration = facts[1]
     limit = None if configuration and configuration.contextWindowTokens else max(100, AdvancedSettings.model_validate(facts[2]['values']).recent_memory_count)
     messages = history.runtime_messages(max_messages=limit)
@@ -78,8 +78,10 @@ def _current(host, role_id, facts, history, window, state, definitions):
         return False
     # The normal turn fence deliberately ignores new appends. Inspection must
     # include them, so compare against a fresh *role-scoped* view after the await.
-    current = host._owner_history(role_id, readonly=True)
+    current = host._owner_history(role_id, readonly=True, group_speech=True)
     if current.authority != history.authority or current.read() != history.read():
+        return False
+    if current.group_speech_blocks() != history.group_speech_blocks():
         return False
     # Compare current local declaration metadata, including availability text.
     # This preview neither loads plugins/MCP peers nor authorizes executions.
@@ -109,7 +111,7 @@ def _channel_read(host, thread, sender_id):
     if denial:
         raise PermissionError(denial)
     history = ConversationHistoryView(host.multichannel_store, role_id=thread.role_id,
-        thread_id=thread.thread_id, owner=private,
+        thread_id=thread.thread_id, owner=private, group_speech=private,
         authorized=lambda: source.authorization_denial(host.multichannel_store) is None)
     facts = _facts(host, thread.role_id)
     return facts, history, history.runtime_messages(max_messages=None), source, owner, private
@@ -133,7 +135,7 @@ async def _prepare(host, role_id, *, compact, thread=None, sender_id=''):
         source_authority=source)
     try:
         if thread is None:
-            provider = host._desktop_provider(role, configuration, settings, capabilities, memory, readonly=True)
+            provider = host._desktop_provider(role, configuration, settings, capabilities, memory, readonly=True, history=history)
         else:
             from .agent_runtime.meido_provider import MeidoProvider
             from .agent_runtime.natural_reply import NATURAL_CHAT_PROMPT
@@ -155,7 +157,7 @@ async def _prepare(host, role_id, *, compact, thread=None, sender_id=''):
             provider = MeidoProvider(host.model_adapter, role, configuration,
                 host._role_recent_context(role_id) if private else '', capabilities.prompt_context(),
                 required_context=identity, max_response_tokens=settings.maxTokens,
-                context_blocks=lambda: ([heard] if heard else []) + host._channel_memory_blocks(role_id, thread.thread_id, sender_id),
+                context_blocks=lambda: history.group_speech_blocks() + ([heard] if heard else []) + host._channel_memory_blocks(role_id, thread.thread_id, sender_id),
                 context_safety_margin=settings.contextSafetyMarginTokens,
                 stable_memory=host._role_memory_context(role_id, include_recent=False, external=not private),
                 skill_state=capabilities._skill_state)

@@ -5,10 +5,13 @@ import unicodedata
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationInfo, field_validator
 
 from ..chat_attachments import public_attachment, resolve_attachment
 from .ledger import canonical
+from .model_catalog import MODEL_CATALOG
+from .parameters import resolve_model
+from .prompts import validate_prompt
 
 
 class PromptTag(BaseModel):
@@ -46,10 +49,13 @@ class PromptTag(BaseModel):
 
     @field_validator('prompt', 'negative_prompt')
     @classmethod
-    def ascii_tags(cls, value):
-        if not value.isascii() or any(ord(char) < 32 for char in value):
-            raise ValueError('English ASCII prompt tags required')
-        return value.strip()
+    def bounded_tags(cls, value, info: ValidationInfo):
+        if info.context and info.context.get('stored') and value.isascii() and '\x7f' in value:
+            # Old saves accepted DEL. Keep that exact draft readable for repair,
+            # while validating every other character and all remaining fields.
+            validate_prompt(value.replace('\x7f', ''))
+            return value
+        return validate_prompt(value)
 
     @field_validator('reference_attachment_id')
     @classmethod
@@ -71,10 +77,10 @@ def _append(first, additions):
             # NovelAI weights span commas; removing even a repeated word can
             # remove a closing marker or change the weight of following tags.
             # Preserve the entire fragment without interpreting its syntax.
-            parts.append(fragment.strip())
+            parts.append(fragment.strip(' '))
             continue
         for part in fragment.split(','):
-            clean = part.strip()
+            clean = part.strip(' ')
             if clean and (index == 0 or clean.casefold() not in seen):
                 parts.append(clean)
                 seen.add(clean.casefold())
@@ -132,7 +138,7 @@ class PromptTags:
                 (role_id, cursor or '', limit + 1)).fetchall()
         tags = []
         for row in rows[:limit]:
-            tag = PromptTag.model_validate(json.loads(row['value']))
+            tag = PromptTag.model_validate(json.loads(row['value']), context={'stored': True})
             tags.append(self._view(role_id, row['id'], tag))
         return {'tags': tags,
             'revision': self.revision(role_id), 'nextCursor': rows[limit - 1]['id'] if len(rows) > limit else None}
@@ -162,21 +168,24 @@ class PromptTags:
             db.execute('INSERT INTO novelai_tag_revisions VALUES(?,1) ON CONFLICT(role_id) DO UPDATE SET revision=revision+1', (role_id,))
         return {'revision': self.revision(role_id)}
 
-    def expand(self, role_id, text, prompt='', negative_prompt=''):
+    def expand(self, role_id, text, prompt='', negative_prompt='', *, model=None):
         with self.app._lock:
-            return self._expand(role_id, text, prompt, negative_prompt)
+            return self._expand(role_id, text, prompt, negative_prompt, model)
 
-    def _expand(self, role_id, text, prompt, negative_prompt):
-        if (not all(isinstance(value, str) for value in (text, prompt, negative_prompt)) or len(text) > 12000
-                or max(len(prompt), len(negative_prompt)) > 4000 or not (prompt + negative_prompt).isascii()
-                or any(ord(char) < 32 for char in prompt + negative_prompt)):
+    def _expand(self, role_id, text, prompt, negative_prompt, model):
+        if not isinstance(text, str) or len(text) > 12000:
             raise ValueError('bounded current message and prompts required')
         role = self._role(role_id)
+        _, settings = self.app._configuration()
+        selected_model = resolve_model(settings, model)
+        ascii_only = not MODEL_CATALOG[selected_model].supports_unicode
+        prompt = validate_prompt(prompt, ascii_only=ascii_only)
+        negative_prompt = validate_prompt(negative_prompt, ascii_only=ascii_only)
         # Shiori's adult tag gate is service-wide, while Meido keeps the
         # role-level rating grant as a separate second gate.  Reading the
         # public projection here keeps preview and committed scene CG on the
         # same effective policy.
-        service_nsfw_enabled = bool(self.app.settings.public()['nsfwEnabled'])
+        service_nsfw_enabled = settings.nsfwEnabled
         library = self.list(role_id)
         while library['nextCursor']:
             page = self.list(role_id, cursor=library['nextCursor'])
@@ -194,6 +203,6 @@ class PromptTags:
                 ranked.append((score, item))
         ranked.sort(key=lambda pair: (-pair[0], _fold(pair[1]['name']), pair[1]['id']))
         matched = [item for _, item in ranked[:5]]
-        return {'prompt': _append(prompt, [item['prompt'] for item in matched]),
-            'negative_prompt': _append(negative_prompt, [item['negative_prompt'] for item in matched]),
+        return {'prompt': validate_prompt(_append(prompt, [item['prompt'] for item in matched]), ascii_only=ascii_only),
+            'negative_prompt': validate_prompt(_append(negative_prompt, [item['negative_prompt'] for item in matched]), ascii_only=ascii_only),
             'matchedIds': [item['id'] for item in matched], 'revision': library['revision']}

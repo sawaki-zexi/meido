@@ -15,6 +15,7 @@ export const defaultNovelaiRoleConfig: NovelaiRoleConfig = {
 export type NovelaiAvailability = { available: boolean; code: string; message: string };
 export type NovelaiConfiguration = {
   availability?: NovelaiAvailability;
+  modelCatalog?: { id: string; label: string; supportsUnicode?: boolean; intensities?: ('high' | 'medium')[] }[];
   enabled: boolean; tokenConfigured: boolean; credentialCleanupPending: boolean; revision: number;
   allowTxt2Img: boolean; allowImg2Img: boolean;
   allowedModels: string[]; defaultModel: string; nsfwEnabled: boolean; nsfwModel: string; allowedSamplers: string[]; defaultSampler: string;
@@ -24,11 +25,13 @@ export type NovelaiConfiguration = {
 export type GenerationParameters = {
   prompt: string; mode: 'txt2img' | 'img2img'; negative_prompt?: string; base_attachment_id?: string;
   size_preset?: 'square' | 'landscape' | 'portrait' | 'custom'; custom_width?: number; custom_height?: number;
-  model?: string; sampler?: string; steps?: number; seed?: number; samples?: number; strength?: number; noise?: number; background?: boolean; qualityToggle?: boolean; ucPreset?: number;
+  model?: string; intensity?: 'high' | 'medium'; sampler?: string; steps?: number; seed?: number; samples?: number; strength?: number; noise?: number; background?: boolean; qualityToggle?: boolean; ucPreset?: number;
 };
 export type GenerationView = {
   generationId: string; attemptId: string; roleId: string; status: string; parameters: (GenerationParameters & {
     width: number; height: number; seed: number; samples?: number; qualityToggle?: boolean; ucPreset?: number;
+    intensity?: 'high' | 'medium';
+    effective_prompt?: string; effective_negative_prompt?: string; params_version?: number; scale?: number; noise_schedule?: string;
   }) | null;
   purpose?: 'manual' | 'chat_expression' | 'scene_cg'; phase?: 'auxiliary' | 'generation' | 'completed';
   auxiliaryConsumption?: 'possible' | 'not_dispatched'; auxiliaryStatus?: 'not_dispatched' | 'dispatching' | 'succeeded' | 'failed';
@@ -50,10 +53,10 @@ export const novelai = {
   savePromptTag: (roleId: string, tag: PromptTagInput, id?: string) => api<{ tag: PromptTag; revision: number }>(`${tagsPath(roleId)}${id ? `/${encodeURIComponent(id)}` : ''}`,
     { method: id ? 'PUT' : 'POST', body: JSON.stringify(tag) }),
   deletePromptTag: (roleId: string, id: string) => api<{ revision: number }>(`${tagsPath(roleId)}/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  previewPromptTags: (roleId: string, text: string, prompt: string, negative_prompt: string) => api<PromptTagPreview>(`${tagsPath(roleId)}/preview`,
-    { method: 'POST', body: JSON.stringify({ text, prompt, negative_prompt }) }),
+  previewPromptTags: (roleId: string, text: string, prompt: string, negative_prompt: string, model?: string) => api<PromptTagPreview>(`${tagsPath(roleId)}/preview`,
+    { method: 'POST', body: JSON.stringify({ text, prompt, negative_prompt, model }) }),
   configuration: () => api<NovelaiConfiguration>('/api/services/novelai'),
-  saveConfiguration: (configuration: Partial<Omit<NovelaiConfiguration, 'revision' | 'tokenConfigured' | 'credentialCleanupPending' | 'manualConsentRevision' | 'availability'>> & { confirmManualConsumption?: boolean }, expectedRevision: number) =>
+  saveConfiguration: (configuration: Partial<Omit<NovelaiConfiguration, 'revision' | 'tokenConfigured' | 'credentialCleanupPending' | 'manualConsentRevision' | 'availability' | 'modelCatalog'>> & { confirmManualConsumption?: boolean; managedModelIds?: string[] }, expectedRevision: number) =>
     api<NovelaiConfiguration>('/api/services/novelai', { method: 'PUT', body: JSON.stringify({ ...configuration, expectedRevision }) }),
   setToken: (token: string) => api<NovelaiConfiguration>('/api/services/novelai/token', { method: 'PUT', body: JSON.stringify({ token }) }),
   clearToken: () => api<NovelaiConfiguration>('/api/services/novelai/token', { method: 'DELETE' }),

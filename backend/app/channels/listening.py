@@ -10,6 +10,7 @@ import time
 import uuid
 from threading import Lock, RLock
 from collections import deque
+from copy import deepcopy
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -110,6 +111,7 @@ class GroupListeningStore:
         with self._thread_lock(thread_id):
             self._revisions[thread_id] = self.revision(thread_id) + 1
             self._invalidated_at[thread_id] = self.clock()
+            self._windows.pop(thread_id, None)
         if self.on_invalidate is not None:
             self.on_invalidate(thread_id)
 
@@ -175,10 +177,10 @@ class GroupListeningStore:
             if external_message_id and db.execute("SELECT 1 FROM channel_listening_records WHERE thread_id=? AND external_message_id=?", (thread.thread_id, external_message_id)).fetchone():
                 return None
             count = db.execute("SELECT COUNT(*) FROM channel_listening_records WHERE thread_id=? AND day=?", (thread.thread_id, moment.date().isoformat())).fetchone()[0]
-            self.store.external_memory.members.observe_in(db, thread, source, moment.isoformat())
             if count >= cap:
                 window.append(message)
                 return message
+            self.store.external_memory.members.observe_in(db, thread, source, moment.isoformat())
             sequence = db.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM channel_listening_records WHERE thread_id=?", (thread.thread_id,)).fetchone()[0]
             message["sequence"] = int(sequence)
             db.execute("INSERT INTO channel_listening_records VALUES(?,?,?,?,?,?,?,?)", (message["id"], thread.thread_id, sequence, content, json.dumps(source, ensure_ascii=False), external_message_id or None, moment.isoformat(), moment.date().isoformat()))
@@ -213,6 +215,11 @@ class GroupListeningStore:
         merged = list({item['id']: item for item in [*records, *self._windows.get(thread_id, ())]}.values())
         merged.sort(key=lambda item: datetime.fromisoformat(item["createdAt"]))
         return merged[-self.RECENT_LIMIT:]
+
+    def temporary(self, role_id: str, thread_id: str) -> list[dict[str, Any]]:
+        self.group(role_id, thread_id)
+        with self._thread_lock(thread_id):
+            return deepcopy(list(self._windows.get(thread_id, ())))
 
     def enrich_reply(self, thread, platform_message_id, updates, *, authorized):
         """Keep verified host quote facts with the original hearing source."""

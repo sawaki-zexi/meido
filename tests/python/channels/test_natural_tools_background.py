@@ -18,8 +18,11 @@ from test_natural_scheduler import Clock
 
 @pytest.mark.parametrize('sender', ['11', '22'])
 @pytest.mark.parametrize('outcome', ['sent', 'uncertain', 'disabled', 'generation', 'quota'])
-def test_background_outlives_short_batch_but_not_source_revocation(novelai_main, monkeypatch, sender, outcome):
+@pytest.mark.parametrize('model', ['nai-diffusion-4-5-curated', 'nai-diffusion-5-full'])
+def test_background_outlives_short_batch_but_not_source_revocation(novelai_main, monkeypatch, sender, outcome, model, overflow=False):
     _, service = novelai_main
+    service.application.settings.save({'allowedModels': [model], 'defaultModel': model},
+        expected_revision=service.application.settings.public()['revision'])
     channels = main.multichannel_store
     account = channels.register_channel_account(service.role.id, 'qq', account_id='natural-image', enabled=True, allow_group=True)
     code = channels.create_pairing_code(service.role.id, 'qq')
@@ -72,6 +75,9 @@ def test_background_outlives_short_batch_but_not_source_revocation(novelai_main,
     channels.set_group_listening(service.role.id, account.account_id, '100', True)
     thread = channels.get_thread_by_chat(service.role.id, account.account_id, '100', chat_type='group')
     channels.listening.set_natural_enabled(service.role.id, thread.thread_id, True)
+    if overflow:
+        channels.listening.set_cap(service.role.id, thread.thread_id, 1)
+        channels.listening.hear(thread, 'earlier', 'earlier', {'senderId': '22'})
     service.peer.block = True
 
     async def run():
@@ -86,12 +92,17 @@ def test_background_outlives_short_batch_but_not_source_revocation(novelai_main,
             await clock.advance(1)
             await asyncio.wait_for(asyncio.gather(*pending), 10)
             assert len(requests) == (2 if outcome == 'quota' else 3) and len(service.peer.requests) == 1
+            assert service.peer.requests[0]['body']['model'] == model
             rows = service.sessions.list_messages(thread.session_key)
             user = next(row for row in rows if row.role == 'user')
             source = service.sessions.get_run(user.runId).modelSnapshot['channelTurnSource']
             assert source['owner_context'] is (sender == '11')
             assert source['connection_generation'] == host.connection_generation(account.account_id)
             assert user.metadata['triggered'] is False
+            assert not service.sessions._natural_inputs
+            if overflow:
+                missing = service.sessions.user_message_for_run(user.runId)
+                assert missing.content == '' and missing.metadata['originalUnavailable']
             assert len(sends) == (0 if outcome == 'quota' else 1)
             assert all(part['type'] != 'image' for item in sends for part in item['message'])
             await clock.advance(60)  # Original 45-second batch has ended.
@@ -125,3 +136,10 @@ def test_background_outlives_short_batch_but_not_source_revocation(novelai_main,
                 await main._proactive.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('sender', ['11', '22'])
+@pytest.mark.parametrize('outcome', ['sent', 'disabled'])
+def test_overflow_background_retains_frozen_authority_after_original_expires(novelai_main, monkeypatch, sender, outcome):
+    test_background_outlives_short_batch_but_not_source_revocation(
+        novelai_main, monkeypatch, sender, outcome, 'nai-diffusion-4-5-curated', overflow=True)

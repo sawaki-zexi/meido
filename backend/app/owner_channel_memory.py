@@ -23,17 +23,31 @@ class OwnerChannelMemory:
         self._semantic_locks = {}
         self.semantic_lock = semantic_lock or (lambda role_id: self._semantic_locks.setdefault(role_id, asyncio.Lock()))
 
-    async def commit(self, thread, messages, *, listening=True):
+    async def commit(self, thread, messages, *, listening=True, authorized=lambda: True):
         if not messages:
             return
         key = ('listening:' if listening else 'group-owner:') + thread.thread_id
         ids = [str(item['id']) for item in messages]
         proof = await asyncio.to_thread(self.verify, thread.role_id, key, ids)
-        if not proof:
+        if not proof or not authorized():
             raise PermissionError('主人发言来源许可已变化')
         source = f'{key}:{messages[0]["sequence"]}-{messages[-1]["sequence"]}:{proof[:12]}'
         previous = await asyncio.to_thread(self.sessions.maintenance_progress, thread.role_id, key)
-        if previous.get('lastSourceKey') != source:
+        covered = previous.get('coveredSourceKey', previous.get('lastSourceKey'))
+        covered_source = source
+        if covered != covered_source:
+            prefix = [item for item in messages if item['sequence'] <= previous.get('lastSequence', 0)]
+            if prefix and len(prefix) < len(messages):
+                prefix_proof = await asyncio.to_thread(self.verify, thread.role_id, key, [str(item['id']) for item in prefix])
+                if prefix_proof and covered == f'{key}:{prefix[0]["sequence"]}-{prefix[-1]["sequence"]}:{prefix_proof[:12]}':
+                    # An external-profile conflict may retry a larger batch.
+                    # Only skip its already committed, still-identical prefix.
+                    messages = messages[len(prefix):]
+                    ids = [str(item['id']) for item in messages]
+                    proof = await asyncio.to_thread(self.verify, thread.role_id, key, ids)
+                    if not proof or not authorized():
+                        raise PermissionError('主人发言来源许可已变化')
+                    source = f'{key}:{messages[0]["sequence"]}-{messages[-1]["sequence"]}:{proof[:12]}'
             draft = await asyncio.to_thread(self.extract, thread.role_id, messages)
             event = ConsolidationCommitted(thread.role_id, thread.session_key, source, tuple(ids),
                 (messages[0]['sequence'], messages[-1]['sequence']), (),
@@ -43,7 +57,7 @@ class OwnerChannelMemory:
             folder.mkdir(parents=True, exist_ok=True)
             (folder / 'journal').mkdir(exist_ok=True)
             with document_lock(folder):
-                if self.verify(thread.role_id, key, ids) != proof:
+                if not authorized() or self.verify(thread.role_id, key, ids) != proof:
                     raise PermissionError('主人发言在整理期间已变化')
                 current = self.sessions.maintenance_progress(thread.role_id, key)
                 if current.get('lastSourceKey') != previous.get('lastSourceKey'):
@@ -60,6 +74,7 @@ class OwnerChannelMemory:
                 if source not in old:
                     writes[journal] = old + documents.render_journal_entry(source, messages[0]['sequence'], messages[-1]['sequence'])
                 progress = {**current, 'lastSequence': messages[-1]['sequence'], 'lastSourceKey': source,
+                    'coveredSourceKey': covered_source,
                     'pendingEvents': [*current.get('pendingEvents', []), {'proof': proof,
                         'payload': MemoryMaintenance._event_payload(event)}]}
                 self.sessions.save_maintenance_progress(thread.role_id, key, progress, expected=current,

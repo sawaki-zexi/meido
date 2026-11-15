@@ -18,24 +18,35 @@ from backend.app.story.models import DirectorDraft, StoryBeatDraft, StoryScene
 class Director:
     def __init__(self):
         self.fail = False
+        self.visual_prompt = None
 
     async def generate(self, *, context, input_text, opening):
         if self.fail:
             raise StoryInvalidOutputError('fixture failure')
         return DirectorDraft(
             beats=(StoryBeatDraft('风从窗边吹来。'), StoryBeatDraft('欢迎回来。', 'dialogue')),
-            visual_prompt='empty room, sunlight' if opening else '1girl, smile, room',
+            visual_prompt=self.visual_prompt or ('empty room, sunlight' if opening else '1girl, smile, room'),
             visual_type='scene' if opening else 'character',
             current_scene=StoryScene('room', '客厅', (context.role_snapshot['id'], 'player')))
 
 
-@pytest.mark.parametrize('allow_full', [False, True])
-def test_story_create_play_save_gallery_retry_and_reopen(novelai_service, tmp_path, allow_full):
+@pytest.mark.parametrize(('allow_full', 'v5_model', 'nsfw'), [
+    (False, None, False), (True, None, False),
+    (True, 'nai-diffusion-5-curated', False), (True, 'nai-diffusion-5-full', True),
+])
+def test_story_create_play_save_gallery_retry_and_reopen(novelai_service, tmp_path, allow_full, v5_model, nsfw):
     service = novelai_service
     if allow_full:
         service.application.settings.save({'allowedModels': ['nai-diffusion-4-5-curated', 'nai-diffusion-4-5-full']},
             expected_revision=service.application.settings.public()['revision'])
+    if v5_model:
+        service.application.settings.save({'allowedModels': ['nai-diffusion-4-5-curated', 'nai-diffusion-4-5-full', v5_model],
+            'nsfwEnabled': nsfw, 'nsfwModel': v5_model,
+            'defaultModel': 'nai-diffusion-4-5-curated' if nsfw else v5_model},
+            expected_revision=service.application.settings.public()['revision'])
     director = Director()
+    if v5_model:
+        director.visual_prompt = '1.2::日差し, 蓝色天空::, cafe\u0301'
     # Integrate the real shared role library: mood-bound portrait must beat the
     # older card image, and the chosen background must not become a character.
     def picture(color):
@@ -86,7 +97,10 @@ def test_story_create_play_save_gallery_retry_and_reopen(novelai_service, tmp_pa
             assert story['backgroundResource']['status'] == 'ready'
             assert (await client.get(story['backgroundResource']['path'])).headers['content-type'] == 'image/png'
             assert len(service.peer.requests) == 1
-            assert service.peer.requests[0]['body']['model'] == ('nai-diffusion-4-5-full' if allow_full else 'nai-diffusion-4-5-curated')
+            expected_model = v5_model or ('nai-diffusion-4-5-full' if allow_full else 'nai-diffusion-4-5-curated')
+            assert service.peer.requests[0]['body']['model'] == expected_model
+            if v5_model:
+                assert service.peer.requests[0]['body']['input'] == director.visual_prompt
             await command('stories.create', payload)  # Exact replay is read-only after commit.
             await story_app.drain()
             assert len(service.peer.requests) == 1
@@ -103,6 +117,7 @@ def test_story_create_play_save_gallery_retry_and_reopen(novelai_service, tmp_pa
             await command('stories.cg.regenerate', retry, request_id)
             await story_app.drain()
             assert len(service.peer.requests) == 3
+            assert all(request['body']['model'] == expected_model for request in service.peer.requests)
             assert len((await command('stories.get', {'story_id': story_id}))['story']['beats']) == 4
             await command('stories.archive', {'story_id': story_id, 'archived': True})
             assert not (await command('stories.list', {}))['stories']

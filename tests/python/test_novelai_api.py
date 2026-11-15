@@ -70,7 +70,7 @@ def test_owner_quality_preferences_reach_fixture_and_are_saved_in_attempt_histor
         common = {'requestId': '17117117117117117117117117117126',
             'expectedRevision': configured['revision']}
         rejected = client.post(path, json={**common,
-            'parameters': {**service.request, 'qualityToggle': False, 'ucPreset': 0}})
+            'parameters': {**service.request, 'qualityToggle': False, 'ucPreset': 3}})
         assert rejected.status_code == 422
         assert not service.peer.requests
 
@@ -87,6 +87,15 @@ def test_owner_quality_preferences_reach_fixture_and_are_saved_in_attempt_histor
         assert history[0]['attemptId'] == generation['attemptId']
         assert history[0]['parameters']['qualityToggle'] is True
         assert history[0]['parameters']['ucPreset'] == 2
+
+        overridden = client.post(path, json={'requestId': '17117117117117117117117117117130',
+            'expectedRevision': configured['revision'],
+            'parameters': {**service.request, 'qualityToggle': False, 'ucPreset': 0}})
+        assert overridden.status_code == 200, overridden.text
+        assert overridden.json()['generation']['parameters']['qualityToggle'] is False
+        assert overridden.json()['generation']['parameters']['ucPreset'] == 0
+        assert service.peer.requests[-1]['body']['parameters']['qualityToggle'] is False
+        assert service.peer.requests[-1]['body']['parameters']['ucPreset'] == 0
 
 
 def test_explicit_ui_generation_keeps_its_prompt_instead_of_matching_owner_tags(novelai_service):
@@ -157,8 +166,11 @@ def test_ui_generation_uses_service_default_samples_when_omitted(novelai_service
     (402, b'private response', 'failed_response'), (408, b'private response', 'unknown'),
     (429, b'private response', 'unknown'), (500, b'private response', 'unknown'),
     (201, b'not an image archive', 'unknown')])
-def test_remote_failure_never_retries_paid_post_and_consumption_stays_honest(novelai_service, status, body, expected):
+@pytest.mark.parametrize('model', ['nai-diffusion-4-5-curated', 'nai-diffusion-5-curated'])
+def test_remote_failure_never_retries_paid_post_and_consumption_stays_honest(novelai_service, status, body, expected, model):
     service = novelai_service
+    service.application.settings.save({'allowedModels': [model], 'defaultModel': model},
+        expected_revision=service.application.settings.public()['revision'])
     service.peer.status, service.peer.body = status, body
     application = FastAPI()
     application.include_router(service.application.router())

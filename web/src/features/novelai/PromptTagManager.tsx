@@ -2,7 +2,7 @@ import { useRef } from 'react';
 import { Dialog } from '../../ui/Dialog';
 import { Icon } from '../../ui/Icon';
 import './promptTags.css';
-import type { PromptTagRating } from '../../api/novelai';
+import type { NovelaiConfiguration, PromptTagRating } from '../../api/novelai';
 import { Notice, Placeholder } from '../../ui/Status';
 import { usePromptTags } from './usePromptTags';
 
@@ -10,8 +10,10 @@ const attachmentUrl = (roleId: string, attachmentId: string) =>
   `/api/roles/${encodeURIComponent(roleId)}/attachments/${encodeURIComponent(attachmentId)}`;
 const ratingLabels: Record<PromptTagRating, string> = { general: '通用', mature: '成人向', explicit: '露骨' };
 
-export function PromptTagManager({ roleId, expanded = false }: { roleId: string; expanded?: boolean }) {
-  const tags = usePromptTags(roleId, expanded);
+export function PromptTagManager({ roleId, expanded = false, configuration, model }: {
+  roleId: string; expanded?: boolean; configuration?: NovelaiConfiguration | null; model?: string;
+}) {
+  const tags = usePromptTags(roleId, expanded, configuration, model);
   const referenceInput = useRef<HTMLInputElement>(null);
   return <>
     {!expanded && <button type="button" aria-expanded={tags.open} onClick={tags.toggle}>{tags.open ? '收起提示标签' : '管理提示标签'}</button>}
@@ -60,8 +62,9 @@ export function PromptTagManager({ roleId, expanded = false }: { roleId: string;
           <label className="field"><span>标签名称</span><input aria-label="标签名称" required maxLength={80} value={tags.draft.name} onChange={(event) => tags.patch({ name: event.target.value })} /></label>
           <label className="field"><span>标签分类</span><input aria-label="标签分类" required maxLength={80} value={tags.draft.category} onChange={(event) => tags.patch({ category: event.target.value })} /></label>
           <label className="field"><span>匹配关键词（每行一个）</span><textarea aria-label="匹配关键词（每行一个）" required value={tags.keywords} onChange={(event) => tags.setKeywords(event.target.value)} /><small>1–16 个关键词，每个最多 80 字符；按文字匹配，不使用正则。</small></label>
-          <label className="field"><span>正向提示词</span><textarea aria-label="标签正向 tags" maxLength={4000} value={tags.draft.prompt} onChange={(event) => tags.patch({ prompt: event.target.value })} /></label>
-          <label className="field"><span>负向提示词</span><textarea aria-label="标签负向 tags" maxLength={4000} value={tags.draft.negative_prompt} onChange={(event) => tags.patch({ negative_prompt: event.target.value })} /></label>
+          <label className="field"><span>正向提示词</span><textarea aria-label="标签正向 tags" value={tags.draft.prompt} onChange={(event) => tags.patch({ prompt: event.target.value })} /></label>
+          <label className="field"><span>负向提示词</span><textarea aria-label="标签负向 tags" value={tags.draft.negative_prompt} onChange={(event) => tags.patch({ negative_prompt: event.target.value })} /></label>
+          <p className="field-hint">可保存多语言草稿。正负提示词各最多 4000 字符，组合字符分开计数，不能包含换行或控制字符。预览和生成按所选模型检查。</p>
           <label className="field"><span>内容分级</span><select aria-label="标签 rating" value={tags.draft.rating} onChange={(event) => tags.patch({ rating: event.target.value as PromptTagRating })}>
             {Object.entries(ratingLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label><input type="checkbox" checked={tags.draft.enabled} onChange={(event) => tags.patch({ enabled: event.target.checked })} />启用此标签</label>
@@ -76,9 +79,10 @@ export function PromptTagManager({ roleId, expanded = false }: { roleId: string;
       </form>}
       {!tags.editorOpen && <details className="prompt-tag-preview"><summary>本地匹配预览</summary>
       <form aria-label="本地标签预览" onSubmit={(event) => { event.preventDefault(); void tags.inspect(); }}>
-        <label className="field"><span>预览当前主人输入</span><textarea aria-label="预览当前主人输入" required maxLength={12000} value={tags.text} onChange={(event) => tags.setText(event.target.value)} /></label>
-        <label className="field"><span>预览基础正向 tags</span><textarea aria-label="预览基础正向 tags" maxLength={4000} value={tags.prompt} onChange={(event) => tags.setPrompt(event.target.value)} /></label>
-        <label className="field"><span>预览基础负向 tags</span><textarea aria-label="预览基础负向 tags" maxLength={4000} value={tags.negativePrompt} onChange={(event) => tags.setNegativePrompt(event.target.value)} /></label>
+        <p>预览模型 {model ?? (configuration?.nsfwEnabled ? configuration.nsfwModel : configuration?.defaultModel) ?? '当前服务默认模型'}</p>
+        <label className="field"><span>预览当前主人输入</span><textarea aria-label="预览当前主人输入" required value={tags.text} onChange={(event) => tags.setText(event.target.value)} /></label>
+        <label className="field"><span>预览基础正向 tags</span><textarea aria-label="预览基础正向 tags" value={tags.prompt} onChange={(event) => tags.setPrompt(event.target.value)} /></label>
+        <label className="field"><span>预览基础负向 tags</span><textarea aria-label="预览基础负向 tags" value={tags.negativePrompt} onChange={(event) => tags.setNegativePrompt(event.target.value)} /></label>
         <button type="submit" disabled={tags.busy}>预览标签扩写</button>
       </form>
       {tags.preview && <section aria-label="标签扩写结果"><p>匹配版本 {tags.preview.revision}</p>

@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { errorMessage } from '../../api/client';
 import { uploadChatAttachment } from '../../api/chat';
-import { novelai, type PromptTag, type PromptTagInput, type PromptTagPage, type PromptTagPreview, type PromptTagRating } from '../../api/novelai';
+import { novelai, type NovelaiConfiguration, type PromptTag, type PromptTagInput, type PromptTagPage, type PromptTagPreview, type PromptTagRating } from '../../api/novelai';
+import { promptInputError, supportsUnicodePrompts } from './generationValidation';
 
 const emptyTag = (): PromptTagInput => ({ name: '', category: 'composition', keywords: [], prompt: '', negative_prompt: '', rating: 'general', enabled: true, reference_attachment_id: null });
 const normalizeSearch = (value: string) => value.normalize('NFKC').toLowerCase();
 type TagFilters = { query: string; category: string; rating: '' | PromptTagRating; status: '' | 'enabled' | 'disabled' };
 const emptyFilters = (): TagFilters => ({ query: '', category: '', rating: '', status: '' });
-export function usePromptTags(roleId: string, initiallyOpen = false) {
+export function usePromptTags(roleId: string, initiallyOpen = false, configuration?: NovelaiConfiguration | null, model?: string) {
   const [open, setOpen] = useState(initiallyOpen);
   const [page, setPage] = useState<PromptTagPage | null>(null);
   const [draft, setDraft] = useState<PromptTagInput>(emptyTag);
@@ -27,6 +28,13 @@ export function usePromptTags(roleId: string, initiallyOpen = false) {
   const scope = useRef({ roleId, active: true });
   const currentRole = useRef(roleId);
   const previewVersion = useRef(0);
+  const previewModel = model ?? (configuration?.nsfwEnabled ? configuration.nsfwModel : configuration?.defaultModel);
+  const previewScope = useRef({ model: previewModel, revision: configuration?.revision });
+  if (previewScope.current.model !== previewModel || previewScope.current.revision !== configuration?.revision) {
+    previewScope.current = { model: previewModel, revision: configuration?.revision };
+    previewVersion.current++;
+  }
+  useEffect(() => { setPreview(null); setError(''); }, [previewModel, configuration?.revision]);
   currentRole.current = roleId;
   const current = (owner: typeof scope.current) => owner.active && owner === scope.current && currentRole.current === owner.roleId;
   const load = async (owner = scope.current) => {
@@ -83,8 +91,8 @@ export function usePromptTags(roleId: string, initiallyOpen = false) {
     if (!draft.name.trim() || draft.name.length > 80 || !draft.category.trim() || draft.category.length > 80
       || words.length < 1 || words.length > 16 || words.some((word) => word.length > 80))
       throw new Error('标签名称和分类各最多 80 字符；请填写 1–16 个关键词，每个最多 80 字符。');
-    if ([draft.prompt, draft.negative_prompt].some((value) => value.length > 4000 || /[^\x20-\x7e]/.test(value)))
-      throw new Error('正负 tags 各最多 4000 字符，只能使用英文 ASCII 且不能包含控制符。');
+    const promptError = promptInputError(draft.prompt, '正向提示词') || promptInputError(draft.negative_prompt, '负向提示词');
+    if (promptError) throw new Error(promptError);
     const result = await novelai.savePromptTag(owner.roleId, { ...draft, name: draft.name.trim(), category: draft.category.trim(), keywords: words }, editing);
     if (!current(owner)) return;
     openEditor(result.tag); setSaved(true); invalidatePreview(); await load(owner);
@@ -107,12 +115,20 @@ export function usePromptTags(roleId: string, initiallyOpen = false) {
     invalidatePreview(); await load(owner);
   });
   const inspect = () => run(async (owner) => {
-    if (text.length > 12000 || [prompt, negativePrompt].some((value) => value.length > 4000 || /[^\x20-\x7e]/.test(value)))
-      throw new Error('预览输入最多 12000 字符，基础 tags 各最多 4000 字符且只能使用英文 ASCII。');
+    if (Array.from(text).length > 12000) throw new Error('预览输入最多 12000 字符。');
+    // An omitted configuration belongs to an older caller. The server resolves
+    // its effective model, while local validation still enforces Unicode bounds.
+    const unicode = configuration == null || supportsUnicodePrompts(configuration, previewModel);
+    const promptError = promptInputError(prompt, '正向提示词', unicode) || promptInputError(negativePrompt, '负向提示词', unicode);
+    if (promptError) throw new Error(promptError);
     const version = ++previewVersion.current;
     setPreview(null);
-    const result = await novelai.previewPromptTags(owner.roleId, text, prompt, negativePrompt);
-    if (current(owner) && version === previewVersion.current) setPreview(result);
+    try {
+      const result = await novelai.previewPromptTags(owner.roleId, text, prompt, negativePrompt, previewModel);
+      if (current(owner) && version === previewVersion.current) setPreview(result);
+    } catch (cause) {
+      if (current(owner) && version === previewVersion.current) throw cause;
+    }
   });
   const search = normalizeSearch(filters.query.trim());
   const filteredTags = page?.tags.filter((tag) => (!filters.category || tag.category === filters.category)

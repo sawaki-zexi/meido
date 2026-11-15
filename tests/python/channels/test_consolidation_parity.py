@@ -29,7 +29,8 @@ def test_listening_consolidation_keeps_owner_and_external_layers_separate(tmp_pa
         observed.extend(message["content"] for message in messages)
         return {"groupNote": "群笔记", "summary": "群最近动态", "members": [{"senderId": "visitor", "name": "访客", "profile": "访客档案", "shorthand": "速记"}, {"senderId": "unknown", "profile": "不能写"}]}
 
-    async def owner_statements(thread, messages):
+    async def owner_statements(thread, messages, *, authorized):
+        assert authorized()
         owners.extend(message["content"] for message in messages)
 
     store, thread, groups, worker, owner_turns = _maintenance(tmp_path, summarize, owner_statements)

@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import inspect
 import json
+import time
 from collections.abc import Callable
 from datetime import datetime
 from .source_authority import source_messages
@@ -33,7 +34,10 @@ async def finish_io(work):
 
 class ChannelMemoryMaintenance:
     BATCH_SIZE = 50
-    SWEEP_SECONDS = 30 * 60
+    # Coalesce brief pauses. A sweep bounds idle/retry latency to 30 seconds.
+    IDLE_SECONDS = 120
+    SWEEP_SECONDS = 30
+    RETRY_SECONDS = 30
 
     def __init__(self, store_provider: Callable, group_provider: Callable, summarize: Callable, owner_ingest: Callable, *, owner_statements: Callable | None = None, enabled: Callable = lambda: True) -> None:
         self.store_provider, self.group_provider = store_provider, group_provider
@@ -47,6 +51,8 @@ class ChannelMemoryMaintenance:
         self._deleting: set[str] = set()
         self._locks: dict[str, asyncio.Lock] = {}
         self.owner_documents = None
+        self.clock, self.sleep = time.time, asyncio.sleep
+        self._retry_at: dict[str, float] = {}
 
     def _initialize(self):
         store = self.store_provider()
@@ -76,7 +82,8 @@ class ChannelMemoryMaintenance:
                 rows = db.execute('SELECT * FROM channel_listening_records WHERE thread_id=? AND sequence<=? ORDER BY sequence', (thread.thread_id, through)).fetchall()
             messages = [store.listening._message(row) for row in rows]
         else:
-            messages = [item.model_dump(mode='json') for item in store.sessions.list_messages(thread.session_key) if item.sequence <= through]
+            messages = [item.model_dump(mode='json') for item in store.sessions.list_messages(thread.session_key)
+                if item.sequence <= through and not (item.role == 'user' and item.metadata.get('listening'))]
         senders = {str(item['metadata'].get('senderId') or '') for item in messages if item['role'] == 'user'}
         owners = {}
         for sender in senders:
@@ -98,7 +105,7 @@ class ChannelMemoryMaintenance:
         self.request(thread.thread_id)
 
     def request(self, thread_id: str) -> None:
-        if self.closed or not self.enabled():
+        if self.closed or not self.enabled() or self.clock() < self._retry_at.get(thread_id, 0):
             return
         with self.store_provider()._connect() as db:
             row = db.execute("SELECT role_id FROM channel_threads WHERE thread_id=?", (thread_id,)).fetchone()
@@ -122,6 +129,8 @@ class ChannelMemoryMaintenance:
     async def _run_requested(self, thread_id):
         while thread_id in self._requested and not self.closed:
             self._requested.discard(thread_id)
+            if self.clock() < self._retry_at.get(thread_id, 0):
+                return
             try:
                 if self.owner_documents is not None:
                     store = self.store_provider()
@@ -131,12 +140,33 @@ class ChannelMemoryMaintenance:
                         self.owner_documents.resume(row[0])
                 while await self.consolidate(thread_id, listening=True):
                     pass
+                if self.clock() < self._retry_at.get(thread_id, 0):
+                    return
                 while await self.consolidate(thread_id, listening=False):
                     pass
             except Exception as error:
+                self._retry_at[thread_id] = self.clock() + self.RETRY_SECONDS
                 self.errors.append(f"{thread_id}: {type(error).__name__}")
                 del self.errors[:-100]
                 self._requested.discard(thread_id)
+
+    def _listening_ready(self, store, thread, rows, today):
+        if not rows:
+            return False
+        if len(rows) >= self.BATCH_SIZE or rows[0]['day'] < today:
+            return True
+        from .conversation_context import current_timeline
+        recent = current_timeline(store, thread, limit=store.listening.RECENT_LIMIT)
+        if rows[0]['id'] not in {message['id'] for message in recent}:
+            return True
+        # Include addressed messages and temporary overflow in the idle clock.
+        latest = max(datetime.fromisoformat(message['createdAt']).timestamp() for message in recent)
+        return self.clock() - latest >= self.IDLE_SECONDS
+
+    @staticmethod
+    def _listening_active(store, thread):
+        return (thread.channel == 'qq' and thread.chat_type == 'group'
+            and store.group_listening(thread.role_id, thread.account_id, thread.chat_id))
 
     async def commit_turn(self, thread, owner: bool, user_message, assistant_message) -> None:
         if self.closed or not self.enabled() or assistant_message is None or assistant_message.status != "completed":
@@ -155,20 +185,43 @@ class ChannelMemoryMaintenance:
             return False
         wanted = set(message_ids)
         selected = [item for item in store.sessions.list_messages(session_key) if item.id in wanted]
-        if {item.id for item in selected} != wanted:
+        ordinary = [item for item in selected if not (item.role == 'user' and item.metadata.get('listening'))]
+        listening_ids = wanted - {item.id for item in ordinary}
+        sources = []
+        if listening_ids:
+            placeholders = ','.join('?' for _ in listening_ids)
+            with store._connect() as db:
+                sources = db.execute(
+                    f'SELECT id,sequence FROM channel_listening_records WHERE thread_id=? AND id IN ({placeholders})',
+                    (thread.thread_id, *listening_ids)).fetchall()
+        if {row['id'] for row in sources} != listening_ids:
             return False
-        through = max((item.sequence for item in selected), default=0)
-        await self.consolidate(thread.thread_id, listening=False, through_sequence=through)
-        with store._connect() as db:
-            row = db.execute('SELECT sequence FROM channel_memory_cursors WHERE thread_id=?', (thread.thread_id,)).fetchone()
-        return row is not None and row[0] >= through
+        targets = ((False, max((item.sequence for item in ordinary), default=0)),
+                   (True, max((row['sequence'] for row in sources), default=0)))
+        for listening, through in targets:
+            if not through:
+                continue
+            table = 'channel_listening_cursors' if listening else 'channel_memory_cursors'
+            while True:
+                changed = await self.consolidate(thread.thread_id, listening=listening, through_sequence=through)
+                with store._connect() as db:
+                    row = db.execute(f'SELECT sequence FROM {table} WHERE thread_id=?', (thread.thread_id,)).fetchone()
+                if row and row[0] >= through:
+                    break
+                if not changed:
+                    return False
+        return True
 
     async def consolidate(self, thread_id: str, *, listening: bool, today: str | None = None, through_sequence=None) -> bool:
         async with self._locks.setdefault(thread_id, asyncio.Lock()):
-            return await self._consolidate(thread_id, listening=listening, today=today, through_sequence=through_sequence)
+            try:
+                return await self._consolidate(thread_id, listening=listening, today=today, through_sequence=through_sequence)
+            finally:
+                if thread_id in self._retry_at:
+                    self._retry_at[thread_id] = self.clock() + self.RETRY_SECONDS
 
     async def _consolidate(self, thread_id: str, *, listening: bool, today: str | None = None, through_sequence=None) -> bool:
-        if not self.enabled():
+        if self.closed or not self.enabled():
             return False
         store = self._initialize()
         with store._connect() as db:
@@ -179,6 +232,9 @@ class ChannelMemoryMaintenance:
         if thread is None or thread.channel == "desktop":
             return False
         if thread.role_id in self._deleting:
+            return False
+        listening_revision = store.listening.revision(thread_id)
+        if listening and not self._listening_active(store, thread):
             return False
         try:
             store.external_memory.external_thread(thread.role_id, thread_id, write=True)
@@ -198,25 +254,64 @@ class ChannelMemoryMaintenance:
                     cursor = 0
             if listening:
                 rows = db.execute("SELECT * FROM channel_listening_records WHERE thread_id=? AND sequence>? ORDER BY sequence LIMIT ?", (thread_id, cursor, self.BATCH_SIZE)).fetchall()
-                batch = [store.listening._message(row) for row in rows]
-                day = today or datetime.now().astimezone().date().isoformat()
-                if len(batch) < self.BATCH_SIZE:
-                    current_day = max(day, rows[-1]["day"]) if rows else day
-                    batch = [message for message, row in zip(batch, rows) if row["day"] < current_day]
+                day = today or datetime.fromtimestamp(self.clock()).astimezone().date().isoformat()
+                ready = through_sequence is not None or self._listening_ready(store, thread, rows, day)
+                if through_sequence is not None:
+                    rows = [row for row in rows if row['sequence'] <= through_sequence]
+                batch = [store.listening._message(row) for row in rows] if ready else []
             else:
-                messages = [item for item in store.sessions.list_messages(thread.session_key) if item.sequence > cursor and item.status == "completed" and item.messageType == "text"]
+                messages = [item for item in store.sessions.list_messages(thread.session_key)
+                    if item.sequence > cursor and item.status == "completed" and item.messageType == "text"
+                    and not (item.role == 'user' and item.metadata.get('listening'))]
                 # Preserve a stable recent transcript, as the desktop maintenance does.
                 selected = ([item for item in messages if item.sequence <= through_sequence] if through_sequence is not None else
                             messages[:-20][:self.BATCH_SIZE] if len(messages) >= 30 else [])
                 batch = [item.model_dump(mode='json') for item in selected]
         if not batch:
             return False
+        up_to = batch[-1]['sequence']
+        frozen = json.dumps(source_messages(batch), sort_keys=True, ensure_ascii=False)
+
+        def source_current():
+            current_account = store.get_account(thread.account_id)
+            if (self.closed or thread.role_id in self._deleting or current_account is None
+                    or (current_account.created_at, current_account.platform_id) != account_identity
+                    or store.list_identities() != bindings
+                    or listening and (store.listening.revision(thread_id) != listening_revision
+                        or not self._listening_active(store, thread))):
+                return False
+            if listening:
+                with store._connect() as db:
+                    current_rows = db.execute('SELECT * FROM channel_listening_records WHERE thread_id=? AND sequence>? AND sequence<=? ORDER BY sequence',
+                        (thread_id, cursor, up_to)).fetchall()
+                current_batch = [store.listening._message(row) for row in current_rows]
+            else:
+                current_batch = [item.model_dump(mode='json') for item in store.sessions.list_messages(thread.session_key)
+                    if cursor < item.sequence <= up_to and item.status == 'completed' and item.messageType == 'text'
+                    and not (item.role == 'user' and item.metadata.get('listening'))]
+            return json.dumps(source_messages(current_batch), sort_keys=True, ensure_ascii=False) == frozen
+
+        # Failed/invalidated batches remain durable. Automatic arrivals and the
+        # periodic sweep retry after one bounded cooldown, never in a hot loop.
+        self._retry_at[thread_id] = self.clock() + self.RETRY_SECONDS
         with store._connect() as db:
             db.execute("BEGIN")
             context = store.external_memory.context_in(db, thread)
         context_revision = context["revision"]
         snapshot = {"groupNote": context["note"], "summary": context["activity"]["text"],
             "summaryUpdatedAt": context["activity"]["updatedAt"]}
+        owner_messages = [message for message in batch if message['metadata'].get('senderIsOwner') is True and message['role'] == 'user']
+        if self.owner_documents is not None:
+            from .source_authority import select_owner_binding
+            admitted_owners = []
+            for message in owner_messages:
+                binding = select_owner_binding(bindings, thread.channel, thread.account_id, str(message['metadata'].get('senderId') or ''))
+                if binding and datetime.fromisoformat(str(binding['pairedAt'])) <= datetime.fromisoformat(message['createdAt']):
+                    admitted_owners.append(message)
+            # Historical owner markings remain excluded from member profiles.
+            # A new batch may retire revoked private-memory candidates while
+            # still consolidating its authorized current-group conversation.
+            owner_messages = admitted_owners
         owner_runs = set()
         if thread.chat_type == "private":
             owner_runs = {item.runId for item in store.sessions.list_messages(thread.session_key)
@@ -244,43 +339,28 @@ class ChannelMemoryMaintenance:
         for sender_id in ambiguous:
             del profiles[sender_id]
         result = await self.summarize(thread, conversation, snapshot, profiles) if conversation else {"members": []}
+        if not source_current():
+            return False
         if not isinstance(result, dict) or not isinstance(result.get("members", []), list):
             raise ValueError("渠道记忆整理结果无效")
         valid_senders = set(profiles)
         members = [item for item in result.get("members", []) if isinstance(item, dict) and str(item.get("senderId")) in valid_senders]
-        owner_messages = [message for message in batch if message["metadata"].get("senderIsOwner") is True and message["role"] == "user"]
         if listening and owner_messages and self.owner_statements is not None:
-            await self.owner_statements(thread, owner_messages)
+            await self.owner_statements(thread, owner_messages, authorized=source_current)
         elif not listening and thread.chat_type == 'group' and owner_messages and self.owner_documents is not None:
-            await self.owner_documents.commit(thread, owner_messages, listening=False)
-        up_to = batch[-1]["sequence"]
-        # Freeze the source prefix, while allowing a legitimate append beyond it.
-        frozen = json.dumps(source_messages(batch), sort_keys=True, ensure_ascii=False)
+            await self.owner_documents.commit(thread, owner_messages, listening=False, authorized=source_current)
         with store._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             if db.execute("SELECT 1 FROM channel_threads WHERE role_id=? AND thread_id=?", (thread.role_id, thread_id)).fetchone() is None:
                 return False
-            if thread.role_id in self._deleting:
+            if not source_current():
                 return False
             try:
                 store.external_memory.external_thread(thread.role_id, thread_id, write=True)
             except (KeyError, PermissionError):
                 return False
-            if store.list_identities() != bindings:
-                return False
-            account = store.get_account(thread.account_id)
-            if account is None or (account.created_at, account.platform_id) != account_identity:
-                return False
             row = db.execute(f"SELECT sequence FROM {cursor_table} WHERE thread_id=?", (thread_id,)).fetchone()
             if (int(row[0]) if row else 0) != cursor:
-                return False
-            if not listening:
-                current_batch = [item.model_dump(mode='json') for item in store.sessions.list_messages(thread.session_key)
-                    if cursor < item.sequence <= up_to and item.status == 'completed' and item.messageType == 'text']
-            else:
-                rows = db.execute('SELECT * FROM channel_listening_records WHERE thread_id=? AND sequence>? AND sequence<=? ORDER BY sequence', (thread_id, cursor, up_to)).fetchall()
-                current_batch = [store.listening._message(row) for row in rows]
-            if json.dumps(source_messages(current_batch), sort_keys=True, ensure_ascii=False) != frozen:
                 return False
             if store.external_memory.revision_in(db, thread.role_id, "context", thread_id) != context_revision:
                 return False
@@ -309,6 +389,7 @@ class ChannelMemoryMaintenance:
             db.execute(f'UPDATE {cursor_table} SET source_stamp=? WHERE thread_id=?',
                 (self._source_stamp(store, thread, up_to, listening=listening), thread_id))
         store.publish(thread.role_id, {"type": "group_memory", "roleId": thread.role_id, "threadId": thread_id})
+        self._retry_at.pop(thread_id, None)
         return True
 
     async def start(self) -> None:
@@ -323,7 +404,7 @@ class ChannelMemoryMaintenance:
                 for thread in store.list_threads(account.role_id, limit=500):
                     if thread.channel != "desktop":
                         self.request(thread.thread_id)
-            await asyncio.sleep(self.SWEEP_SECONDS)
+            await self.sleep(self.SWEEP_SECONDS)
 
     async def close(self) -> None:
         self.closed = True
@@ -335,6 +416,8 @@ class ChannelMemoryMaintenance:
                 task.cancel()
             await asyncio.gather(*tuple(self._tasks.values()), return_exceptions=True)
         self._sweeper = None
+        self._requested.clear()
+        self._retry_at.clear()
         if self.owner_documents is not None:
             await self.owner_documents.drain()
 
@@ -351,6 +434,7 @@ class ChannelMemoryMaintenance:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         for thread_id in threads:
+            self._retry_at.pop(thread_id, None)
             if self._tasks.get(thread_id) in tasks:
                 self._tasks.pop(thread_id, None)
 

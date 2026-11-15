@@ -217,10 +217,10 @@ def _context_window_store():
     return ContextWindowStore(session_store.database_path)
 
 
-def _owner_history(role_id, *, thread_id=None, through_message_id=None, snapshot=None, readonly=False):
+def _owner_history(role_id, *, thread_id=None, through_message_id=None, snapshot=None, readonly=False, group_speech=False):
     from .conversation_history import ConversationHistoryView
     return ConversationHistoryView(multichannel_store, role_id=role_id, thread_id=thread_id,
-        through_message_id=through_message_id, snapshot=snapshot,
+        through_message_id=through_message_id, snapshot=snapshot, group_speech=group_speech,
         attachment_resolver=lambda identifier: resolve_attachment(store.workspace_path(role_id, create=not readonly), identifier),
         authorized=lambda: store.get(role_id) is not None and role_id not in _channel_roles_deleting)
 
@@ -2813,7 +2813,8 @@ async def _dispatch_channel_payload(account_id: str, payload: dict[str, object],
     account = multichannel_store.get_account(account_id)
     if account is not None and history_intake is None:
         from .conversation_history import freeze_channel_history
-        history_intake = freeze_channel_history(multichannel_store, account)
+        history_intake = freeze_channel_history(multichannel_store, account,
+            group_speech=account.channel != 'qq' or payload.get('message_type') == 'private')
     if source_media_state is None:
         source_media_state = channel_host.capture_media_source(account_id)
     # Freeze before admission, quote resolution, or the account event lock can
@@ -3246,7 +3247,8 @@ async def _handle_channel_event(event) -> None:
         if account is None:
             return
         from .conversation_history import freeze_channel_history
-        event = replace(event, metadata={**event.metadata, "hostHistoryIntake": freeze_channel_history(multichannel_store, account)})
+        event = replace(event, metadata={**event.metadata, "hostHistoryIntake": freeze_channel_history(
+            multichannel_store, account, group_speech=event.chat_type is ChatType.PRIVATE)})
     if event.channel == "qq" and event.chat_type is ChatType.GROUP:
         account = multichannel_store.get_account(event.account_id)
         if account is None:
@@ -3421,8 +3423,7 @@ async def _handle_channel_event_locked(event):
         heard = multichannel_store.listening.hear(thread, content, event.external_message_id, metadata,
             accepted_revision=event.metadata.get("naturalListeningRevision"), received_at=event.received_at)
         if heard is not None:
-            if heard["sequence"] is not None:
-                channel_memory_maintenance.heard(thread)
+            channel_memory_maintenance.heard(thread)
             _natural_accept(thread, event, heard, accepted_binding=accepted_binding)
         return
     if event.channel == "qq":
@@ -6038,9 +6039,10 @@ def _external_activity_blocks(role_id, thread_id=""):
 def _channel_memory_blocks(role_id, thread_id, sender_id, *, natural=False, trigger_metadata=None):
     if store.get(role_id) is None or role_id in _channel_roles_deleting:
         return []
-    current = group_repository.prompt_context(role_id, thread_id, sender_id, trigger_metadata=trigger_metadata, concise=natural)
     if natural:
-        current = current[:3000]
+        return group_repository.prompt_blocks(role_id, thread_id, sender_id,
+            trigger_metadata=trigger_metadata, concise=True) + _external_activity_blocks(role_id, thread_id)
+    current = group_repository.prompt_context(role_id, thread_id, sender_id, trigger_metadata=trigger_metadata)
     return ([current] if current else []) + _external_activity_blocks(role_id, thread_id)
 
 
@@ -6505,10 +6507,13 @@ async def _ingest_owner_channel_memory(thread, user_message, assistant_message):
         private=thread.chat_type == 'private')
 
 
-async def _ingest_owner_listening_memory(thread, messages):
+async def _ingest_owner_listening_memory(thread, messages, *, authorized=lambda: True):
     if memory_worker.role_deletion_blocked(thread.role_id):
         return
-    await owner_channel_memory.commit(thread, messages, listening=True)
+    revision = multichannel_store.listening.revision(thread.thread_id)
+    await owner_channel_memory.commit(thread, messages, listening=True,
+        authorized=lambda: multichannel_store.listening.revision(thread.thread_id) == revision
+            and not memory_worker.role_deletion_blocked(thread.role_id) and authorized())
 
 
 def _owner_channel_layer(role_id, messages):
@@ -6538,6 +6543,8 @@ def _verify_owner_channel_memory(role_id, key, ids):
     if thread is None or account is None:
         return None
     if key.startswith('listening:'):
+        if not multichannel_store.group_listening(role_id, thread.account_id, thread.chat_id):
+            return None
         with multichannel_store._connect() as db:
             rows = db.execute('SELECT * FROM channel_listening_records WHERE thread_id=? ORDER BY sequence', (thread.thread_id,)).fetchall()
         messages = [multichannel_store.listening._message(row) for row in rows if row['id'] in ids]
@@ -6990,7 +6997,8 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                                      reaction.prompt if reaction is not None else ''))),
                                  required_context="\n\n".join(filter(None, (identity_context, NATURAL_CHAT_PROMPT if natural_reply else ''))),
                                  max_response_tokens=ordinary_settings.maxTokens,
-                                 context_blocks=lambda: ([heard] if heard else []) + _channel_memory_blocks(thread.role_id, thread.thread_id, str(metadata.get("senderId") or ""), trigger_metadata=metadata),
+                                 context_blocks=lambda: (history.group_speech_blocks() if history is not None else [])
+                                     + ([heard] if heard else []) + _channel_memory_blocks(thread.role_id, thread.thread_id, str(metadata.get("senderId") or ""), trigger_metadata=metadata),
                                  context_safety_margin=ordinary_settings.contextSafetyMarginTokens,
                                  stable_memory=_role_memory_context(thread.role_id, include_recent=False, external=not owner_memory),
                                  skill_state=capabilities._skill_state,
@@ -7311,7 +7319,7 @@ async def stop_role_reply(role_id: str, run_id: str) -> SessionResponse:
     return await get_role_session(role_id)
 
 
-def _desktop_provider(role, configuration, settings, capabilities, memory_context='', *, reaction_prompt='', readonly=False):
+def _desktop_provider(role, configuration, settings, capabilities, memory_context='', *, reaction_prompt='', readonly=False, history=None):
     """Stable desktop input shared by a saved-context read and real turns.
 
     Draft retrieval and reaction execution remain owned by the real turn.
@@ -7320,7 +7328,7 @@ def _desktop_provider(role, configuration, settings, capabilities, memory_contex
         '\n\n'.join(filter(None, (capabilities.prompt_context(), reaction_prompt))),
         required_context=NATURAL_CHAT_PROMPT if natural_chat_enabled(role) else '',
         max_response_tokens=settings.maxTokens,
-        context_blocks=lambda: _external_activity_blocks(role.id),
+        context_blocks=lambda: (history.group_speech_blocks() if history is not None else []) + _external_activity_blocks(role.id),
         context_safety_margin=settings.contextSafetyMarginTokens,
         readonly_usage=readonly,
         stable_memory=_role_memory_context(role.id, include_recent=False, readonly=True),
@@ -7386,7 +7394,7 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
         if isinstance(configuration_snapshot, dict):
             configuration_snapshot.pop("apiKey", None)
         role_snapshot = role.model_dump(mode="json", exclude={"modelConfig"})
-        history = _owner_history(role_id)
+        history = _owner_history(role_id, group_speech=True)
         available_runtime_tools = _runtime_tool_candidates(
             role,
             include_channel=_role_has_usable_channel_account(role_id),
@@ -7620,7 +7628,7 @@ async def _accept_role_message(role_id: str, data: SendMessageInput) -> AgentRun
                     and next((item.runId for item in reversed(session_store.list_messages(session.sessionKey))
                         if item.role == 'user'), None) == run_id))
                 provider = _desktop_provider(role, configuration, ordinary_settings, capabilities, memory_context,
-                    reaction_prompt=reaction.prompt if reaction is not None else '')
+                    reaction_prompt=reaction.prompt if reaction is not None else '', history=history)
                 _bind_spawn_runtime(capabilities, provider, max_iterations=ordinary_settings.maxIterations)
                 provider = _ordinary_context_provider(provider, ordinary_settings, role_id=role_id,
                     session_key=session.sessionKey, run_id=run_id, history=history)
