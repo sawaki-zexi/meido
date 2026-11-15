@@ -30,6 +30,7 @@ from .channels.meme_library import (
 from .proactive_runtime.drift_workspace import _identity
 from .proactive_runtime.source_authoring import _directory_identity
 from .proactive_runtime.source_validation import _read
+from .channels import meme_semantics as semantics
 
 
 class MaterialConflict(PermissionError):
@@ -68,10 +69,11 @@ class _Snapshot:
 
 
 class OwnerMaterialLibrary:
-    def __init__(self, chat_library, role_getter):
+    def __init__(self, chat_library, role_getter, *, message_source=None):
         self.chat = chat_library
         self.library = chat_library.library
         self.role_getter = role_getter
+        self.message_source = message_source
         # Shared with short-lived router adapters, bounded and strictly advisory:
         # every image lookup rechecks role, root, path, original identity and hash.
         with self.library.app._gate:
@@ -141,23 +143,6 @@ class OwnerMaterialLibrary:
                         pending.append((path, name, depth + 1))
         return tuple(sorted(records, key=lambda item: item[0]))
 
-    def _metadata(self, role_id, path, digest):
-        private = self.library.root(role_id).parent / '.meido-memes'
-        for kind, metadata in [('chat', private / 'chat' / (digest + '.json')),
-                               ('drift', private / 'metadata' / (path.stem + '.json'))]:
-            if not metadata.exists():
-                continue
-            try:
-                value = json.loads(_read(metadata, 16 * 1024))
-                if not isinstance(value, dict) or value.get('roleId') != role_id or value.get('sha256') != digest:
-                    continue
-                if kind == 'drift' and value.get('path') != path.relative_to(self.library.root(role_id)).as_posix():
-                    continue
-                return ('owner_import' if kind == 'chat' and value.get('source') == 'owner_import' else kind), value
-            except (OSError, ValueError, PermissionError):
-                continue
-        return 'legacy', {}
-
     def _snapshot(self, role_id):
         root = self._root(role_id)
         before = self._stamp(role_id)
@@ -174,8 +159,9 @@ class OwnerMaterialLibrary:
         for category, category_data, path, raw, media in self.chat._items(role_id, enabled_only=False):
             identity = _identity(path)
             digest = _hash(raw)
-            source, metadata = self._metadata(role_id, path, digest)
-            description = metadata.get('description') or category_data.get('desc', '')
+            metadata = semantics.meaning_for(self.library, role_id, path, digest, category_data)
+            source = metadata.get('source', 'legacy')
+            description = metadata['description']
             if not isinstance(description, str):
                 description = ''
             source_aliases = category_data.get('aliases', [])
@@ -190,10 +176,12 @@ class OwnerMaterialLibrary:
             name = name.replace('\\', '/').rsplit('/', 1)[-1][:160]
             public = {'id': identifier, 'name': name, 'category': category,
                 'description': description[:2000], 'aliases': aliases, 'source': source,
-                'enabled': category_data.get('enabled') is True, 'format': format,
+                'enabled': category_data.get('enabled') is True and metadata['enabled'],
+                'categoryEnabled': category_data.get('enabled') is True, 'format': format,
                 'mediaType': media, 'size': len(raw), 'width': width, 'height': height,
                 'animated': animated,
-                'imageUrl': f'/api/roles/{quote(role_id, safe="")}/materials/{identifier}/image'}
+                'imageUrl': f'/api/roles/{quote(role_id, safe="")}/materials/{identifier}/image',
+                **semantics.public_meaning(metadata)}
             entries.append(_Entry(path, identity, digest, public))
         entries.sort(key=lambda item: (item.public['category'], item.public['name'], item.public['id']))
         categories = []
@@ -297,14 +285,30 @@ class OwnerMaterialLibrary:
         with self._owned(context):
             return self._import_image(role_id, raw, filename, media_type, category, description, expected_revision, context)
 
+    def from_message(self, role_id, message_id, attachment_id, description):
+        self._check_role(role_id)
+        if self.message_source is None:
+            raise MaterialGone(attachment_id)
+        attachment, source, authorized = self.message_source(role_id, message_id, attachment_id)
+        context = self._context(role_id)
+        with self._owned(context):
+            result = self.chat.save(role_id, attachment, '收藏', description, context, authorized,
+                meaning={'kind': 'owner_confirmed' if description.strip() else 'unverified'}, source=source)
+            snapshot = self._snapshot(role_id)
+            item = next((entry.public for entry in snapshot.entries if entry.digest == result['sha256']), None)
+            if item is None:
+                raise MaterialConflict('collection changed before confirmation')
+            return {'material': item, 'deduplicated': result['deduplicated'], 'revision': snapshot.revision}
+
     def _import_image(self, role_id, raw, filename, media_type, category, description, expected_revision, context):
         root = self._root(role_id)
         try:
             category = _category(category)
         except ValueError:
             raise MaterialParameters('invalid category') from None
-        if not isinstance(description, str) or not description.strip() or len(description) > 2000:
-            raise MaterialParameters('description must be nonempty and at most 2000 characters')
+        if not isinstance(description, str) or len(description) > 2000:
+            raise MaterialParameters('description must be at most 2000 characters')
+        description = description.strip()
         try:
             extension, media = _image(raw)
         except (OSError, ValueError, Image.DecompressionBombError):
@@ -318,6 +322,12 @@ class OwnerMaterialLibrary:
         existing = next((item for item in snapshot.entries if item.digest == digest), None)
         manifest = root / 'manifest.json'
         if existing:
+            prior = semantics.meaning_for(self.library, role_id, existing.path, digest, snapshot.manifest['categories'][existing.public['category']])
+            updated = semantics.add_source(prior, {'kind': 'owner_import', 'scope': 'role'}, existing.path.relative_to(root).as_posix())
+            if updated != prior:
+                self._publish_meaning(role_id, snapshot, existing, updated, context)
+                latest = self._snapshot(role_id)
+                return {'material': self._entry(latest, existing.public['id']).public, 'deduplicated': True, 'revision': latest.revision}
             with self._locks(role_id, (manifest, existing.path), context):
                 self._current(role_id, snapshot)
                 self._original(role_id, existing)
@@ -339,8 +349,9 @@ class OwnerMaterialLibrary:
         name = filename.replace('\\', '/').rsplit('/', 1)[-1].strip()[:160] or ('image.' + extension)
         files = {} if reused_identity is not None else {target: raw}
         if not metadata.exists():
-            files[metadata] = _json({'roleId': role_id, 'sha256': digest, 'description': description,
-                'category': category, 'source': 'owner_import', 'name': name})
+            files[metadata] = semantics.encode(semantics.new_meaning(role_id, digest, target.relative_to(root).as_posix(),
+                description, name=name, basis={'kind': 'owner_confirmed' if description else 'unverified'},
+                source={'kind': 'owner_import', 'scope': 'role'}, author={'kind': 'owner'}))
         if desired != snapshot.manifest or not manifest.exists():
             files[manifest] = _json(desired)
         publication = _OwnerPublication(self.library, role_id, context, files, kind='owner_chat_copy')
@@ -377,6 +388,51 @@ class OwnerMaterialLibrary:
         if material is None:
             raise MaterialConflict('published material changed before confirmation')
         return {'material': material, 'deduplicated': reused_identity is not None, 'revision': latest.revision}
+
+    def edit(self, role_id, identifier, expected_revision, changes):
+        changes = {key: value.strip() if isinstance(value, str) else value for key, value in changes.items()}
+        if 'name' in changes and not changes['name']:
+            raise MaterialParameters('name must not be blank')
+        context = self._context(role_id)
+        with self._owned(context):
+            snapshot = self._snapshot(role_id)
+            if snapshot.revision != expected_revision:
+                raise MaterialConflict('stale observation')
+            entry = self._entry(snapshot, identifier)
+            value = semantics.meaning_for(self.library, role_id, entry.path, entry.digest,
+                snapshot.manifest['categories'][entry.public['category']])
+            value = semantics.revise(value, changes, expected_revision=value['revision'],
+                basis={'kind': 'owner_confirmed'}, author={'kind': 'owner'})
+            relative = entry.path.relative_to(self.library.root(role_id)).as_posix()
+            if relative not in value['paths']:
+                value['paths'].append(relative)
+            self._publish_meaning(role_id, snapshot, entry, value, context)
+            latest = self._snapshot(role_id)
+            return {'material': self._entry(latest, identifier).public, 'revision': latest.revision}
+
+    def _publish_meaning(self, role_id, snapshot, entry, value, context):
+        root = self.library.root(role_id)
+        target = semantics.metadata_path(self.library, role_id, entry.digest)
+        files = {target: semantics.encode(value)}
+        publication = _OwnerPublication(self.library, role_id, context, files, kind='owner_chat_copy')
+        claim = (self.library.storage.claim(role_id, publication.operation,
+            len(files[target]) + 32 * 1024, 4, context) if snapshot.grant.enabled else nullcontext())
+        try:
+            with claim:
+                publication.prepare(lambda: self._check_role(role_id))
+                with self._locks(role_id, (root / 'manifest.json', entry.path, target), context):
+                    with self.library.app._gate:
+                        self._current(role_id, snapshot)
+                        self._original(role_id, entry)
+                        target.parent.mkdir(exist_ok=True)
+                        _directory_identity(target.parent)
+                        publication.publish(target)
+                        with self.library.app._transaction() as db:
+                            if snapshot.grant.enabled:
+                                self.library.advance_revision(db, role_id, snapshot.grant, snapshot.fact['libraryRevision'])
+                            publication.finish(db)
+        finally:
+            publication.close()
 
     def remove(self, role_id, identifier, expected_revision):
         context = self._context(role_id)
@@ -476,3 +532,41 @@ def reconcile_removal(library, row):
         db.execute('UPDATE autonomy_meme_operations SET status=?,actual=? WHERE operation_id=?',
             (status, _json(actual).decode(), row['operation_id']))
     library.storage.reconciled(row['role_id'], row['operation_id'], status)
+
+
+def message_attachment_source(roles, sessions, channels, role_id, message_id, attachment_id):
+    """A trusted UI click selects a real message; it cannot widen channel scope."""
+    from .chat_attachments import resolve_attachment
+    from .channels.source_authority import capture_channel_message_source
+
+    def resolve():
+        message = sessions.role_message(role_id, message_id)
+        if message is None or message.metadata.get('channelTurnState') == 'invalidated':
+            raise MaterialGone(attachment_id)
+        metadata = message.metadata
+        attachments = [item for key in ('attachments', 'quotedAttachments')
+            if key != 'quotedAttachments' or metadata.get('quotedGroupVerified') is True
+            for item in metadata.get(key, ()) if isinstance(item, dict)]
+        if not any(item.get('id') == attachment_id and item.get('kind') == 'image' for item in attachments):
+            raise MaterialGone(attachment_id)
+        source = {'kind': 'chat', 'scope': 'role', 'messageId': message_id, 'attachmentId': attachment_id}
+        if message.sessionKey.startswith('thread:'):
+            thread = channels.get_thread(role_id, message.sessionKey.removeprefix('thread:'))
+            if thread is None or message.role != 'user':
+                raise MaterialGone(attachment_id)
+            authority = capture_channel_message_source(channels, thread, message,
+                owner_context=metadata.get('senderIsOwner') is True)
+            source = {'kind': 'chat', 'sessionKey': message.sessionKey, 'authority': authority.to_dict(),
+                'messageId': message_id, 'attachmentId': attachment_id}
+        attachment = resolve_attachment(roles.workspace_path(role_id), attachment_id)
+        if attachment is None or attachment.get('kind') != 'image':
+            raise MaterialGone(attachment_id)
+        return attachment, source
+
+    attachment, source = resolve()
+    def authorized():
+        try:
+            return resolve() == (attachment, source)
+        except (LookupError, PermissionError, ValueError):
+            return False
+    return attachment, source, authorized

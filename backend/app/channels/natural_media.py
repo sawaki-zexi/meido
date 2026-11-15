@@ -122,6 +122,7 @@ class NaturalMedia:
                 batch._candidates[identifier] = candidate
                 batch.candidates.append({'id': identifier, 'category': candidate.category[:80],
                     'description': candidate.description[:500],
+                    'basis': candidate.basis_kind,
                     'aliases': [alias[:80] for alias in candidate.aliases[:8]]})
             remaining = MAX_INPUT_IMAGES
             for item in inputs:

@@ -5,12 +5,28 @@ import sqlite3
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from .agent_runtime.file_tools import _FileFailure
 from .chat_attachments import read_request_bytes
 from .material_library import InvalidMaterial, MaterialConflict, MaterialGone, MaterialParameters
 from .proactive_runtime.meme_storage import MemeQuotaError
 from .proactive_runtime.retention import StorageLimitError
+
+
+class MaterialEdit(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    expectedRevision: str = Field(pattern=r'^[a-f0-9]{64}$')
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=2000)
+    enabled: StrictBool | None = None
+
+
+class MessageCollection(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    messageId: str = Field(min_length=1, max_length=128)
+    attachmentId: str = Field(pattern=r'^[a-f0-9]{32}$')
+    description: str = Field(default='', max_length=2000)
 
 
 def material_router(application):
@@ -51,11 +67,15 @@ def material_router(application):
             'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
             'Content-Disposition': "inline; filename*=UTF-8''" + quote(item['name'], safe='')})
 
+    @router.post('/from-message')
+    async def from_message(role_id: str, body: MessageCollection):
+        return await invoke('from_message', role_id, body.messageId, body.attachmentId, body.description)
+
     @router.post('')
     async def import_image(role_id: str, request: Request,
             expectedRevision: str = Query(..., pattern=r'^[a-f0-9]{64}$'),
             category: str = Query(..., min_length=1, max_length=80),
-            description: str = Query(..., min_length=1, max_length=2000)):
+            description: str = Query('', max_length=2000)):
         raw = await read_request_bytes(request)
         filename = unquote(request.headers.get('x-material-filename', 'image'))[:1024]
         return await invoke('import_image', role_id, raw, filename,
@@ -64,5 +84,12 @@ def material_router(application):
     @router.delete('/{material_id}')
     async def remove(role_id: str, material_id: str, expectedRevision: str = Query(..., pattern=r'^[a-f0-9]{64}$')):
         return await invoke('remove', role_id, material_id, expectedRevision)
+
+    @router.patch('/{material_id}')
+    async def edit(role_id: str, material_id: str, body: MaterialEdit):
+        changes = body.model_dump(exclude_none=True, exclude={'expectedRevision'})
+        if not changes:
+            raise HTTPException(422, '请选择需要修改的名称、说明或聊天开关')
+        return await invoke('edit', role_id, material_id, body.expectedRevision, changes)
 
     return router

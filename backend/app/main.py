@@ -189,7 +189,7 @@ from .herdr_control.tools import build_agent_tools, HERDR_AGENT_TOOL_NAMES
 from .proactive_runtime import ProactiveApplication
 from .proactive_runtime.api import autonomy_router
 from .material_api import material_router
-from .material_library import OwnerMaterialLibrary
+from .material_library import OwnerMaterialLibrary, message_attachment_source
 from .chat_attachments import public_attachment, read_request_bytes, resolve_attachment, save_attachment
 
 logging.getLogger("uvicorn.access").addFilter(OAuthCallbackAccessLogFilter())
@@ -1213,7 +1213,9 @@ app.include_router(role_assets_router(lambda: store))
 app.include_router(desktop_pet_router(_desktop_pet_application))
 app.include_router(coding_router(lambda: _coding_application(), lambda: store))
 app.include_router(autonomy_router(lambda: _proactive_application(), workspace_getter=lambda role_id: store.root / role_id / "workspace"))
-app.include_router(material_router(lambda: OwnerMaterialLibrary(ChatMemeLibrary(_proactive_application().memes, store.workspace_path), store.get)))
+app.include_router(material_router(lambda: OwnerMaterialLibrary(_chat_meme_library(), store.get,
+    message_source=lambda role_id, message_id, attachment_id: message_attachment_source(
+        store, session_store, multichannel_store, role_id, message_id, attachment_id))))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=owner_knowledge_frontend_origins,
@@ -3118,12 +3120,28 @@ def _has_role_reaction_assets(role):
         or (store.root / role.id / 'workspace' / 'memes' / 'manifest.json').is_file())
 
 
+def _material_source_authorized(payload):
+    # A collected local original survives a disconnected socket. Persisted scope
+    # still checks account, pairing and group permission generations on each use.
+    from .channels.source_authority import FrozenChannelSource
+    try:
+        return FrozenChannelSource.from_dict(payload).authorization_denial(multichannel_store) is None
+    except (KeyError, TypeError, ValueError, PermissionError):
+        return False
+
+
+def _chat_meme_library():
+    return ChatMemeLibrary(_proactive_application().memes, store.workspace_path,
+        source_validator=_material_source_authorized)
+
+
 async def _role_reaction_turn(role, session_key, run_id, authorized):
     if not _has_role_reaction_assets(role):
         return None
     from .channels.natural_media import _owned_worker
     try:
-        library = RoleReactionLibrary(_proactive_application().memes, store, authorized=authorized)
+        library = RoleReactionLibrary(_proactive_application().memes, store, authorized=authorized,
+            source_validator=_material_source_authorized)
         return await _owned_worker(lambda: RoleReactionTurn(library, role_id=role.id,
             session_key=session_key, run_id=run_id))
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
@@ -3147,7 +3165,8 @@ def _natural_media_application():
                         and 0 <= _schedule_clock() - stamp < MEME_COOLDOWN):
                     return True
             return False
-        application = NaturalMedia(RoleReactionLibrary(_proactive_application().memes, store),
+        application = NaturalMedia(RoleReactionLibrary(_proactive_application().memes, store,
+            source_validator=_material_source_authorized),
             store.root / '.cache', clock=lambda: _schedule_clock(), downloader=media.download_qq_media,
             recent_attempt=recent_attempt)
         application._store = store
@@ -6923,7 +6942,12 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                 return bool(name in meme_permissions and current_role is not None
                     and name in _runtime_capability_policy(current_role, include_channel=True).enabled_tools)
 
-            meme_tools = ChatMemeTools(ChatMemeLibrary(_proactive_application().memes, store.workspace_path),
+            def current_media_receipts():
+                current = session_store.get_run(run_id)
+                return current.modelSnapshot.get('mediaRequests', ()) if current is not None and meme_authorized() else ()
+
+            durable_source = replace(meme_source, natural_revision=None, connection_generation=None).to_dict()
+            meme_tools = ChatMemeTools(_chat_meme_library(),
                 channel_host, role_id=role.id, session_key=thread.session_key, run_id=run_id,
                 account_id=thread.account_id, thread_id=thread.thread_id,
                 target_id=target_from_chat(account_id=thread.account_id, chat_id=thread.chat_id,
@@ -6932,7 +6956,10 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                     if key == "attachments" or metadata.get("quotedGroupVerified") is True
                     for item in metadata.get(key, []) if isinstance(item, dict)],
                 image_source_count=metadata.get("imageSourceCount"),
-                authorized=meme_authorized, permitted=meme_permitted)
+                authorized=meme_authorized, permitted=meme_permitted,
+                owner_text=str(metadata.get('_skillInvocationText', content)),
+                source={'kind': 'chat', 'sessionKey': thread.session_key, 'authority': durable_source},
+                media_receipts=current_media_receipts)
             available = (*available, *meme_tools.tools())
         runtime_tools = _runtime_tools(role, candidates=available)
         capabilities = await _runtime_capabilities(

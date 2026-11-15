@@ -141,7 +141,7 @@ def test_invalid_images_mime_and_categories_never_publish(api):
         assert put(client, raw=raw).status_code == 415
     for category in ['../outside', '/absolute', 'a\\b', '.', '.hidden']:
         assert put(client, category=category).status_code == 422
-    assert put(client, description='').status_code == 422
+    assert put(client, description='x' * 2001).status_code == 422
     assert put(client, raw=b'x' * (10 * 1024 * 1024 + 1)).status_code == 413
     assert current(client)['materials'] == []
     assert not (chat.library.root('alice').parent / 'attachments').exists()

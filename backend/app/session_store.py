@@ -182,6 +182,19 @@ class SessionStore:
             ).fetchall()
         return [self._message(row) for row in rows]
 
+    def role_message(self, role_id: str, message_id: str) -> Message | None:
+        """Resolve one owner UI message without trusting a client session key."""
+        with sqlite3.connect(self.database_path) as connection:
+            row = connection.execute('''SELECT m.message_id,m.session_key,m.sequence,m.role,m.content,m.status,
+                m.created_at,m.message_type,m.tool_call_id,m.tool_name,m.tool_arguments_json,m.tool_result_json,
+                m.is_error,m.run_id,m.metadata_json FROM messages m WHERE m.message_id=?''', (message_id,)).fetchone()
+            if row is not None:
+                table = 'channel_threads' if row[1].startswith('thread:') else 'sessions'
+                owner = connection.execute(f'SELECT role_id FROM {table} WHERE session_key=?', (row[1],)).fetchone()
+                if owner is None or owner[0] != role_id:
+                    return None
+        return self._message(row) if row is not None else None
+
     def budget_diagnostics(self):
         allowed = {'requests', 'compactions', 'inputEstimate', 'inputSource', 'maxTokens', 'maxIterations', 'toolCount', 'elapsedMs', 'modelId'}
         with sqlite3.connect(self.database_path) as db:

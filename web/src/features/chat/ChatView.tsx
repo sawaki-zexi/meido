@@ -17,6 +17,7 @@ import '../role-management/roleIllustrations.css';
 import type { GenerationSelection } from "../../api/novelai";
 import { useChatScroll } from "./useChatScroll";
 import { AttachmentImage } from "../../ui/AttachmentImage";
+import { SaveMaterialAction } from '../materials/SaveMaterialAction';
 import { MessageMarkdown } from "../../ui/MessageMarkdown";
 import { MessageProcess, readProcess } from './MessageProcess';
 import { ChatReplyMetrics } from './ChatReplyMetrics';
@@ -65,6 +66,7 @@ function MessageItem({ message, role, highlighted, onRegenerate, progress, stopp
           const href = `/api/roles/${encodeURIComponent(role.id)}/attachments/${encodeURIComponent(attachment.id)}`;
           return attachment.kind === "image"
             ? <div key={attachment.id}><AttachmentImage src={href} href={href} alt={attachment.name} />
+              {!streaming && <SaveMaterialAction key={`${role.id}:${message.id}:${attachment.id}`} roleId={role.id} messageId={message.id} attachmentId={attachment.id} />}
               {!mine && message.status === 'completed' && generationAttempts.length > 0 && <GeneratedImageAction roleId={role.id} messageId={message.id} image={attachment} attemptIds={generationAttempts} onSelect={onRegenerate} />}</div>
             : <a className="message-file" href={href} target="_blank" rel="noreferrer" key={attachment.id}>{attachment.name}</a>;
         })}

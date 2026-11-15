@@ -6,6 +6,7 @@ import asyncio
 import base64
 import io
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -186,6 +187,17 @@ def test_owner_saves_and_reuses_original_sticker_with_drift_off(meme_turn, monke
     inbound = next(message for message in messages if message.role == 'user')
     original = inbound.metadata['quotedAttachments' if quoted else 'attachments'][0]
     assert Path(original['path']).read_bytes() == state.raw
+    record = json.loads(next((state.root.parent / '.meido-memes/chat').glob('*.json')).read_text(encoding='utf-8'))
+    assert record['basis']['kind'] == 'model_observation'
+    assert record['basis']['contentSha256'] == record['sha256']
+    assert record['sources'][0]['sessionKey'] == thread.session_key
+    assert record['sources'][0]['authority']['account_id'] == state.adapter.account_id
+    with sqlite3.connect(state.sessions.database_path) as db:
+        requests = [request for row in db.execute('SELECT model_snapshot_json FROM agent_runs')
+            for request in json.loads(row[0]).get('mediaRequests', ())]
+    request = next(value for value in requests if value['requestId'] == record['basis']['requestId'])
+    assert any(image['status'] == 'pixels_submitted' and image['contentSha256'] == record['sha256']
+        for image in request['images'])
     outbound = [message for message in messages if message.metadata.get('attachments') and message.role == 'assistant']
     assert len(outbound) == 1
     assert outbound[0].metadata['deliveryStatus'] == ('uncertain' if uncertain else 'sent')

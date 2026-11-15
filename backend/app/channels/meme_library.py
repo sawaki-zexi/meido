@@ -7,7 +7,7 @@ FileTools' locks and the adopted MemeLibrary's allocation/revision protocol.
 from __future__ import annotations
 
 from contextlib import ExitStack, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import io
 import json
@@ -23,6 +23,7 @@ from ..chat_attachments import resolve_attachment
 from ..proactive_runtime.drift_workspace import _identity
 from ..proactive_runtime.source_authoring import _directory_identity
 from ..proactive_runtime.source_validation import _read, _unique_object
+from . import meme_semantics as semantics
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_PIXELS = 40_000_000
@@ -83,16 +84,26 @@ class MemeCandidate:
     root_identity: tuple
     sha256: str
     media_type: str
+    asset_id: str = field(default='', kw_only=True)
+    semantic_revision: int = field(default=0, kw_only=True)
+    scope_session: str = field(default='', kw_only=True)
+    explicit: bool = field(default=False, kw_only=True)
+    basis_kind: str = field(default='legacy_description', kw_only=True)
+    semantic_status: str = field(default='ready', kw_only=True)
+    meaning_digest: str = field(default='', kw_only=True)
 
     def public(self):
         return {'id': self.id, 'category': self.category, 'description': self.description,
-                'aliases': list(self.aliases)}
+                'aliases': list(self.aliases), 'assetId': self.asset_id,
+                'semanticRevision': self.semantic_revision, 'basis': self.basis_kind,
+                'semanticStatus': self.semantic_status}
 
 
 class ChatMemeLibrary:
-    def __init__(self, library, attachment_root):
+    def __init__(self, library, attachment_root, *, source_validator=None):
         self.library = library
         self._attachment_root = attachment_root
+        self.source_validator = source_validator
 
     def attachment_root(self, role_id):
         value = self._attachment_root(role_id) if callable(self._attachment_root) else self._attachment_root
@@ -145,31 +156,32 @@ class ChatMemeLibrary:
                         # One invalid entry must not make other genuine images invisible.
                         continue
 
-    def candidates(self, role_id, query='', context=None, *, limit=12):
-        del context
+    def candidates(self, role_id, query='', context=None, *, limit=12, explicit=False):
         if not isinstance(query, str) or len(query) > 2000:
             raise ValueError('invalid finite meme query')
         result = []
         for category, entry, path, raw, media in self._items(role_id):
             digest = _hash(raw)
-            desc = entry.get('desc', '')
+            meaning = semantics.meaning_for(self.library, role_id, path, digest, entry)
+            session_key = getattr(context, 'session_key', '')
+            if (not meaning['enabled'] or not semantics.source_allowed(meaning, session_key, self.source_validator)
+                    or not explicit and meaning['semanticStatus'] != 'ready'):
+                continue
+            desc = meaning['description']
             aliases = entry.get('aliases', [])
             aliases = tuple(value for value in aliases if isinstance(value, str)) if isinstance(aliases, list) else ()
-            private = self.library.root(role_id).parent / '.meido-memes' / 'chat' / (digest + '.json')
-            if private.exists():
-                try:
-                    metadata = json.loads(_read(private, 16 * 1024))
-                    if isinstance(metadata, dict) and metadata.get('roleId') == role_id and metadata.get('sha256') == digest:
-                        desc = metadata.get('description') or desc
-                except (OSError, ValueError, PermissionError):
-                    pass
             if not isinstance(desc, str):
                 desc = ''
             identity = _identity(path)
-            identifier = _hash(_json([role_id, str(path), identity, digest]))[:32]
+            meaning_digest = _hash(semantics.encode(meaning))
+            identifier = _hash(_json([role_id, str(path), identity, digest, meaning_digest]))[:32]
             candidate = MemeCandidate(identifier, role_id, category, desc[:2000], aliases[:32],
-                path, identity, self._root_identity(role_id), digest, media)
-            searchable = ' '.join((category, desc, *aliases)).casefold()
+                path, identity, self._root_identity(role_id), digest, media,
+                asset_id=meaning['assetId'], semantic_revision=meaning['revision'],
+                scope_session='' if any(source.get('scope') == 'role' for source in meaning['sources']) else session_key,
+                explicit=explicit, basis_kind=meaning['basis']['kind'], semantic_status=meaning['semanticStatus'],
+                meaning_digest=meaning_digest)
+            searchable = ' '.join((category, meaning['name'], desc, *aliases)).casefold()
             score = sum(token in searchable for token in query.casefold().split())
             if not query.strip() or score:
                 result.append((score, path.name, candidate))
@@ -186,7 +198,13 @@ class ChatMemeLibrary:
             self._path(role_id, candidate.path)
             document, _ = self._manifest(role_id)
             entry = document['categories'].get(candidate.category)
+            meaning = semantics.meaning_for(self.library, role_id, candidate.path, candidate.sha256, entry or {})
             return bool(isinstance(entry, dict) and entry.get('enabled') is True
+                and meaning['enabled'] and meaning['assetId'] == candidate.asset_id
+                and meaning['revision'] == candidate.semantic_revision
+                and _hash(semantics.encode(meaning)) == candidate.meaning_digest
+                and (candidate.explicit or meaning['semanticStatus'] == 'ready')
+                and semantics.source_allowed(meaning, candidate.scope_session, self.source_validator)
                 and self._root_identity(role_id) == candidate.root_identity
                 and _identity(candidate.path) == candidate.identity
                 and _hash(_read(candidate.path, MAX_IMAGE_BYTES)) == candidate.sha256)
@@ -221,14 +239,15 @@ class ChatMemeLibrary:
         raw, _, identity = self._source(role_id, attachment)
         return {**attachment, '_memeIdentity': identity, '_memeSha256': _hash(raw)}
 
-    def save(self, role_id, attachment, category, description, context, authorized):
+    def save(self, role_id, attachment, category, description, context, authorized, *, meaning=None, source=None):
         def check():
             if context.role_id != role_id or context.signal.is_cancelled() or not authorized():
                 raise PermissionError('original owner meme source permission was revoked')
         check()
         category = _category(category)
-        if not isinstance(description, str) or not description.strip() or len(description) > 2000:
-            raise ValueError('meme description must be nonempty and at most 2000 characters')
+        if not isinstance(description, str) or len(description) > 2000:
+            raise ValueError('meme description must be at most 2000 characters')
+        description = description.strip()
         raw, extension, source_identity = self._source(role_id, attachment)
         digest = _hash(raw)
         root = self.library.root(role_id)
@@ -248,16 +267,28 @@ class ChatMemeLibrary:
         target_identity = _identity(target) if target.exists() else None
         actual_category = existing[0] if existing else category
         metadata = root.parent / '.meido-memes' / 'chat' / (digest + '.json')
-        metadata_raw = _json({'roleId':role_id,'sha256':digest,'description':description,
-            'sourceAttachmentId':attachment['id'],'sourceSessionKey':context.session_key,
-            'category':actual_category})
+        metadata_before = _read(metadata, semantics.MAX_RECORD_BYTES) if metadata.exists() else None
+        source = source or {'kind': 'chat', 'scope': 'role', 'attachmentId': attachment['id']}
+        relative = target.relative_to(root).as_posix()
+        if existing or metadata_before is not None:
+            prior = semantics.meaning_for(self.library, role_id, target, digest,
+                existing[1] if existing else document['categories'].get(category, {}))
+            if description and description != prior['description']:
+                source = {**source, 'description': description, 'basis': meaning or {'kind': 'legacy_description'},
+                    'author': {'runId': context.run_id, 'callId': context.tool_call_id}}
+            record = semantics.add_source(prior, source, relative)
+        else:
+            record = semantics.new_meaning(role_id, digest, relative, description, name=attachment.get('name', target.name),
+                basis=meaning, source=source, author={'kind': 'model' if meaning and meaning['kind'] == 'model_observation' else 'owner',
+                    'runId': context.run_id, 'callId': context.tool_call_id})
+        metadata_raw = semantics.encode(record)
         desired = json.loads(json.dumps(document))
         if not existing and category not in desired['categories']:
             desired['categories'][category] = {'desc':description,'aliases':[],'enabled':True}
         files = {}
         if not target.exists():
             files[target] = raw
-        if not metadata.exists():
+        if metadata_raw != metadata_before:
             files[metadata] = metadata_raw
         if desired != document or original_manifest is None:
             files[manifest] = _json(desired)
@@ -267,7 +298,8 @@ class ChatMemeLibrary:
             if (_identity(Path(attachment['path'])) != source_identity
                     or (_identity(target) if target.exists() else None) != target_identity):
                 raise PermissionError('original meme source or duplicate was replaced')
-            return {'status':'recorded','deduplicated':True,'sha256':digest,'category':actual_category,'bytes':len(raw)}
+            return {'status':'recorded','deduplicated':True,'sha256':digest,'category':actual_category,'bytes':len(raw),
+                    **semantics.public_meaning(record)}
         publication = _OwnerPublication(self.library, role_id, context, files, kind='owner_chat_copy')
         claim = (self.library.storage.claim(role_id, publication.operation,
             sum(len(data) for data in files.values()) + 32*1024, len(files)+5, context)
@@ -294,6 +326,8 @@ class ChatMemeLibrary:
                         raise PermissionError('conflict: meme manifest changed during preparation')
                     if _identity(Path(attachment['path'])) != source_identity:
                         raise PermissionError('original attachment changed before publication')
+                    if (_read(metadata, semantics.MAX_RECORD_BYTES) if metadata.exists() else None) != metadata_before:
+                        raise PermissionError('conflict: material meaning changed during preparation')
                     if ((_identity(target) if target.exists() else None) != target_identity
                             or target.exists() and _hash(_read(target,MAX_IMAGE_BYTES)) != digest):
                         raise PermissionError('meme target was replaced')
@@ -316,7 +350,7 @@ class ChatMemeLibrary:
         finally:
             publication.close()
         return {'status':'recorded','deduplicated':existing is not None,'sha256':digest,
-                'category':actual_category,'bytes':len(raw)}
+                'category':actual_category,'bytes':len(raw), **semantics.public_meaning(record)}
 
     def reference(self, role_id, candidate, context, *, principal='owner'):
         # Host-only provenance, never a model argument or an authority grant.
@@ -324,6 +358,8 @@ class ChatMemeLibrary:
             raise ValueError('invalid meme reference principal')
         if context.role_id != role_id or context.signal.is_cancelled() or not self.valid(role_id,candidate):
             raise PermissionError('meme candidate is no longer valid for this role')
+        if candidate.scope_session and candidate.scope_session != context.session_key:
+            raise PermissionError('meme source belongs to another conversation')
         raw = _read(candidate.path, MAX_IMAGE_BYTES)
         if _hash(raw) != candidate.sha256:
             raise PermissionError('meme bytes changed before reference preparation')

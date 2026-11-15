@@ -59,3 +59,11 @@
 }
 /* The fifth role tab remains reachable when the workspace is narrow. */
 .role-workspace-tabs { overflow-x: auto; scrollbar-width: thin; }
+.material-chat-toggle { display: flex; align-items: center; gap: 7px; margin-top: 12px; font-size: 12px; color: var(--ink-soft); }
+.material-chat-toggle input { width: 16px; height: 16px; }
+.material-edit summary { cursor: pointer; color: var(--ink-soft); font-size: 13px; }
+.material-edit form { display: grid; gap: 14px; margin-top: 14px; }
+.material-edit form > button { justify-self: end; }
+.material-edit li { font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap; }
+.material-message-action { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; color: var(--ink-faint); }
+.material-message-action > button { font-size: 12px; padding: 4px 8px; }

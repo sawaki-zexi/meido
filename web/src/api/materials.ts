@@ -14,7 +14,14 @@ export type RoleMaterial = {
   animated: boolean;
   source: 'owner_import' | 'chat' | 'drift' | 'legacy';
   enabled: boolean;
+  categoryEnabled?: boolean;
   imageUrl: string;
+  assetId?: string;
+  semanticRevision?: number;
+  semanticStatus?: 'ready' | 'pending' | 'content_changed';
+  basis?: { kind: 'owner_confirmed' | 'model_observation' | 'legacy_description' | 'unverified' };
+  sources?: { kind: string; scope: string }[];
+  history?: { revision: number; description: string; name: string }[];
 };
 export type MaterialLibrary = {
   materials: RoleMaterial[];
@@ -31,4 +38,12 @@ export const materials = {
     }),
   remove: (roleId: string, id: string, expectedRevision: string) =>
     api<{ removed: true; recoverable: true; revision: string }>(`${path(roleId)}/${encodeURIComponent(id)}?${new URLSearchParams({ expectedRevision })}`, { method: 'DELETE' }),
+  edit: (roleId: string, id: string, expectedRevision: string, changes: { name?: string; description?: string; enabled?: boolean }) =>
+    api<{ material: RoleMaterial; revision: string }>(`${path(roleId)}/${encodeURIComponent(id)}`, {
+      method: 'PATCH', body: JSON.stringify({ expectedRevision, ...changes }),
+    }),
+  saveMessage: (roleId: string, messageId: string, attachmentId: string, description: string) =>
+    api<{ material: RoleMaterial; revision: string; deduplicated: boolean }>(`${path(roleId)}/from-message`, {
+      method: 'POST', body: JSON.stringify({ messageId, attachmentId, description }),
+    }),
 };
