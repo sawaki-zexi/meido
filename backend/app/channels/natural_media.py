@@ -28,7 +28,7 @@ MAX_INPUT_MESSAGES = 30
 MAX_INPUT_IMAGES = 4
 MAX_BATCH_BYTES = 16 * 1024 * 1024
 MAX_CACHE_BYTES = 32 * 1024 * 1024
-MAX_CANDIDATES = 8
+MAX_CANDIDATES = 4
 CACHE_TTL = 90.0
 MEME_COOLDOWN = 60.0
 MAX_USAGE_KEYS = 1024
@@ -82,6 +82,7 @@ class NaturalMedia:
         self.root = purge_cache(cache_root)
         self.batches = {}
         self.usage = OrderedDict()
+        self.receipts = OrderedDict()
 
     def prune(self):
         for batch in tuple(self.batches.values()):
@@ -123,6 +124,7 @@ class NaturalMedia:
                 batch.candidates.append({'id': identifier, 'category': candidate.category_label[:80],
                     'description': candidate.description[:500],
                     'basis': candidate.basis_kind,
+                    'reason': candidate.reason,
                     'aliases': [alias[:80] for alias in candidate.aliases[:8]]})
             remaining = MAX_INPUT_IMAGES
             for item in inputs:
@@ -208,6 +210,7 @@ class MediaBatch:
     def __init__(self, owner, key, context, authorized, expires):
         self.owner, self.key, self.context = owner, key, context
         self.authorized, self.expires = authorized, expires
+        self.binding = (context.role_id, context.session_key, context.run_id)
         self.closed, self.bytes, self.timer = False, 0, None
         self.path = owner.root / uuid.uuid4().hex
         self.path.mkdir()
@@ -223,7 +226,8 @@ class MediaBatch:
         return tuple(item for group in self.attachments_by_message_id.values() for item in group)
 
     def check(self):
-        if self.closed or self.owner.clock() >= self.expires or self.context.signal.is_cancelled() or not self.authorized():
+        if (self.closed or self.owner.clock() >= self.expires or self.context.signal.is_cancelled() or not self.authorized()
+                or self.binding != (self.context.role_id, self.context.session_key, self.context.run_id)):
             raise PermissionError('natural media batch expired or cancelled')
 
     def valid(self, candidate_id):
@@ -262,12 +266,16 @@ class MediaBatch:
         self._attempted[candidate_id] = candidate.sha256
         return candidate.sha256
 
-    def result(self, candidate_id, status):
+    def result(self, candidate_id, receipt):
         if candidate_id not in self._attempted or candidate_id in self._completed:
             return
         self._completed.add(candidate_id)
         digest = self._attempted[candidate_id]
-        if status == 'sent':
+        if (getattr(getattr(receipt, 'status', None), 'value', None) == 'sent'
+                and receipt.attempt_id and receipt.platform_message_id and receipt.attempt_id not in self.owner.receipts):
+            self.owner.receipts[receipt.attempt_id] = True
+            while len(self.owner.receipts) > MAX_USAGE_KEYS:
+                self.owner.receipts.popitem(last=False)
             entry = self.owner.usage.get((*self.key[:3], digest))
             if entry is not None:
                 entry['successes'] += 1

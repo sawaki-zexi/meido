@@ -9,8 +9,14 @@ import asyncio
 from copy import deepcopy
 import json
 import re
+import time
+import uuid
+from collections import OrderedDict
+from functools import partial
 
 from ..agent_runtime.tools import AgentToolResult, ToolDefinition, ToolRegistry
+from .base import DeliveryOperationConflict
+from .natural_media import _owned_worker
 
 MEME_TOOL_PERMISSIONS = {
     'chat_meme_save': frozenset({'read_file', 'write_file'}),
@@ -38,13 +44,17 @@ _DEFINITIONS = (
         (), risk='mutating'),
     _definition('chat_meme_list',
         '列出当前角色已启用表情库的少量可发送候选。仅返回本回合候选编号，不接受文件路径。'
-        '用类别描述或别名 query 查找；空库或没有匹配时不要猜测编号。',
-        {'query': {'type': 'string', 'maxLength': 500}}),
+        '按中文语境、别名和用途 query 查找，默认最多4个；明确找图可用 nextOffset 继续翻页。'
+        '没有匹配可以不发，不得猜测编号。已有说明不表示本轮看过原图。',
+        {'query': {'type': 'string', 'maxLength': 500},
+         'offset': {'type': 'integer', 'minimum': 0, 'maximum': 512},
+         'limit': {'type': 'integer', 'minimum': 1, 'maximum': 24}}),
     _definition('chat_meme_send',
         '按主人明确请求，将 chat_meme_list 返回的一张表情发送到当前 QQ 群，可带短文字。'
         '只能用本回合候选编号，不能用附件编号或路径。以返回的真实 status 为准；'
         'uncertain 表示结果不确定，不重发、不另发替代图，不宣称已经送达。',
-        {'candidate_id': {'type': 'string'}, 'content': {'type': 'string', 'maxLength': 2000}},
+        {'candidate_id': {'type': 'string'}, 'content': {'type': 'string', 'maxLength': 2000},
+         'operation_id': {'type': 'string', 'minLength': 1, 'maxLength': 128}},
         ('candidate_id',), risk='external'),
 )
 
@@ -69,8 +79,9 @@ class ChatMemeTools:
                 self.attachment_errors[identifier] = '当前图片原件无法读取或已损坏，未收录'
         self.authorized, self.permitted = authorized, permitted
         self.owner_text, self.source, self.media_receipts = owner_text, source, media_receipts
-        self.candidates = {}
-        self.receipts = {}
+        self.candidates = OrderedDict()
+        self.requests = OrderedDict()
+        self.receipts = OrderedDict()
         self.unresolved = None
         self._send_lock = asyncio.Lock()
 
@@ -132,30 +143,52 @@ class ChatMemeTools:
                 raise
         if name == 'chat_meme_list':
             options = {'explicit': True} if self.owner_text is not None else {}
-            candidates = await asyncio.to_thread(self.library.candidates, self.role_id,
-                arguments.get('query', ''), context, **options)
+            limit, offset = arguments.get('limit', 4), arguments.get('offset', 0)
+            options.update(limit=limit + 1, offset=offset)
+            candidates = await _owned_worker(partial(self.library.candidates, **options), self.role_id,
+                arguments.get('query', ''), context)
             if not self.allowed(name, context):
                 raise PermissionError('当前主人来源已失效')
-            self.candidates.update({item.id: item for item in candidates})
-            return {'candidates': [item.public() for item in candidates]}
+            public = []
+            for item in candidates[:limit]:
+                identifier = uuid.uuid4().hex
+                expires = min(time.monotonic() + 90, getattr(context, 'deadline', None) or float('inf'))
+                self.candidates[identifier] = (item, expires)
+                self.candidates.move_to_end(identifier)
+                public.append({**item.public(), 'id': identifier})
+            while len(self.candidates) > 256:
+                self.candidates.popitem(last=False)
+            return {'candidates': public, 'nextOffset': offset + limit if len(candidates) > limit else None}
         async with self._send_lock:
             if not self.allowed(name, context):
                 raise PermissionError('当前主人来源已失效')
             candidate_id = arguments['candidate_id']
+            observed = self.candidates.get(candidate_id)
+            candidate = observed[0] if observed else None
+            def candidate_current():
+                return bool(observed and time.monotonic() < observed[1] and self.library.valid(self.role_id, candidate))
+            if not candidate_current():
+                raise PermissionError('表情候选未列出、已过期、已停用或原件已更改，请重新查询')
+            # A fresh list credential never renews an older token. Operation
+            # identity follows the original observation, not its disposable token.
+            operation = arguments.get('operation_id', candidate.id)
+            parameters = (candidate.id, arguments.get('content', ''))
+            if operation in self.requests and self.requests[operation] != parameters:
+                raise ValueError('同一发送操作不能更换图片或文字')
+            self.requests[operation] = parameters
+            while len(self.requests) > 256:
+                self.requests.popitem(last=False)
             if self.unresolved is not None:
                 return self.unresolved
-            if candidate_id in self.receipts:
-                return self.receipts[candidate_id]
-            candidate = self.candidates.get(candidate_id)
-            if candidate is None or not self.library.valid(self.role_id, candidate):
-                raise PermissionError('表情候选未列出、已停用或原件已更改，请重新查询')
+            if operation in self.receipts:
+                return self.receipts[operation]
             if (getattr(candidate, 'semantic_status', 'ready') != 'ready' and self.owner_text is not None
                     and not (re.search(r'发|send', self.owner_text, re.I)
                         and re.search(r'这张|这幅|这个|那张|那幅|那个|刚才|刚刚|收藏的|选中|selected|this', self.owner_text, re.I))):
                 raise PermissionError('尚无说明的图片只能按主人明确选定发送，不能自动选择推荐')
-            attachment, raw = await asyncio.to_thread(self.library.reference, self.role_id, candidate, context)
+            attachment, raw = await _owned_worker(self.library.reference, self.role_id, candidate, context)
             def authorized():
-                return self.allowed(name, context) and self.library.valid(self.role_id, candidate)
+                return self.allowed(name, context) and candidate_current()
             if not authorized():
                 raise PermissionError('表情或原来源已失效')
             # Set a conservative barrier before entering the external dispatch
@@ -169,13 +202,22 @@ class ChatMemeTools:
                     frozen_attachment_bytes={attachment['id']: raw}, actor='reply',
                     source_thread_id=self.thread_id, source_session_key=self.session_key,
                     source_run_id=self.run_id, source_tool_call_id=context.tool_call_id,
-                    source_kind='chat_meme', authorize_source=authorized, delivery_deadline=context.deadline)
+                    source_kind='chat_meme', authorize_source=authorized, delivery_deadline=context.deadline,
+                    operation_key='chat-meme:' + self.run_id + ':' + operation,
+                    material_usage={'assetId': getattr(candidate, 'asset_id', ''),
+                        'sha256': getattr(candidate, 'sha256', ''),
+                        'semanticRevision': getattr(candidate, 'semantic_revision', 0)})
+            except DeliveryOperationConflict:
+                self.unresolved = None
+                raise
             except Exception:
                 return pending
             receipt = {'status': result.status.value, 'candidateId': candidate_id,
                        'deliveryAttemptId': result.attempt_id,
                        'platformMessageId': result.platform_message_id, 'error': result.error}
-            self.receipts[candidate_id] = receipt
+            self.receipts[operation] = receipt
+            while len(self.receipts) > 256:
+                self.receipts.popitem(last=False)
             self.unresolved = receipt if receipt['status'] == 'uncertain' else None
             return receipt
 

@@ -435,9 +435,12 @@ class MultichannelStore:
                 if column not in group_columns:
                     db.execute(f"ALTER TABLE channel_group_settings ADD COLUMN {column} INTEGER NOT NULL DEFAULT {default}")
             delivery_columns = {row[1] for row in db.execute("PRAGMA table_info(channel_delivery_attempts)")}
-            for column in ("source_session_key", "source_run_id", "source_tool_call_id", "source_kind", "account_generation", "details_json"):
+            for column in ("source_session_key", "source_run_id", "source_tool_call_id", "source_kind", "account_generation", "details_json", "operation_key", "request_fingerprint"):
                 if column not in delivery_columns:
                     db.execute(f"ALTER TABLE channel_delivery_attempts ADD COLUMN {column} TEXT")
+            db.execute('CREATE UNIQUE INDEX IF NOT EXISTS channel_delivery_operation ON channel_delivery_attempts(role_id,operation_key) WHERE operation_key IS NOT NULL')
+            db.execute('CREATE INDEX IF NOT EXISTS channel_delivery_role_time ON channel_delivery_attempts(role_id,created_at DESC)')
+            db.execute('CREATE INDEX IF NOT EXISTS channel_delivery_source_run ON channel_delivery_attempts(role_id,source_session_key,source_run_id,created_at)')
             for table in ("channel_account_settings", "channel_platform_settings"):
                 if "revision" not in {row[1] for row in db.execute(f"PRAGMA table_info({table})")}:
                     db.execute(f"ALTER TABLE {table} ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
@@ -1478,6 +1481,63 @@ class MultichannelStore:
                 "UPDATE channel_delivery_attempts SET status=?,platform_message_id=?,error=?,content=COALESCE(?,content),updated_at=? WHERE attempt_id=?",
                 (status, platform_message_id, error, content, _now(), attempt_id),
             )
+
+    def reserve_delivery(self, thread, content, *, operation_key, request_fingerprint,
+                         source_session_key, source_run_id, source_tool_call_id, source_kind,
+                         account_generation=None, material_usage=None):
+        """Claim in the original ledger; pending/unknown rows never authorize replay."""
+        with self._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            previous = db.execute('SELECT * FROM channel_delivery_attempts WHERE role_id=? AND operation_key=?',
+                (thread.role_id, operation_key)).fetchone()
+            if previous is not None:
+                if previous['request_fingerprint'] != request_fingerprint:
+                    from .channels.base import DeliveryOperationConflict
+                    raise DeliveryOperationConflict('delivery operation parameters changed')
+                return previous['attempt_id'], dict(previous)
+            unresolved = self._unresolved_material(db, thread.role_id, source_session_key, source_run_id)
+            if unresolved is not None:
+                # Recreating the facade or changing the chosen image does
+                # not turn an unresolved run into permission to substitute.
+                return unresolved['attempt_id'], dict(unresolved)
+            attempt_id, now = 'delivery-' + uuid.uuid4().hex, _now()
+            db.execute('''INSERT INTO channel_delivery_attempts
+                (attempt_id,role_id,thread_id,account_id,target_chat_id,content,status,created_at,updated_at,
+                 source_session_key,source_run_id,source_tool_call_id,source_kind,account_generation,
+                 operation_key,request_fingerprint,details_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (attempt_id, thread.role_id, thread.thread_id, thread.account_id, thread.chat_id, content,
+                 'pending', now, now, source_session_key, source_run_id, source_tool_call_id, source_kind,
+                 account_generation, operation_key, request_fingerprint,
+                 _json({'materialUsage': material_usage} if material_usage else {})))
+            return attempt_id, None
+
+    @staticmethod
+    def _unresolved_material(db, role_id, session_key, run_id):
+        if not session_key or not run_id:
+            return None
+        return db.execute('''SELECT * FROM channel_delivery_attempts
+            WHERE role_id=? AND source_session_key=? AND source_run_id=?
+            AND status IN ('pending','uncertain') AND json_extract(details_json,'$.materialUsage') IS NOT NULL
+            ORDER BY created_at LIMIT 1''', (role_id, session_key, run_id)).fetchone()
+
+    def unresolved_material_delivery(self, role_id, session_key, run_id):
+        with self._connect() as db:
+            row = self._unresolved_material(db, role_id, session_key, run_id)
+            return dict(row) if row is not None else None
+
+    def material_usage(self, role_id, *, session_key=None):
+        """Recent 2048 role attempts, projected once per distinct receipt; never lifetime counters."""
+        with self._connect() as db:
+            rows = db.execute('''SELECT json_extract(details_json,'$.materialUsage.sha256') AS digest,
+                COUNT(*) AS attempts,
+                SUM(CASE WHEN status='sent' AND platform_message_id IS NOT NULL AND platform_message_id!='' THEN 1 ELSE 0 END) AS successes,
+                MAX(created_at) AS last_attempt
+                FROM (SELECT * FROM channel_delivery_attempts WHERE role_id=? ORDER BY created_at DESC LIMIT 2048)
+                WHERE (? IS NULL OR source_session_key=?)
+                AND json_extract(details_json,'$.materialUsage.sha256') IS NOT NULL
+                GROUP BY digest''', (role_id, session_key, session_key)).fetchall()
+        return {row['digest']: {'attempts': row['attempts'], 'successes': row['successes'],
+            'lastAttempt': row['last_attempt']} for row in rows}
 
     def record_delivery_parts(self, attempt_id: str, details: dict[str, Any]) -> None:
         with self._connect() as db:

@@ -10,6 +10,7 @@ import asyncio
 import contextvars
 import uuid
 import hashlib
+import json
 import time
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator, Callable, Mapping
@@ -550,6 +551,8 @@ class ChannelHost:
         authorize_source: Callable[[], bool] | None = None,
         message_metadata: Mapping[str, object] | None = None,
         delivery_deadline: float | None = None,
+        operation_key: str | None = None,
+        material_usage: Mapping[str, object] | None = None,
         _delivery_generation=None,
         _prepared_attachment_ids: frozenset[str] = frozenset(),
     ) -> DeliveryResult:
@@ -562,6 +565,9 @@ class ChannelHost:
         """
 
         delivery_deadline = min(time.monotonic() + 120, delivery_deadline or float('inf'))
+        if operation_key is not None and (not isinstance(operation_key, str) or not 1 <= len(operation_key) <= 512
+                or not source_session_key or not source_run_id or not callable(authorize_source)):
+            raise ValueError('delivery operation requires its original source and bounded identity')
         frozen_payloads: dict[str, bytes] | None = None
         if frozen_attachment_bytes is not None:
             if not isinstance(frozen_attachment_bytes, Mapping) or not 1 <= len(frozen_attachment_bytes) <= 4:
@@ -729,14 +735,34 @@ class ChannelHost:
                 title=target.display_name,
                 metadata={"deliveryTargetId": target.id, "deliveryTargetKind": target.kind.value, **({"originGroupId": group_id} if group_id else {})},
             )
-            attempt_id = self.store.begin_delivery(
-                thread, content,
-                source_session_key=source_session_key,
-                source_run_id=source_run_id,
-                source_tool_call_id=source_tool_call_id,
-                source_kind=source_kind or actor,
-                account_generation=self._adapter_generations.get(id(adapter)),
-            )
+            source_fields = dict(source_session_key=source_session_key, source_run_id=source_run_id,
+                source_tool_call_id=source_tool_call_id, source_kind=source_kind or actor,
+                account_generation=self._adapter_generations.get(id(adapter)))
+            def prior_result(previous):
+                return DeliveryResult(DeliveryStatus.UNCERTAIN if previous['status'] == 'pending'
+                    else DeliveryStatus(previous['status']), target, attempt_id=previous['attempt_id'],
+                    platform_message_id=previous['platform_message_id'],
+                    error=previous['error'] or ('dispatch_receipt_unconfirmed' if previous['status'] == 'pending' else None),
+                    raw=json.loads(previous['details_json'] or '{}'))
+            if operation_key is not None:
+                def fingerprint(value):
+                    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                        separators=(',', ':')).encode()).hexdigest()
+                scoped_key = fingerprint([role_id, source_session_key, source_run_id, source_kind, operation_key])
+                request_fingerprint = fingerprint([account_id, target.id, target.chat_id, target.kind.value,
+                    actor, source_thread_id, content, reply_to_message_id, list(mention_ids), message_thread_id,
+                    [[item.kind, item.mime_type, hashlib.sha256(item.frozen_data).hexdigest()
+                        if item.frozen_data is not None else item.url] for item in attachments],
+                    dict(material_usage or {})])
+                attempt_id, previous = self.store.reserve_delivery(thread, content, operation_key=scoped_key,
+                    request_fingerprint=request_fingerprint, material_usage=dict(material_usage or {}), **source_fields)
+                if previous is not None:
+                    return prior_result(previous)
+            else:
+                previous = self.store.unresolved_material_delivery(role_id, source_session_key, source_run_id)
+                if previous is not None:
+                    return prior_result(previous)
+                attempt_id = self.store.begin_delivery(thread, content, **source_fields)
             pending_message = None
             if record_message:
                 _, pending_message = self.store.append_event(thread, direction="outbound", content=content,

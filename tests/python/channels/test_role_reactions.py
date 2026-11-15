@@ -211,15 +211,32 @@ def test_natural_qq_uses_enabled_role_illustrations_without_tools(natural, monke
     _, raw = illustration(state)
     class Model:
         async def stream_structured_messages(self, messages, configuration, tools):
-            assert not tools
-            candidates = json.JSONDecoder().raw_decode(messages[0]['content'].split('候选：', 1)[1])[0]
+            state.calls.append((messages, tools))
+            system = messages[0]['content']
+            assert bool(tools) == ('[自然参与表达]' in system)
+            if '[自然参与规划]' in system:
+                inputs = []
+                for item in messages:
+                    if item['role'] != 'user':
+                        continue
+                    try:
+                        value = json.loads(item['content'])
+                    except (ValueError, TypeError):
+                        continue
+                    if isinstance(value, dict):
+                        inputs.append(value)
+                source = next(item for item in reversed(inputs) if item.get('sourceKind') != 'role_sent')
+                yield ModelTextDelta(json.dumps({'action': 'reply', 'response': {
+                    'message_id': source['sourceMessageId'], 'intent': '回应开心的话题'}}))
+                return
+            candidates = json.JSONDecoder().raw_decode(system.split('候选：', 1)[1])[0]
             assert len(candidates) == 1
-            yield ModelTextDelta(json.dumps({'action': 'reply', 'text': '好呀', 'candidate_id': candidates[0]['id']}))
+            yield ModelTextDelta(json.dumps({'text': '好呀', 'candidate_id': candidates[0]['id']}))
     monkeypatch.setattr(main, 'model_adapter', Model())
     async def scenario():
         try:
             data = payload('natural-role', sender='22', triggered=False, image=False)
-            data['message'][0]['data']['text'] = '好喜欢你呀'
+            data['message'][0]['data']['text'] = 'happy'
             event = await main.channel_host.accept_event(state.adapter.account_id, data)
             await main._handle_channel_event(event)
             await asyncio.sleep(0)

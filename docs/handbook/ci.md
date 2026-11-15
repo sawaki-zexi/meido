@@ -21,7 +21,7 @@
 - `Windows chat E2E`：独立 Windows 服务启动器和聊天端到端验收。
 
 后端运行工作流中明确列出的相关回归，五组并行；channels 限时 10 分钟，其他组 5 分钟，不重试失败。
-素材组保留全部符号链接安全用例并在 Linux 执行。旧自然插画单阶段模型用例 `test_natural_qq_uses_enabled_role_illustrations_without_tools` 在基线 `b2e8106` 也失败，暂未加入该组；当前自然候选范围由 `test_material_message_scope.py` 覆盖，旧用例未删除或放宽断言。
+素材组保留全部符号链接安全用例并在 Linux 执行。自然插画用例 `test_natural_qq_uses_enabled_role_illustrations_without_tools` 已改用实际规划/表达两阶段替身，恢复到该组执行；断言仍验证原件真实发送。素材检索、50/500 项预热工作量、普通工具凭据与发送回归在 drift 组，原账本操作重放与并发待确认回归在 channels 组。行为与质量限制见[素材检索与选用发送](../reference/material-search-and-delivery.md)。
 结果和耗时直接查看 Actions 日志。
 PR 的 Checks 页面显示检查结果，合并条件由 GitHub 分支保护执行。
 

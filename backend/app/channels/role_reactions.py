@@ -18,6 +18,7 @@ from ..proactive_runtime.drift_workspace import _identity
 from ..proactive_runtime.source_authoring import _directory_identity
 from ..proactive_runtime.source_validation import _read
 from .meme_library import ChatMemeLibrary, MemeCandidate, MAX_IMAGE_BYTES, MAX_SCAN, _hash, _image, _json
+from .meme_index import relevance
 from .natural_media import _owned_worker
 
 
@@ -29,8 +30,8 @@ class RoleReactionCandidate(MemeCandidate):
 class RoleReactionLibrary(ChatMemeLibrary):
     """Use existing frozen meme references without copying assets into a library."""
 
-    def __init__(self, library, roles, *, authorized=lambda: True, source_validator=None):
-        super().__init__(library, roles.workspace_path, source_validator=source_validator)
+    def __init__(self, library, roles, *, authorized=lambda: True, source_validator=None, usage_reader=None):
+        super().__init__(library, roles.workspace_path, source_validator=source_validator, usage_reader=usage_reader)
         self.roles, self.authorized = roles, authorized
 
     def reference(self, role_id, candidate, context, *, principal='reaction'):
@@ -60,12 +61,11 @@ class RoleReactionLibrary(ChatMemeLibrary):
             try:
                 path = self.roles.illustration_path(role_id, item.id)
                 identity = _identity(path)
-                raw = _read(path, MAX_IMAGE_BYTES)
-                _, media = _image(raw)
-                if len(raw) != item.size or media != item.mediaType:
-                    continue
-                digest = _hash(raw)
                 roots = tuple((str(p), _directory_identity(p)) for p in (path.parent.parent, path.parent))
+                fact = self.image_fact(role_id, path, roots)
+                media, digest = fact.media, fact.digest
+                if fact.size != item.size or media != item.mediaType:
+                    continue
                 identifier = _hash(_json([role_id, item.id, identity, digest]))[:32]
                 result.append(RoleReactionCandidate(identifier, role_id, item.category,
                     item.name, (), path, identity, roots, digest, media, item.id))
@@ -76,15 +76,12 @@ class RoleReactionLibrary(ChatMemeLibrary):
     def candidates(self, role_id, query='', context=None):
         # Natural QQ already has bounded candidate IDs, cooldown and real receipts.
         # Put opted-in role illustrations alongside its existing legacy candidates.
-        categories = {}
-        for item in self.role_candidates(role_id):
-            categories.setdefault(item.category_label, []).append(item)
-        # A feeling need not be named literally in chat. Offer one frozen image
-        # per allowed category; query matches only affect the bounded ordering.
-        selected = [random.choice(items) for items in categories.values()]
-        selected.sort(key=lambda item: not any(token in
-            (item.category_label + ' ' + item.description).casefold() for token in query.casefold().split()))
-        return tuple((*selected, *super().candidates(role_id, query, context)))[:12]
+        selected = [(relevance(query, item.category_label, item.description)[0], item)
+            for item in self.role_candidates(role_id)]
+        selected.extend((item.relevance_score, item)
+            for item in super().candidates(role_id, query, context))
+        selected.sort(key=lambda pair: -pair[0])
+        return tuple(item for score, item in selected if score)[:4]
 
     def reply_candidates(self, role_id, context=None):
         """Both Shiori libraries participate in ordinary replies, not just illustrations."""

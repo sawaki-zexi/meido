@@ -33,7 +33,7 @@ class Library:
         self.saved.append(item)
         return {'status': 'recorded', 'deduplicated': False}
 
-    def candidates(self, role, query='', context=None):
+    def candidates(self, role, query='', context=None, **options):
         return (Candidate(),)
 
     def valid(self, role, candidate):
@@ -67,6 +67,10 @@ def setup(*, attachments=None, permissions=None, authorized=lambda: True):
 
 
 def call(tools, name, arguments, context):
+    # The test model consumes the actual opaque list credential.
+    owner = tools['chat_meme_' + name].owner
+    if arguments.get('candidate_id') == 'candidate' and owner.candidates:
+        arguments = {**arguments, 'candidate_id': next(iter(owner.candidates))}
     return asyncio.run(tools['chat_meme_' + name].execute(arguments, context))
 
 

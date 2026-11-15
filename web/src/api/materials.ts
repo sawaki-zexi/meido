@@ -29,6 +29,9 @@ export type MaterialLibrary = {
   categories: { name: string; description: string; count: number; enabled: boolean }[];
   revision: string;
   storageLabel: string;
+  total?: number;
+  libraryTotal?: number;
+  nextOffset?: number | null;
 };
 const path = (roleId: string) => `/api/roles/${encodeURIComponent(roleId)}/materials`;
 export type CollectionResult = {
@@ -37,7 +40,13 @@ export type CollectionResult = {
   effectiveSemanticStatus?: 'ready' | 'pending' | 'content_changed';
 };
 export const materials = {
-  list: (roleId: string, signal?: AbortSignal) => api<MaterialLibrary>(path(roleId), { signal }),
+  list: (roleId: string, signal?: AbortSignal, options: { query?: string; category?: string; offset?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (options.query) params.set('query', options.query);
+    if (options.category) params.set('category', options.category);
+    if (options.offset) params.set('offset', String(options.offset));
+    return api<MaterialLibrary>(path(roleId) + (params.size ? `?${params}` : ''), { signal });
+  },
   import: (roleId: string, file: File, category: string, description: string, expectedRevision: string) =>
     api<CollectionResult>(`${path(roleId)}?${new URLSearchParams({ category, description, expectedRevision })}`, {
       method: 'POST', body: file, headers: { 'content-type': file.type || ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' }[file.name.split('.').pop()?.toLowerCase() ?? ''] ?? 'application/octet-stream'), 'x-material-filename': encodeURIComponent(file.name) },

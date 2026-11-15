@@ -18,12 +18,13 @@ import uuid
 
 from PIL import Image
 
-from ..agent_runtime.file_tools import build_file_tools, _file_lock
+from ..agent_runtime.file_tools import build_file_tools, _file_lock, _FileFailure
 from ..chat_attachments import resolve_attachment
 from ..proactive_runtime.drift_workspace import _identity
 from ..proactive_runtime.source_authoring import _directory_identity
 from ..proactive_runtime.source_validation import _read, _unique_object
 from . import meme_semantics as semantics
+from .meme_index import ImageFact, relevance, shared_index
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_PIXELS = 40_000_000
@@ -92,6 +93,8 @@ class MemeCandidate:
     semantic_status: str = field(default='ready', kw_only=True)
     meaning_digest: str = field(default='', kw_only=True)
     display_category: str = field(default='', kw_only=True)
+    reason: str = field(default='', kw_only=True)
+    relevance_score: int = field(default=0, kw_only=True)
 
     @property
     def category_label(self):
@@ -101,14 +104,15 @@ class MemeCandidate:
         return {'id': self.id, 'category': self.category_label, 'description': self.description,
                 'aliases': list(self.aliases), 'assetId': self.asset_id,
                 'semanticRevision': self.semantic_revision, 'basis': self.basis_kind,
-                'semanticStatus': self.semantic_status}
+                'semanticStatus': self.semantic_status, 'reason': self.reason}
 
 
 class ChatMemeLibrary:
-    def __init__(self, library, attachment_root, *, source_validator=None):
+    def __init__(self, library, attachment_root, *, source_validator=None, usage_reader=None):
         self.library = library
         self._attachment_root = attachment_root
         self.source_validator = source_validator
+        self.usage_reader = usage_reader
 
     def attachment_root(self, role_id):
         value = self._attachment_root(role_id) if callable(self._attachment_root) else self._attachment_root
@@ -161,14 +165,64 @@ class ChatMemeLibrary:
                         # One invalid entry must not make other genuine images invisible.
                         continue
 
-    def candidates(self, role_id, query='', context=None, *, limit=12, explicit=False):
+    def indexed_items(self, role_id, *, enabled_only=True):
+        root = self.library.root(role_id)
+        if not root.exists():
+            return
+        roots = self._root_identity(role_id)
+        document, _ = self._manifest(role_id)
+        index, count = shared_index(self.library), 0
+        for category, entry in document['categories'].items():
+            _category(category)
+            if not isinstance(entry, dict) or enabled_only and entry.get('enabled') is not True:
+                continue
+            directory = self._path(role_id, root / category)
+            if not directory.is_dir():
+                continue
+            _directory_identity(directory)
+            with os.scandir(directory) as children:
+                for child in children:
+                    count += 1
+                    if count > MAX_SCAN:
+                        raise ValueError('meme library exceeds bounded candidate scan')
+                    try:
+                        # scandir supplies an immediate child of the checked
+                        # category. image_fact still validates the full chain.
+                        path = Path(child.path)
+                        if path.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp', '.gif'}:
+                            continue
+                        fact = self.image_fact(role_id, path, roots, index)
+                        yield category, entry, path, fact
+                    except (OSError, ValueError, PermissionError, _FileFailure):
+                        continue
+
+    def image_fact(self, role_id, path, roots, index=None):
+        identity = _identity(path)
+        stamp = (roots, identity, path.stat().st_ctime_ns)
+        def load():
+            raw = _read(path, MAX_IMAGE_BYTES)
+            _, media = _image(raw)
+            with Image.open(io.BytesIO(raw)) as image:
+                fact = ImageFact(identity, _hash(raw), media, len(raw), image.width, image.height,
+                    image.format, getattr(image, 'n_frames', 1) > 1)
+            if (roots, _identity(path), path.stat().st_ctime_ns) != stamp:
+                raise PermissionError('original changed during index preparation')
+            return fact
+        return (index or shared_index(self.library)).image((role_id, str(path)), stamp, load)
+
+    def candidates(self, role_id, query='', context=None, *, limit=4, explicit=False, offset=0):
         if not isinstance(query, str) or len(query) > 2000:
             raise ValueError('invalid finite meme query')
+        if type(offset) is not int or not 0 <= offset <= MAX_SCAN or type(limit) is not int or not 0 <= limit <= MAX_SCAN:
+            raise ValueError('invalid bounded meme page')
         result = []
-        for category, entry, path, raw, media in self._items(role_id):
-            digest = _hash(raw)
+        records = semantics.catalog(self.library, role_id)
+        roots = self._root_identity(role_id) if self.library.root(role_id).exists() else ()
+        usage = self.usage_reader(role_id, session_key=getattr(context, 'session_key', None)) if self.usage_reader else {}
+        for category, entry, path, fact in self.indexed_items(role_id):
+            digest, media = fact.digest, fact.media
             session_key = getattr(context, 'session_key', '')
-            meaning = semantics.effective(semantics.meaning_for(self.library, role_id, path, digest, entry),
+            meaning = semantics.effective(semantics.meaning_for(self.library, role_id, path, digest, entry, records=records),
                 session_key, self.source_validator, category=category, aliases=entry.get('aliases', []))
             if (not meaning['enabled'] or not semantics.source_allowed(meaning, session_key, self.source_validator)
                     or not explicit and meaning['semanticStatus'] != 'ready'):
@@ -178,21 +232,22 @@ class ChatMemeLibrary:
             aliases = tuple(value for value in aliases if isinstance(value, str)) if isinstance(aliases, list) else ()
             if not isinstance(desc, str):
                 desc = ''
-            identity = _identity(path)
+            identity = fact.identity
+            score, reason = relevance(query, meaning['displayCategory'], meaning['name'], desc, *aliases)
             meaning_digest = _hash(semantics.encode(meaning))
             identifier = _hash(_json([role_id, str(path), identity, digest, meaning_digest]))[:32]
             candidate = MemeCandidate(identifier, role_id, category, desc[:2000], aliases[:32],
-                path, identity, self._root_identity(role_id), digest, media,
+                path, identity, roots, digest, media,
                 asset_id=meaning['assetId'], semantic_revision=meaning['revision'],
                 scope_session=session_key,
                 explicit=explicit, basis_kind=meaning['basis']['kind'], semantic_status=meaning['semanticStatus'],
-                meaning_digest=meaning_digest, display_category=meaning['displayCategory'])
-            searchable = ' '.join((candidate.category_label, meaning['name'], desc, *aliases)).casefold()
-            score = sum(token in searchable for token in query.casefold().split())
-            if not query.strip() or score:
-                result.append((score, path.name, candidate))
-        result.sort(key=lambda item: (-item[0], item[1]))
-        return tuple(item[2] for item in result[:max(0, min(limit, MAX_SCAN))])
+                meaning_digest=meaning_digest, display_category=meaning['displayCategory'], reason=reason,
+                relevance_score=score)
+            if score:
+                used = usage.get(digest, {})
+                result.append((score, used.get('successes', 0), used.get('lastAttempt', ''), path.name, candidate))
+        result.sort(key=lambda item: (-item[0], item[1], item[2], item[3]))
+        return tuple(item[4] for item in result[offset:offset + limit])
 
     def valid(self, role_id, candidate):
         try:
