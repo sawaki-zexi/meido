@@ -322,6 +322,7 @@ it('refreshing a conflicted removal that is already absent clears confirmation b
   let refreshed = false;
   const second = material({ id: 'm2', name: '另一张.png', imageUrl: '/api/roles/r1/materials/m2/image' });
   const { calls } = fakeBackend({
+    'GET /api/roles/r1/materials/m1': () => ({ status: 404, body: { detail: '素材已移出' } }),
     'GET /api/roles/r1/materials': () => ({ body: library(refreshed ? [second] : [material(), second], refreshed ? 'rev2' : 'rev1') }),
     'DELETE /api/roles/r1/materials/m1\\?expectedRevision=rev1': () => { refreshed = true; return { status: 409, body: { detail: '素材已被其他操作移出' } }; },
   });
@@ -339,6 +340,55 @@ it('refreshing a conflicted removal that is already absent clears confirmation b
   expect(screen.queryByRole('dialog', { name: '移出素材库？' })).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: '移出素材库' })).toBeEnabled();
   expect(calls.filter(call => call.method === 'DELETE')).toHaveLength(1);
+});
+
+it('edits group purposes, keeps drafts across conflict/refresh and explicitly promotes only meaning', async () => {
+  const group = { id: 'group-a', scope: 'conversation' as const, label: '开发群 · 测试QQ', available: true, name: '猫捂脸', description: '编译失败' };
+  const role = { ...group, id: 'role', scope: 'role' as const, label: '角色通用说明', description: '尴尬' };
+  let saved = material({ meaningScope: 'conversation', meaningScopeId: group.id, meaningScopes: [role, group] });
+  let conflict = true;
+  const { calls } = fakeBackend({
+    'GET /api/roles/r1/materials': () => ({ body: library([saved], conflict ? 'rev1' : 'rev2') }),
+    'PATCH /api/roles/r1/materials/m1': init => {
+      const body = JSON.parse(String(init?.body));
+      if (conflict) { conflict = false; saved = { ...saved, meaningScopes: [role, { ...group, description: '另一处刚保存的说明' }] }; return { status: 409, body: { detail: '素材库已经变化' } }; }
+      saved = { ...saved, ...body };
+      return { body: { material: saved, revision: 'rev3' } };
+    },
+  });
+  const user = userEvent.setup();
+  render(<RoleMaterialLibrary roleId="r1" roleName="爱丽丝" />);
+  await user.click(await screen.findByRole('button', { name: '预览开心.gif' }));
+  await user.click(screen.getByText('编辑说明'));
+  await user.clear(screen.getByLabelText('素材说明')); await user.type(screen.getByLabelText('素材说明'), '我的群说明草稿');
+  await user.type(screen.getByLabelText('素材用途'), '写代码、编译失败');
+  await user.click(screen.getByRole('button', { name: '保存修改' }));
+  await screen.findByText('素材库已经变化');
+  await user.click(screen.getByRole('button', { name: '重新读取素材库' }));
+  await waitFor(() => expect(screen.getByRole('button', { name: '保存修改' })).toBeEnabled());
+  expect(screen.getByLabelText('素材说明')).toHaveValue('我的群说明草稿');
+  await user.click(screen.getByText('已保存的说明与历史'));
+  expect(screen.getByText('当前已保存：另一处刚保存的说明')).toBeVisible();
+  await user.selectOptions(screen.getByLabelText('说明适用范围'), 'role');
+  expect(screen.getByLabelText('素材说明')).toHaveValue('尴尬');
+  await user.selectOptions(screen.getByLabelText('说明适用范围'), group.id);
+  expect(screen.getByLabelText('素材说明')).toHaveValue('我的群说明草稿');
+  await user.click(screen.getByRole('button', { name: '将这份说明用作通用说明草稿' }));
+  expect(screen.getByLabelText('说明适用范围')).toHaveValue('role');
+  await user.click(screen.getByRole('button', { name: '保存修改' }));
+  await waitFor(() => expect(calls.filter(call => call.method === 'PATCH')).toHaveLength(2));
+  const request = calls.filter(call => call.method === 'PATCH')[1].body;
+  expect(request).toMatchObject({ expectedRevision: 'rev2', meaningScopeId: 'role', description: '我的群说明草稿', uses: ['写代码', '编译失败'] });
+});
+
+it('sends source and enable filters to the server', async () => {
+  const { calls } = fakeBackend(routes());
+  const user = userEvent.setup();
+  render(<RoleMaterialLibrary roleId="r1" roleName="爱丽丝" />);
+  await screen.findByText('开心.gif');
+  await user.selectOptions(screen.getByLabelText('素材来源'), 'chat');
+  await user.selectOptions(screen.getByLabelText('聊天启停'), 'false');
+  await waitFor(() => expect(calls.some(call => call.path.includes('source=chat') && call.path.includes('enabled=false'))).toBe(true));
 });
 
 it('does not resurrect a confirmed removed item if the follow-up list read fails', async () => {

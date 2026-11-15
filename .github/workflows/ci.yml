@@ -146,6 +146,8 @@ jobs:
               tests/python/test_material_library_api.py
               tests/python/test_chat_meme_library.py
               tests/python/test_material_semantics.py
+              tests/python/test_material_scoped_editor.py
+              tests/python/test_material_quality.py
               tests/python/test_material_duplicate_meaning.py
               tests/python/test_material_search.py
               tests/python/test_material_send.py

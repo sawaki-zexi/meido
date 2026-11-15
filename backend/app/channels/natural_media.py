@@ -125,6 +125,12 @@ class NaturalMedia:
                     'description': candidate.description[:500],
                     'basis': candidate.basis_kind,
                     'reason': candidate.reason,
+                    'generalDescription': candidate.meaning_details.get('generalDescription', '')[:500],
+                    'groupDescription': candidate.meaning_details.get('groupDescription', '')[:500],
+                    'generalBasis': candidate.meaning_details.get('generalBasis', 'unverified'),
+                    'groupBasis': candidate.meaning_details.get('groupBasis', 'unverified'),
+                    'uses': candidate.meaning_details.get('uses', [])[:8],
+                    'avoid': candidate.meaning_details.get('avoid', [])[:8],
                     'aliases': [alias[:80] for alias in candidate.aliases[:8]]})
             remaining = MAX_INPUT_IMAGES
             for item in inputs:

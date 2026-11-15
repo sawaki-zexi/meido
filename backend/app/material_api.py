@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from typing import Annotated, Literal
+from .channels.meme_semantics import MeaningScopeUnavailable
 
 from .agent_runtime.file_tools import _FileFailure
 from .chat_attachments import read_request_bytes
@@ -20,6 +22,14 @@ class MaterialEdit(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=160)
     description: str | None = Field(default=None, max_length=2000)
     enabled: StrictBool | None = None
+    meaningScopeId: str | None = Field(default=None, pattern=r'^(role|[a-f0-9]{32})$')
+    aliases: list[Annotated[str, Field(min_length=1, max_length=80)]] | None = Field(default=None, max_length=32)
+    tags: list[Annotated[str, Field(min_length=1, max_length=80)]] | None = Field(default=None, max_length=32)
+    emotions: list[Annotated[str, Field(min_length=1, max_length=80)]] | None = Field(default=None, max_length=32)
+    uses: list[Annotated[str, Field(min_length=1, max_length=160)]] | None = Field(default=None, max_length=32)
+    avoid: list[Annotated[str, Field(min_length=1, max_length=160)]] | None = Field(default=None, max_length=32)
+    uncertainty: str | None = Field(default=None, max_length=1000)
+    uncertaintyAffectsUse: StrictBool | None = None
 
 
 class MessageCollection(BaseModel):
@@ -43,6 +53,8 @@ def material_router(application):
             raise HTTPException(415, '仅支持完整有效的 PNG、JPEG、WebP、GIF 图片；图片或动画超过解码限制') from None
         except MaterialConflict:
             raise HTTPException(409, '素材库已经变化，请刷新后重新确认；不要直接重复提交') from None
+        except MeaningScopeUnavailable as error:
+            raise HTTPException(403, str(error)) from None
         except (MemeQuotaError, StorageLimitError):
             raise HTTPException(413, '当前受管素材库空间或条目配额不足；原有素材未被删除') from None
         except _FileFailure as error:
@@ -58,8 +70,9 @@ def material_router(application):
 
     @router.get('')
     async def listing(role_id: str, query: str = Query('', max_length=2000), category: str = Query('', max_length=80),
-            offset: int = Query(0, ge=0, le=512), limit: int = Query(24, ge=1, le=100)):
-        return await invoke('list', role_id, query, category, offset, limit)
+            offset: int = Query(0, ge=0, le=512), limit: int = Query(24, ge=1, le=100),
+            source: Literal['', 'owner_import', 'chat', 'drift', 'legacy'] = '', enabled: bool | None = None):
+        return await invoke('list', role_id, query, category, offset, limit, source, enabled)
 
     @router.get('/{material_id}/image')
     async def image(role_id: str, material_id: str):
@@ -67,6 +80,10 @@ def material_router(application):
         return Response(raw, media_type=item['mediaType'], headers={
             'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
             'Content-Disposition': "inline; filename*=UTF-8''" + quote(item['name'], safe='')})
+
+    @router.get('/{material_id}')
+    async def detail(role_id: str, material_id: str):
+        return await invoke('detail', role_id, material_id)
 
     @router.post('/from-message')
     async def from_message(role_id: str, body: MessageCollection):
@@ -89,7 +106,7 @@ def material_router(application):
     @router.patch('/{material_id}')
     async def edit(role_id: str, material_id: str, body: MaterialEdit):
         changes = body.model_dump(exclude_none=True, exclude={'expectedRevision'})
-        if not changes:
+        if not changes or set(changes) == {'meaningScopeId'}:
             raise HTTPException(422, '请选择需要修改的名称、说明或聊天开关')
         return await invoke('edit', role_id, material_id, body.expectedRevision, changes)
 

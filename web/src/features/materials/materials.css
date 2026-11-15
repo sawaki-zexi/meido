@@ -64,6 +64,9 @@
 .material-edit summary { cursor: pointer; color: var(--ink-soft); font-size: 13px; }
 .material-edit form { display: grid; gap: 14px; margin-top: 14px; }
 .material-edit form > button { justify-self: end; }
+.material-edit input:not([type="checkbox"]), .material-edit textarea, .material-edit select { width: 100%; min-width: 0; }
+.material-edit button { max-width: 100%; white-space: normal; }
+.material-edit .field { min-width: 0; }
 .material-edit li { font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap; }
 .material-message-action { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; color: var(--ink-faint); }
 .material-message-action > button { font-size: 12px; padding: 4px 8px; }
