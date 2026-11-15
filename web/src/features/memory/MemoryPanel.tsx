@@ -104,7 +104,6 @@ export function MemoryPanel({ role, onBack, onOpenSource, embedded = false }: {
     if (target === 'new' || !detail) rememberOpener();
     setError(''); setEditing(target);
     setDraft(target === 'new' ? { ...emptyDraft } : { summary: target.summary, memoryType: target.memoryType, status: target.status,
-      extraJson: JSON.stringify(target.extra || {}, null, 2), sourceRefJson: JSON.stringify(target.sourceRef, null, 2),
       happenedAt: target.happenedAt ? localDateTime(target.happenedAt) : '', emotionalWeight: String(target.emotionalWeight ?? 0) });
   };
   const save = async (event: FormEvent) => {
@@ -113,13 +112,10 @@ export function MemoryPanel({ role, onBack, onOpenSource, embedded = false }: {
     try {
       if (editing === 'new') await api(`${base}/memories`, { method: 'POST', body: JSON.stringify({ summary: draft.summary, memoryType: draft.memoryType, happenedAt: draft.happenedAt ? new Date(draft.happenedAt).toISOString() : null }) });
       else {
-        let extra: unknown, sourceRef: unknown;
-        try { extra = JSON.parse(draft.extraJson || '{}'); } catch { throw new Error('扩展字段必须是有效 JSON'); }
-        try { sourceRef = draft.sourceRefJson ? JSON.parse(draft.sourceRefJson) : undefined; } catch { throw new Error('来源必须是有效 JSON'); }
-        await api(`${base}/memory-admin/items/${encodeURIComponent(editing.id)}`, { method: 'PATCH', body: JSON.stringify({ status: draft.status, extraJson: extra,
+        await api(`${base}/memory-admin/items/${encodeURIComponent(editing.id)}`, { method: 'PATCH', body: JSON.stringify({ status: draft.status, extraJson: editing.extra,
           happenedAt: draft.happenedAt === (editing.happenedAt ? localDateTime(editing.happenedAt) : '') ? editing.happenedAt
             : draft.happenedAt ? new Date(draft.happenedAt).toISOString() : null, emotionalWeight: Number(draft.emotionalWeight || 0),
-          ...(sourceRef !== undefined ? { sourceRef } : {}) }) });
+          sourceRef: editing.sourceRef }) });
       }
       opener.current = title.current;
       setEditing(null); setDetail(null); setDraft(emptyDraft); setVersion(value => value + 1);
