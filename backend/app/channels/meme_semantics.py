@@ -314,8 +314,8 @@ def management(value, validator=None, labels=None):
 
 
 def revise_management(value, changes, *, expected_revision, basis, author, validator=None):
-    # Selection is deterministic under the same whole-library CAS used by the
-    # list. Never change the meaning target or grant a new scope on PATCH.
+    # The default target is deterministic under the listing's whole-library CAS.
+    # Explicit promotion creates meaning only, never an original-image source.
     result = deepcopy(value)
     changes = dict(changes)
     identifier = changes.pop('meaningScopeId', None)
