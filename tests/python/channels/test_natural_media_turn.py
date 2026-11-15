@@ -3,6 +3,7 @@ import asyncio
 import base64
 import io
 import json
+import sqlite3
 from pathlib import Path
 
 from PIL import Image
@@ -101,6 +102,15 @@ def test_single_original_gif_message_and_actual_history(media_turn, text, uncert
             assert len(messages)==1 and messages[0].role=='assistant'
             assert messages[0].metadata['deliveryStatus']==('uncertain' if uncertain else 'sent')
             assert messages[0].metadata['attachments'][0]['mediaType']=='image/gif'
+            with sqlite3.connect(s.sessions.database_path) as db:
+                snapshots = [json.loads(row[0]) for row in db.execute('SELECT model_snapshot_json FROM agent_runs')]
+            expression = next(snapshot for snapshot in snapshots if snapshot.get('naturalPhase') == 'expression')
+            receipt = expression['mediaRequests'][-1]
+            plan = next(snapshot for snapshot in snapshots if snapshot.get('naturalPhase') == 'plan')
+            assert plan['mediaRequests'][-1]['requestId'] != receipt['requestId']
+            assert receipt['understanding'] == 'quality-unverified'
+            assert [item['frameIndex'] for item in receipt['images']] == [0, 1]
+            assert all(item['frameCount'] == 2 and item['status'] == 'pixels_submitted' for item in receipt['images'])
             app=main._natural_media_application()
             counts=next(iter(app.usage.values()))
             assert counts['attempts']==1 and counts['successes']==int(not uncertain)
@@ -123,6 +133,14 @@ def test_real_adapter_quoted_images_require_verified_group(media_turn, verified)
             assert s.downloads==(['https://qq.test/image'] if verified else [])
             assert len(s.calls)==2
             assert len([op for op,_ in s.operations if op=='send_group_msg'])==1
+            with sqlite3.connect(s.sessions.database_path) as db:
+                snapshots = [json.loads(row[0]) for row in db.execute('SELECT model_snapshot_json FROM agent_runs')]
+            receipts = [receipt for snapshot in snapshots for receipt in snapshot.get('mediaRequests', [])]
+            if verified:
+                assert receipts and all(image['sourceKind'] == 'reference' and image['originalMessageId'] == 'group-quote'
+                    for receipt in receipts for image in receipt['images'])
+            else:
+                assert not receipts
         finally:
             if main._proactive is not None: await main._proactive.close()
     asyncio.run(run())
@@ -169,6 +187,10 @@ def test_unreadable_input_has_explicit_image_fact_not_invented_pixels(media_turn
             assert isinstance(content,str)
             fact=json.loads(content)
             assert fact['hasImage'] is True and fact['imageReadable'] is False
+            assert fact['imageReadState'] == 'not_provided'
+            assert fact['imageInputs'][0]['status'] == ('not_provided' if reason == 'no_vision' else 'unreadable')
+            if reason == 'no_vision':
+                assert fact['imageInputs'][0]['reason'] == 'vision_unsupported'
             assert len([op for op,_ in s.operations if op=='send_group_msg'])==1
             assert not s.downloads if reason=='no_vision' else s.downloads
         finally:

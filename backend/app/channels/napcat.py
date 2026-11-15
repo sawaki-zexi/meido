@@ -36,6 +36,18 @@ FORWARD_MAX_LINES = 10
 _PARAGRAPH_BREAK = re.compile(r"\n\s*\n")
 
 
+def _native_expression(kind: str, data: Mapping) -> str:
+    """A native identifier is not downloaded pixels or a verified send ability."""
+    fields = ('id',) if kind == 'face' else ('emoji_id', 'emoji_package_id')
+    values = []
+    for key in fields:
+        value = data.get(key)
+        text = str(value) if isinstance(value, (str, int)) and not isinstance(value, bool) else ''
+        safe = text if re.fullmatch(r'[A-Za-z0-9_-]{1,96}', text) else '无效' if text else '缺失'
+        values.append(f'{key}={safe}')
+    return f"[QQ 原生表情 type={kind}；{'；'.join(values)}；像素读取不支持；原生发送不支持；仅知道类型与标识，不推测图意。]"
+
+
 @dataclass(slots=True)
 class NapCatConfig:
     account_id: str
@@ -128,6 +140,7 @@ class NapCatAdapter(ChannelAdapter):
         invocation_parts: list[str] = []
         mentions: list[str] = []
         attachments: list[Attachment] = []
+        native_count = 0
         for segment in segments:
             kind = str(segment.get("type", ""))
             data = segment.get("data") if isinstance(segment.get("data"), dict) else {}
@@ -142,6 +155,12 @@ class NapCatAdapter(ChannelAdapter):
                 attachment = file_attachment(data)
                 attachments.append(attachment)
                 text_parts.append(file_description(attachment.file_name))
+            elif kind in {'face', 'mface'}:
+                if native_count < 16:
+                    text_parts.append(_native_expression(kind, data))
+                elif native_count == 16:
+                    text_parts.append('[其余原生表情已省略；未读取像素]')
+                native_count += 1
             elif kind in {"image", "video", "record"}:
                 attachments.append(Attachment(kind=kind, url=str(data.get("url")) if data.get("url") else None, file_name=str(data.get("file")) if data.get("file") else None))
         reply = next((segment for segment in segments if segment.get("type") == "reply"), None)
@@ -261,10 +280,17 @@ class NapCatAdapter(ChannelAdapter):
             return event
         sender = quoted.get("sender") if isinstance(quoted.get("sender"), Mapping) else {}
         attachments, text = [], []
+        native_count = 0
         for segment in self._segments(quoted.get("message")):
             data = segment.get("data") if isinstance(segment.get("data"), Mapping) else {}
             if segment.get("type") == "text":
                 text.append(str(data.get("text") or ""))
+            elif segment.get('type') in {'face', 'mface'}:
+                if native_count < 16:
+                    text.append(_native_expression(segment['type'], data))
+                elif native_count == 16:
+                    text.append('[其余原生表情已省略；未读取像素]')
+                native_count += 1
             elif segment.get("type") == "file":
                 attachment = file_attachment(data)
                 attachments.append(attachment)

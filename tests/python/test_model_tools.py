@@ -653,7 +653,8 @@ def test_meido_provider_sends_user_image_as_multimodal_content():
         )]
 
     asyncio.run(collect())
-    assert adapter.messages[1]["content"] == [
+    assert next(message['content'] for message in adapter.messages
+        if message['role'] == 'user' and isinstance(message.get('content'), list)) == [
         {"type": "text", "text": "看看这张图"},
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,aW1hZ2U=", "detail": "low"}},
     ]

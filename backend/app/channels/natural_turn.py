@@ -103,7 +103,9 @@ class NaturalConversation:
             projected.update(text=projected['text'] if record['id'] == self.current_id else excerpt(projected['text'], 1000),
                 replyToContent=excerpt(projected['replyToContent'], 1000),
                 hasImage=mid in batch.media.image_message_ids,
-                imageReadable=mid in batch.media.attachments_by_message_id)
+                imageReadable=mid in batch.media.attachments_by_message_id,
+                imageReadState='prepared' if mid in batch.media.attachments_by_message_id else 'not_provided',
+                imageInputs=list(batch.media.image_outcomes_by_message_id.get(mid, ())))
             content = json.dumps(projected, ensure_ascii=False)
             if len(content) > remaining:
                 continue  # Never truncate necessary identity or relationship fields.
@@ -176,6 +178,8 @@ class NaturalConversation:
             return commit
         provider.request_guard = request_guard
         provider.request_start = request_start
+        from ..agent_runtime.image_evidence import run_media_observer
+        provider.media_request_observer = run_media_observer(self.channels.sessions, run_id)
         if plan is not None and self.execute is not None:
             response = await self.execute(self, run, provider, messages,
                 lambda: authorized() and self.valid(plan))
@@ -190,6 +194,8 @@ class NaturalConversation:
         return result if isinstance(result, dict) else None
 
     def _require_authorized(self, authorized, plan):
+        if self.batch.media is not None:
+            self.batch.media.check()
         # Relevant arrivals obsolete the result at the scheduler boundary;
         # settle the owned request, then replan within the original quota.
         source = self.batch.snapshot[-1].source if self.batch.snapshot else None

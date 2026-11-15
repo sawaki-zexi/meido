@@ -5,12 +5,26 @@ from typing import Literal, TypeAlias
 
 
 @dataclass(frozen=True, slots=True)
+class ImageSource:
+    """Host provenance for a prepared view; never proof that pixels were sent."""
+
+    source_id: str
+    content_sha256: str
+    frame_index: int = 0
+    frame_count: int = 1
+    sampled: bool = False
+    source_kind: str = 'message'
+    source_message_id: str = ''
+
+
+@dataclass(frozen=True, slots=True)
 class ImageContent:
     """Ephemeral image content passed to the next provider request."""
 
     media_type: str
     data_base64: str
     detail: Literal["low", "high", "auto"] = "low"
+    source: ImageSource | None = None
 
 
 @dataclass(frozen=True, slots=True)

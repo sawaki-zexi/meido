@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from .agent_runtime.types import AgentMessage, AssistantMessage, AttachmentContent, ImageContent, ToolCall, ToolResultMessage, UserMessage
-from .chat_attachments import load_image
+from .agent_runtime.image_evidence import image_views
 from .models import AgentRun, Message, SessionSummary
 
 
@@ -36,10 +36,13 @@ def load_runtime_attachments(metadata: dict[str, Any]) -> tuple[AttachmentConten
         image = None
         if media_type.startswith("image/"):
             try:
-                actual_type, encoded = load_image(path, media_type)
-                image = ImageContent(actual_type, encoded)
+                views = image_views(Path(path).read_bytes(), media_type, str(item.get('id') or ''),
+                    source_kind=str(item.get('_imageSourceKind') or metadata.get('_imageSourceKind') or 'message'),
+                    source_message_id=str(item.get('_imageSourceMessageId') or metadata.get('_imageSourceMessageId') or ''))
+                loaded.extend(AttachmentContent(name, view.media_type, text=text, image=view) for view in views)
             except (OSError, ValueError):
-                continue
+                loaded.append(AttachmentContent(name, media_type, text='图片读取失败：未提供像素，未读取图片内容。'))
+            continue
         loaded.append(AttachmentContent(name, media_type, text=text, image=image))
     return tuple(loaded)
 
