@@ -8,7 +8,35 @@ import { RoleMaterialLibrary } from './RoleMaterialLibrary';
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const material = (overrides: Partial<RoleMaterial> = {}): RoleMaterial => ({ id: 'm1', name: '开心.gif', category: '开心', description: '挥手打招呼', aliases: ['你好'], format: 'GIF', mediaType: 'image/gif', size: 1200, width: 120, height: 60, animated: true, source: 'owner_import', enabled: true, imageUrl: '/api/roles/r1/materials/m1/image', ...overrides });
 const library = (items = [material()], revision = 'rev1'): MaterialLibrary => ({ materials: items, categories: [...new Set(items.map(item => item.category))].map(name => ({ name, description: '', count: items.filter(item => item.category === name).length, enabled: true })), revision, storageLabel: '当前角色工作区 / workspace/memes' });
-const routes = (body = library()) => ({ 'GET /api/roles/r1/materials': () => ({ body }) });
+const routes = (body = library()) => ({
+  'GET /api/roles/r1/materials': () => ({ body }),
+  'GET /api/roles/r1/materials\\?.*': (_init: RequestInit | undefined, match: RegExpMatchArray) => {
+    const params = new URLSearchParams(match[0].split('?')[1]);
+    const query = params.get('query') ?? '', category = params.get('category');
+    return { body: { ...body, materials: body.materials.filter(item => (!category || item.category === category)
+      && (!query || [item.name, item.description, ...item.aliases].join(' ').includes(query))) } };
+  },
+});
+
+it('uses server Chinese relevance and continues beyond the first bounded page', async () => {
+  const later = material({ id: 'later', name: '猫捂脸.gif', description: '编译失败时使用' });
+  const { calls } = fakeBackend({
+    ...routes(),
+    'GET /api/roles/r1/materials\\?.*': (_init, match) => {
+      const params = new URLSearchParams(match[0].split('?')[1]);
+      return { body: { ...library([params.get('offset') === '24' ? later : material()]),
+        total: 25, nextOffset: params.get('offset') === '24' ? null : 24 } };
+    },
+  });
+  const user = userEvent.setup();
+  render(<RoleMaterialLibrary roleId="r1" roleName="爱丽丝" />);
+  await screen.findByText('开心.gif');
+  fireEvent.change(screen.getByRole('searchbox', { name: '搜索素材' }), { target: { value: '今天编译又失败了' } });
+  await user.click(await screen.findByRole('button', { name: '下一页' }));
+  expect(await screen.findByText('猫捂脸.gif')).toBeVisible();
+  expect(calls.some(call => new URLSearchParams(call.path.split('?')[1]).get('query') === '今天编译又失败了')).toBe(true);
+  expect(calls.some(call => call.path.includes('offset=24'))).toBe(true);
+});
 
 it.each(['role', 'conversation'] as const)('states the actual %s meaning scope before editing', async meaningScope => {
   fakeBackend(routes(library([material({ meaningScope })])));

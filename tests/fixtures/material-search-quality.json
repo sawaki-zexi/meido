@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "qualityStatus": "quality-unverified",
+  "boundary": "Deterministic retrieval against synthetic originals and owner descriptions; no real-model scoring",
+  "assets": [
+    {"id":"coding","format":"GIF","description":"猫捂脸，编译失败或错误，用于写不出代码","aliases":["卡住","BUILD"]},
+    {"id":"happy","format":"PNG","description":"开心挥手，庆祝成功完成任务","aliases":["HAPPY"]},
+    {"id":"sad","format":"JPEG","description":"难过流泪，用于失落安慰","aliases":["SAD"]},
+    {"id":"question","format":"WEBP","description":"疑问歪头，用于困惑不解","aliases":["WHY"]},
+    {"id":"login","format":"PNG","description":"登录文字截图","aliases":["LOGIN"]},
+    {"id":"photo","format":"JPEG","description":"蓝色天空照片","aliases":["BLUE"]},
+    {"id":"sarcasm","format":"PNG","description":"真棒，反讽含义待核实","pending":true},
+    {"id":"group","format":"GIF","description":"本群暗号蜗牛表示编译成功","session":"thread:one"}
+  ],
+  "cases": [
+    {"id":"chinese-context","query":"编译又失败了","allowed":["coding"]},
+    {"id":"purpose","query":"代码写不出来怎么办","allowed":["coding"]},
+    {"id":"alias","query":"我卡住了","allowed":["coding"]},
+    {"id":"ascii","query":"build","allowed":["coding"]},
+    {"id":"normalized","query":"ＢＵＩＬＤ","allowed":["coding"]},
+    {"id":"celebrate","query":"完成任务很开心","allowed":["happy"]},
+    {"id":"sad","query":"难过需要安慰","allowed":["sad"]},
+    {"id":"question","query":"非常困惑","allowed":["question"]},
+    {"id":"question-alias","query":"why","allowed":["question"]},
+    {"id":"screenshot","query":"登录截图","allowed":["login"]},
+    {"id":"photo","query":"蓝色天空","allowed":["photo"]},
+    {"id":"photo-alias","query":"blue","allowed":["photo"]},
+    {"id":"no-match","query":"明天去海边游泳","allowed":[]},
+    {"id":"generic-request","query":"发个表情","allowed":[]},
+    {"id":"generic-pronoun","query":"这个","allowed":[]},
+    {"id":"generic-date","query":"今天","allowed":[]},
+    {"id":"sarcasm-uncertain","query":"真棒啊","allowed":[]},
+    {"id":"group-private-hidden","query":"蜗牛暗号","allowed":[]},
+    {"id":"group-private-own","query":"蜗牛暗号","session":"thread:one","allowed":["group"]},
+    {"id":"group-private-other","query":"蜗牛暗号","session":"thread:two","allowed":[]}
+  ]
+}

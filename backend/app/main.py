@@ -3132,7 +3132,7 @@ def _material_source_authorized(payload):
 
 def _chat_meme_library():
     return ChatMemeLibrary(_proactive_application().memes, store.workspace_path,
-        source_validator=_material_source_authorized)
+        source_validator=_material_source_authorized, usage_reader=multichannel_store.material_usage)
 
 
 async def _role_reaction_turn(role, session_key, run_id, authorized):
@@ -3141,7 +3141,7 @@ async def _role_reaction_turn(role, session_key, run_id, authorized):
     from .channels.natural_media import _owned_worker
     try:
         library = RoleReactionLibrary(_proactive_application().memes, store, authorized=authorized,
-            source_validator=_material_source_authorized)
+            source_validator=_material_source_authorized, usage_reader=multichannel_store.material_usage)
         return await _owned_worker(lambda: RoleReactionTurn(library, role_id=role.id,
             session_key=session_key, run_id=run_id))
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
@@ -3166,7 +3166,7 @@ def _natural_media_application():
                     return True
             return False
         application = NaturalMedia(RoleReactionLibrary(_proactive_application().memes, store,
-            source_validator=_material_source_authorized),
+            source_validator=_material_source_authorized, usage_reader=multichannel_store.material_usage),
             store.root / '.cache', clock=lambda: _schedule_clock(), downloader=media.download_qq_media,
             recent_attempt=recent_attempt)
         application._store = store
@@ -3239,6 +3239,8 @@ async def _natural_send(batch, decision, authorized):
         attachment_ids=attachment_ids,frozen_attachment_bytes=frozen,
         actor='reply',source_thread_id=thread.thread_id,source_session_key=thread.session_key,
         source_run_id=batch.run_id,source_kind='natural',authorize_source=dispatch_authorized,
+        operation_key='natural:' + batch.id,
+        material_usage={'sha256': digest} if digest else None,
         reply_to_message_id=decision.plan.selection.quote_id,
         mention_ids=decision.plan.selection.mention_ids,
         message_metadata={'naturalReply':True,'naturalBatchId':batch.id,
@@ -3252,7 +3254,7 @@ async def _natural_send(batch, decision, authorized):
             'relatedInputIds':[str(batch.turn.context.records[item]['metadata'].get('platformMessageId') or item)
                 for item in decision.plan.selection.source_ids]})
     if candidate_id:
-        media.result(candidate_id,result.status.value)
+        media.result(candidate_id,result)
 
 
 async def _handle_channel_event(event) -> None:
@@ -7234,6 +7236,9 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
                     source_session_key=thread.session_key,
                     source_run_id=run_id,
                     source_kind="role_reaction" if reaction_attachment is not None else "reply",
+                    operation_key='role-reaction:' + run_id if reaction_attachment is not None else None,
+                    material_usage={'sha256': reaction.selected.sha256, 'assetId': reaction.selected.asset_id,
+                        'semanticRevision': reaction.selected.semantic_revision} if reaction_attachment is not None else None,
                     mention_ids=reply_mentions,
                     message_thread_id=metadata.get("messageThreadId"),
                     message_metadata={'responseRelation': metadata.get('responseRelation')},

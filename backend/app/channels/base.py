@@ -11,6 +11,10 @@ from .models import ChannelCapabilities, DeliveryResult, DeliveryStatus, Inbound
 from .directory import DirectoryError, DirectoryQuery, DirectoryObservation
 
 
+class DeliveryOperationConflict(ValueError):
+    """Existing operation parameters differ; nothing was dispatched."""
+
+
 class ChannelAdapterError(RuntimeError):
     """An adapter rejected or could not process a platform operation."""
 

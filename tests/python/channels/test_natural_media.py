@@ -153,8 +153,9 @@ def test_attempt_success_and_cooldown_are_distinct(tmp_path, status):
         identifier = batch.candidates[0]['id']
         await batch.resolve(identifier)
         batch.attempt(identifier)
-        batch.result(identifier, status)
-        batch.result(identifier, status)
+        receipt = SimpleNamespace(status=SimpleNamespace(value=status), attempt_id='receipt', platform_message_id='message' if status == 'sent' else None)
+        batch.result(identifier, receipt)
+        batch.result(identifier, receipt)
         counts = next(iter(state.service.usage.values()))
         assert counts['attempts'] == 1 and counts['successes'] == int(status == 'sent')
         with pytest.raises(PermissionError):
@@ -286,7 +287,7 @@ def test_actual_receipt_after_expiry_still_counts_success(tmp_path):
         identifier = batch.candidates[0]['id']
         batch.attempt(identifier)
         batch.close()  # external transport already owns the attempt
-        batch.result(identifier, 'sent')
+        batch.result(identifier, SimpleNamespace(status=SimpleNamespace(value='sent'), attempt_id='receipt', platform_message_id='message'))
         assert next(iter(state.service.usage.values()))['successes'] == 1
     asyncio.run(run())
 

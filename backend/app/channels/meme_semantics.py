@@ -12,6 +12,8 @@ import uuid
 
 from ..proactive_runtime.source_authoring import _directory_identity
 from ..proactive_runtime.source_validation import _read
+from ..proactive_runtime.drift_workspace import _identity
+from .meme_index import shared_index
 
 MAX_RECORD_BYTES = 512 * 1024
 MAX_SOURCES = 128
@@ -59,10 +61,33 @@ def _changed(previous, digest, relative):
     return value
 
 
-def meaning_for(library, role_id, path, digest, category):
+def catalog(library, role_id):
+    """One bounded metadata scan, never per-image scans of the same directory."""
+    index = shared_index(library)
+    root = library.root(role_id).parent / '.meido-memes'
+    result = {'chat': {}, 'metadata': {}}
+    for name in result:
+        directory = root / name
+        if not directory.exists():
+            continue
+        roots = (_directory_identity(root), _directory_identity(directory))
+        for count, path in enumerate(directory.glob('*.json'), 1):
+            if count > 1024:
+                raise ValueError('material meaning scan exceeds finite limit')
+            stamp = (roots, _identity(path), path.stat().st_ctime_ns)
+            def load(path=path, stamp=stamp):
+                value = _record(path)
+                if (roots, _identity(path), path.stat().st_ctime_ns) != stamp:
+                    raise PermissionError('meaning changed during observation')
+                return value
+            result[name][path.stem] = index.record((role_id, str(path)), stamp, load)
+    return result
+
+
+def meaning_for(library, role_id, path, digest, category, *, records=None):
     root = library.root(role_id)
     relative = path.relative_to(root).as_posix()
-    value = _record(metadata_path(library, role_id, digest))
+    value = records['chat'].get(digest) if records is not None else _record(metadata_path(library, role_id, digest))
     if value is not None:
         if value.get('roleId') != role_id or value.get('sha256') != digest:
             raise ValueError('material meaning does not match its role and original')
@@ -75,24 +100,25 @@ def meaning_for(library, role_id, path, digest, category):
     directory = metadata_path(library, role_id, digest).parent
     if directory.exists():
         _directory_identity(directory)
-        entries = list(directory.glob('*.json'))
+        entries = list(records['chat']) if records is not None else list(directory.glob('*.json'))
         if len(entries) > 1024:
             raise ValueError('material meaning scan exceeds finite limit')
         matches = []
         for item in entries:
-            previous = _record(item)
+            previous = records['chat'][item] if records is not None else _record(item)
+            stem = item if records is not None else item.stem
             if (previous and previous.get('version') == 2 and previous.get('roleId') == role_id
                     and relative in previous.get('paths', [])):
                 matches.append(previous)
             elif (previous and previous.get('version') != 2 and previous.get('roleId') == role_id
-                    and previous.get('sha256') == path.stem and item.stem == path.stem):
+                    and previous.get('sha256') == path.stem and stem == path.stem):
                 matches.append(_legacy(role_id, path, previous['sha256'], category, previous,
                     'owner_import' if previous.get('source') == 'owner_import' else 'chat'))
         if matches:
             previous = max(matches, key=lambda item: item['revision'])
             return _changed(previous, digest, relative)
     drift = root.parent / '.meido-memes' / 'metadata' / (path.stem + '.json')
-    previous = _record(drift)
+    previous = records['metadata'].get(path.stem) if records is not None else _record(drift)
     if previous and previous.get('roleId') == role_id and previous.get('path') == relative:
         old_digest = previous.get('sha256')
         if not isinstance(old_digest, str) or len(old_digest) != 64:

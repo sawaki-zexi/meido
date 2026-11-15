@@ -31,6 +31,7 @@ from .proactive_runtime.drift_workspace import _identity
 from .proactive_runtime.source_authoring import _directory_identity
 from .proactive_runtime.source_validation import _read
 from .channels import meme_semantics as semantics
+from .channels.meme_index import relevance
 
 
 class MaterialConflict(PermissionError):
@@ -156,10 +157,10 @@ class OwnerMaterialLibrary:
                 raise PermissionError('managed original library root changed')
         document, _ = self.chat._manifest(role_id)
         entries = []
-        for category, category_data, path, raw, media in self.chat._items(role_id, enabled_only=False):
-            identity = _identity(path)
-            digest = _hash(raw)
-            metadata = semantics.management(semantics.meaning_for(self.library, role_id, path, digest, category_data))
+        records = semantics.catalog(self.library, role_id)
+        for category, category_data, path, image_fact in self.chat.indexed_items(role_id, enabled_only=False):
+            identity, digest, media = image_fact.identity, image_fact.digest, image_fact.media
+            metadata = semantics.management(semantics.meaning_for(self.library, role_id, path, digest, category_data, records=records))
             source = metadata.get('source', 'legacy')
             description = metadata['description']
             if not isinstance(description, str):
@@ -167,9 +168,8 @@ class OwnerMaterialLibrary:
             source_aliases = category_data.get('aliases', [])
             aliases = [value[:80] for value in source_aliases if isinstance(value, str)][:32] if isinstance(source_aliases, list) else []
             identifier = _hash(_json([role_id, str(path), identity, digest]))[:32]
-            with Image.open(io.BytesIO(raw)) as image:
-                width, height, format = image.width, image.height, image.format
-                animated = getattr(image, 'n_frames', 1) > 1
+            width, height, format = image_fact.width, image_fact.height, image_fact.format
+            animated = image_fact.animated
             name = metadata.get('name')
             if not isinstance(name, str):
                 name = path.name
@@ -179,7 +179,7 @@ class OwnerMaterialLibrary:
                 'meaningScope': metadata['meaningScope'],
                 'enabled': category_data.get('enabled') is True and metadata['enabled'],
                 'categoryEnabled': category_data.get('enabled') is True, 'format': format,
-                'mediaType': media, 'size': len(raw), 'width': width, 'height': height,
+                'mediaType': media, 'size': image_fact.size, 'width': width, 'height': height,
                 'animated': animated,
                 'imageUrl': f'/api/roles/{quote(role_id, safe="")}/materials/{identifier}/image',
                 **semantics.public_meaning(metadata)}
@@ -208,15 +208,21 @@ class OwnerMaterialLibrary:
                 self._observations.popitem(last=False)
         return _Snapshot(tuple(entries), tuple(categories), revision, before, document, grant, fact)
 
-    def list(self, role_id, query='', category=''):
+    def list(self, role_id, query='', category='', offset=0, limit=24):
         if len(query) > 2000 or len(category) > 80:
             raise MaterialParameters('invalid finite query')
+        if type(offset) is not int or not 0 <= offset <= MAX_SCAN or type(limit) is not int or not 1 <= limit <= 100:
+            raise MaterialParameters('invalid bounded material page')
         snapshot = self._snapshot(role_id)
-        tokens = query.casefold().split()
-        entries = [item.public for item in snapshot.entries if (not category or item.public['category'] == category)
-            and all(token in ' '.join((item.public['name'], item.public['category'], item.public['description'],
-                *item.public['aliases'])).casefold() for token in tokens)]
-        return {'materials': entries, 'categories': list(snapshot.categories), 'revision': snapshot.revision,
+        ranked = [(relevance(query, item.public['name'], item.public['category'], item.public['description'],
+            *item.public['aliases'])[0], item.public) for item in snapshot.entries
+            if not category or item.public['category'] == category]
+        ranked.sort(key=lambda item: -item[0])
+        entries = [item for score, item in ranked if score]
+        total = len(entries)
+        return {'materials': entries[offset:offset + limit], 'total': total, 'libraryTotal': len(snapshot.entries),
+                'nextOffset': offset + limit if offset + limit < total else None,
+                'categories': list(snapshot.categories), 'revision': snapshot.revision,
                 'storageLabel': '当前角色工作区 / workspace/memes'}
 
     def _entry(self, snapshot, identifier):

@@ -57,8 +57,9 @@ def material_router(application):
             raise HTTPException(503, '素材库暂不可安全读取或操作结果尚未确认，请刷新核对后再操作') from None
 
     @router.get('')
-    async def listing(role_id: str, query: str = Query('', max_length=2000), category: str = Query('', max_length=80)):
-        return await invoke('list', role_id, query, category)
+    async def listing(role_id: str, query: str = Query('', max_length=2000), category: str = Query('', max_length=80),
+            offset: int = Query(0, ge=0, le=512), limit: int = Query(24, ge=1, le=100)):
+        return await invoke('list', role_id, query, category, offset, limit)
 
     @router.get('/{material_id}/image')
     async def image(role_id: str, material_id: str):

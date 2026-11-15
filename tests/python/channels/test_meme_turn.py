@@ -180,6 +180,8 @@ def test_owner_saves_and_reuses_original_sticker_with_drift_off(meme_turn, monke
     sends = [params for operation, params in state.operations if operation == 'send_group_msg'
              and any(part['type'] == 'image' for part in params['message'])]
     assert len(sends) == 1, 'Unknown receipt must never trigger a second image send'
+    if uncertain:
+        assert len([operation for operation, _ in state.operations if operation == 'send_group_msg']) == 1, 'Unknown image receipt must not produce replacement text'
     image = next(part for part in sends[0]['message'] if part['type'] == 'image')
     assert base64.b64decode(image['data']['file'].removeprefix('base64://')) == state.raw
     thread = state.channels.ensure_channel_thread(state.role.id, 'qq', state.adapter.account_id, '100', 'group')
