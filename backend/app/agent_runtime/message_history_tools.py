@@ -17,6 +17,7 @@ from ..channels.conversation_context import message_source
 from .tools import AgentToolResult, ToolContext, ToolDefinition, ToolRegistry
 
 MESSAGE_HISTORY_TOOL_NAMES = frozenset({"search_messages", "fetch_messages"})
+MAX_HISTORY_RESPONSE_CHARS = 24000
 
 
 class ConversationHistory:
@@ -137,7 +138,7 @@ class MessageHistoryTool:
         })
         self.definition = ToolDefinition(
             name="search_messages" if search else "fetch_messages",
-            description=("按关键词定位获准历史，返回预览和source_ref；以原话作证前用fetch_messages核验。" if search
+            description=("按关键词定位获准历史，返回预览和source_ref；有has_more时按next_offset继续，以原话作证前用fetch_messages核验。" if search
                          else "按source_ref读取获准消息原文，可带前后文；长正文按next_content_offset续读，missing_source_refs表示缺失，omitted_source_refs表示本页预算省略，可减少引用或调低content_limit后重试。"),
             input_schema={"type": "object", "properties": properties,
                           "required": ["query"] if search else [], "additionalProperties": False},
@@ -203,7 +204,7 @@ class MessageHistoryTool:
             missing = sorted(ref for ref in refs if self.history.source_aliases.get(ref, ref) not in matched)
             if missing:
                 payload.update(missing_source_refs=_bounded_refs(missing), missing_count=len(missing))
-        payload = _bounded_payload(payload)
+        payload = _bounded_search_payload(payload) if self.search else _bounded_fetch_payload(payload)
         _check_cancelled(context, stopped)
         self.history.validate(context)
         return AgentToolResult(json.dumps(payload, ensure_ascii=False), details={"status": "succeeded", "count": payload["count"]})
@@ -241,12 +242,45 @@ def _bounded_refs(refs):
     return result
 
 
-def _bounded_payload(payload):
+def _bounded_search_payload(payload):
+    """Return a ranked prefix; the next offset starts at the first unread hit."""
+    def page(messages, *, consumed=None):
+        count = len(messages)
+        next_offset = payload['offset'] + (count if consumed is None else consumed)
+        more = next_offset < payload['matched_count']
+        return {**payload, 'messages': messages, 'count': count,
+            'has_more': more, 'next_offset': next_offset if more else None}
+
+    result = page([])
+    for original in payload['messages']:
+        candidate = page([*result['messages'], original])
+        if len(json.dumps(candidate, ensure_ascii=False)) <= MAX_HISTORY_RESPONSE_CHARS:
+            result = candidate
+            continue
+        if result['messages']:
+            break
+        # JSON escaping can make even one preview exceed the response budget.
+        # Shorten only its prose, leaving the source and attribution intact.
+        item = dict(original)
+        while item['preview']:
+            item['preview'] = item['preview'][:len(item['preview']) // 2]
+            item.update(truncated=True, preview_line_count=len(item['preview'].splitlines()))
+            candidate = page([item])
+            if len(json.dumps(candidate, ensure_ascii=False)) <= MAX_HISTORY_RESPONSE_CHARS:
+                return candidate
+        # Exceptionally large source metadata cannot be truncated safely.
+        # Account for that hit explicitly and let pagination make progress.
+        return {**page([], consumed=1), 'omitted_source_refs': [original['source_ref']],
+            'omitted_count': 1, 'truncated': True}
+    return result
+
+
+def _bounded_fetch_payload(payload):
     original = payload['messages']
     # Exact requested originals have priority over their optional neighbors.
     priority = sorted(original, key=lambda item: not item.get('in_source_ref', True))
     result = {**payload, 'messages': []}
-    remaining = 24000 - len(json.dumps(result, ensure_ascii=False)) - 4200
+    remaining = MAX_HISTORY_RESPONSE_CHARS - len(json.dumps(result, ensure_ascii=False)) - 4200
     selected = set()
     for item in priority:
         size = len(json.dumps(item, ensure_ascii=False)) + 2
