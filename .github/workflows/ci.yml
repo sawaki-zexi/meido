@@ -86,6 +86,7 @@ jobs:
               tests/python/test_role_card_import.py
               tests/python/test_role_card_export.py
               tests/python/test_chat_attachments.py
+              tests/python/test_current_image_evidence.py
               tests/python/test_docx_attachments.py
               tests/python/test_todo_plugin.py::test_role_reminder_generation_uses_personality_facts_and_read_only_related_memory
               tests/python/test_api.py::test_role_creation_uses_canonical_binding_and_never_persists_legacy_credentials
@@ -127,6 +128,7 @@ jobs:
               tests/python/channels/test_delivery_parts.py
               tests/python/channels/test_natural_media_turn.py
               tests/python/channels/test_qq_image_receiving.py
+              tests/python/channels/test_current_media_turn.py
               tests/python/channels/test_qq_file_receiving.py
               tests/python/channels/test_attachment_turn.py
               tests/python/channels/test_owner_quoted_attachment.py

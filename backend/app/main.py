@@ -231,6 +231,9 @@ _ordinary_usage_anchors = UsageAnchors()
 
 
 def _ordinary_context_provider(provider, settings, *, role_id, session_key, run_id, owner=True, memory_required=True, history=None, source_authority=None, readonly=False):
+    from .agent_runtime.image_evidence import run_media_observer
+    if not readonly:
+        provider.media_request_observer = run_media_observer(session_store, run_id)
     source = source_authority or (capture_channel_source(multichannel_store, session_store, role_id=role_id,
               session_key=session_key, run_id=run_id, owner_context=owner)
               if session_key.startswith('thread:') else None)
@@ -6874,7 +6877,8 @@ async def _run_channel_message(thread, content: str, metadata: dict[str, object]
             if speaker == "未配对成员":
                 speaker += " " + json.dumps(str(metadata.get("replyToSenderName") or metadata.get("replyToSenderId") or ""), ensure_ascii=False)
             prefix = f"引用 {speaker}：\n{quoted_text}\n\n" if quoted_text else ""
-            quoted_media = load_runtime_attachments({"attachments": metadata.get("quotedAttachments", [])})
+            quoted_media = load_runtime_attachments({"attachments": metadata.get("quotedAttachments", []),
+                '_imageSourceKind': 'reference', '_imageSourceMessageId': str(metadata.get('replyTo') or '')})
             runtime_messages[-1] = replace(runtime_messages[-1], content=prefix + runtime_messages[-1].content, attachments=(*runtime_messages[-1].attachments, *quoted_media))
         heard = ''
         if thread.chat_type == 'group':

@@ -44,7 +44,8 @@ def _user_projection(message, quotes):
     from .channels.conversation_context import message_source
     metadata = dict(message.metadata)
     content = message.content
-    attachments = list(metadata.get("attachments") or [])
+    attachments = [{**item, '_imageSourceKind': 'message', '_imageSourceMessageId': message.id}
+        if isinstance(item, dict) else item for item in metadata.get('attachments') or []]
     # A saved platform quote is not a license to replay private original text.
     # Only the frozen, same-session lookup below can supply this body/media.
     metadata.pop('replyToContent', None)
@@ -61,7 +62,8 @@ def _user_projection(message, quotes):
             speaker = ('角色' if quoted.role == 'assistant' else '主人' if source['senderIsOwner'] is True
                 else '成员' if source['senderIsOwner'] is False else '发言者（历史身份未记录）')
             content = f"引用{speaker}：\n{quoted.content}\n\n{content}"
-            attachments.extend(quoted.metadata.get("attachments") or [])
+            attachments.extend({**item, '_imageSourceKind': 'reference', '_imageSourceMessageId': quoted.id}
+                if isinstance(item, dict) else item for item in quoted.metadata.get('attachments') or [])
             metadata.update(replyToContent=quoted.content, replyContextVerified=True,
                 replyToSenderId=source['senderId'], replyToSenderName=source['senderName'],
                 replyToSenderIsOwner=source['senderIsOwner'], replyOriginalVisible=True,
@@ -354,7 +356,9 @@ class ConversationHistoryView:
             resolved = self.attachment_resolver(str(item.get("id") or "")) if self.attachment_resolver else None
             self.require_current()
             if resolved and Path(str(resolved.get("path", ""))).is_file():
-                values = load_runtime_attachments({"attachments": [resolved]})
+                values = load_runtime_attachments({'attachments': [resolved],
+                    '_imageSourceKind': item.get('_imageSourceKind', 'message'),
+                    '_imageSourceMessageId': item.get('_imageSourceMessageId', '')})
             else:
                 values = ()
             if values:

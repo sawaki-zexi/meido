@@ -192,6 +192,40 @@ def test_ttl_cancel_restart_cleanup_never_touches_formal_library(tmp_path):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('change', ['ttl', 'cancel', 'revoked', 'replaced'])
+def test_old_prepared_pixels_cannot_reach_provider_after_lease_changes(tmp_path, change):
+    from backend.app.agent_runtime import MeidoProvider
+    from backend.app.agent_runtime.types import UserMessage
+    from backend.app.models import RoleInput, RoleProfile
+    from backend.app.model_adapter import ModelTextDelta
+    calls, receipts, allowed = [], [], [True]
+    class Adapter:
+        async def stream_structured_messages(self, messages, configuration, tools):
+            calls.append(messages)
+            yield ModelTextDelta('不应调用')
+    async def run():
+        state = setup(tmp_path, authorized=lambda: allowed[0])
+        batch = await state.service.prepare(**state.params)
+        message = UserMessage('图片', batch.attachments)
+        role = RoleInput(name='测试', profile=RoleProfile(profile='测试'))
+        provider = MeidoProvider(Adapter(), role, None, structured_without_tools=True)
+        provider.request_guard = batch.check
+        provider.media_request_observer = receipts.append
+        prepared = provider.prepare_request('', [message], [])
+        if change == 'ttl': state.now[0] = 61
+        elif change == 'cancel': state.context.signal.cancel()
+        elif change == 'revoked': allowed[0] = False
+        else:
+            replacement = await state.service.prepare(**state.params)
+            replacement.close()
+        state.service.prune()
+        events = [event async for event in provider.stream_prepared(prepared, system='', messages=[message], signal=CancellationToken())]
+        assert any(getattr(event, 'type', '') == 'provider_error' for event in events)
+        assert calls == receipts == []
+        assert not batch.path.exists() and batch.attachments == ()
+    asyncio.run(run())
+
+
 def test_revocation_during_download_and_budget_exhaustion(tmp_path):
     async def run():
         allowed = [True]

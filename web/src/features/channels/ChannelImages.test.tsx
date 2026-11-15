@@ -10,6 +10,16 @@ afterEach(cleanup);
 const attachment = { id: "animation", name: "动画.gif", kind: "image" };
 
 describe("渠道图片反馈", () => {
+  it("原生表情显示平台身份和能力限制，不伪装成图片或链接", () => {
+    const content = "[QQ 原生表情 type=mface；emoji_id=ABC123；emoji_package_id=9；像素读取不支持；原生发送不支持；仅知道类型与标识，不推测图意。]";
+    const message: ConversationMessage = { id: "native", role: "user", sequence: 1, content, createdAt: "2026-11-15T00:00:00Z", metadata: {} };
+    const view = messagePresentation(message, [message], role({ id: "r1", name: "诗织" }), null);
+    render(<PhoneMessage message={message} view={view} roleId="r1" timeLabel="" delivery={null} source={null} onMediaLoad={vi.fn()} />);
+    expect(screen.getByText(content)).toBeVisible();
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+
   it("失败后可重试同一地址，成功通知滚动；角色更换后重置旧图片状态", async () => {
     const onMediaLoad = vi.fn();
     const user = userEvent.setup();

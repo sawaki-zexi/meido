@@ -39,6 +39,7 @@ from .provider import ThinkingDeltaEvent
 from .types import AssistantMessage, ToolCall, UserMessage, ToolResultMessage
 from .conversation_prompt import CHAT_BEHAVIOR_PROMPT, tool_use_prompt
 from .usage_anchor import InputEstimate, UsageAnchors, SYSTEM_CONTEXT_FRAME_MARKER, mark_context_frame
+from .image_evidence import image_label, prepare_images, submitted_receipt
 
 
 class FramedMessages(list):
@@ -183,6 +184,8 @@ class PreparedRequest:
     tool_prompt: str
     context: str
     structured: list | None = None
+    runtime_messages: tuple = ()
+    image_sources: tuple = ()
 
 
 _CURRENT_INPUT = object()
@@ -227,6 +230,8 @@ class MeidoProvider:
         self.request_start = None
         self.snapshot_guard = None
         self.request_observer = None
+        self.media_request_observer = None
+        self.last_media_request = None
         # One-off providers (including spawn) get a temporary store. The host
         # explicitly shares a bounded store only for ordinary conversation views.
         self.usage_anchors = usage_anchors if usage_anchors is not None else UsageAnchors()
@@ -265,6 +270,7 @@ class MeidoProvider:
         provider.request_start = self.request_start
         provider.snapshot_guard = self.snapshot_guard
         provider.request_observer = self.request_observer
+        provider.media_request_observer = self.media_request_observer
         provider._request_time = self._request_time
         return provider
 
@@ -282,7 +288,7 @@ class MeidoProvider:
         signal.raise_if_cancelled()
         return result
 
-    async def _start_request(self, signal, prepared):
+    async def _start_request(self, signal, prepared, wire_messages, *, boundary='model_adapter'):
         """One host accounting boundary per adapter request, never per SSE check."""
         await self._check_boundary(signal)
         if self.request_start is not None:
@@ -291,6 +297,9 @@ class MeidoProvider:
             # different loop. Commit only here, with no await before adapter entry.
             if commit is not None:
                 commit()
+        self.last_media_request = submitted_receipt(wire_messages, prepared.image_sources, boundary=boundary)
+        if self.media_request_observer is not None:
+            self.media_request_observer(self.last_media_request)
 
     async def stream_response(self, *, model, system, messages, tools, signal, session_id=None):
         context = await self.prepare_context(signal)
@@ -330,6 +339,12 @@ class MeidoProvider:
 
     def prepare_request(self, system, messages, tools, *, context=RequestContext()):
         """Pure rendering from captured host inputs; no callback or provider mutation."""
+        boundary = self._context_boundary(messages)
+        registry = getattr(self.adapter, 'registry', None)
+        capabilities = getattr(self.adapter, 'capabilities', None) or getattr(getattr(self.adapter, 'options', None), 'capabilities', None)
+        supported = (registry.supports_images(self.configuration) if registry is not None and self.configuration is not None
+                     else getattr(capabilities, 'supports_images', True))
+        messages, image_sources = prepare_images(messages, supported=supported)
         tools = deepcopy(list(tools))
         configuration = self.configuration.model_copy(deep=True) if self.configuration else None
         max_tokens = self.max_response_tokens
@@ -343,14 +358,15 @@ class MeidoProvider:
         available = capacity - (max_tokens or 2048) - self.context_safety_margin
         for block in context.blocks:
             candidate = '\n\n'.join(filter(None, (current, block)))
-            runtime = self._rich_messages(system, messages, tool_prompt=prompt, request_context=candidate)
+            runtime = self._rich_messages(system, messages, tool_prompt=prompt, request_context=candidate, boundary=boundary)
             request = PreparedRequest(runtime, tools, configuration, max_tokens, prompt, candidate)
             if self.estimate_prepared(request).tokens < available:
                 current = candidate
-        runtime = self._rich_messages(system, messages, tool_prompt=prompt, request_context=current)
-        structured = (self._structured_messages(system, messages, tool_prompt=prompt, request_context=current)
+        runtime = self._rich_messages(system, messages, tool_prompt=prompt, request_context=current, boundary=boundary)
+        structured = (self._structured_messages(system, messages, tool_prompt=prompt, request_context=current, boundary=boundary)
                       if not callable(getattr(self.adapter, 'stream_rich_messages', None)) else None)
-        return PreparedRequest(runtime, tools, configuration, max_tokens, prompt, current, structured)
+        return PreparedRequest(runtime, tools, configuration, max_tokens, prompt, current, structured,
+            tuple(messages), image_sources)
 
     def estimate_request_tokens(self, system, messages, tools):
         return self.estimate_request(system, messages, tools).tokens
@@ -414,7 +430,8 @@ class MeidoProvider:
                 options: dict[str, object] = {"cancel_check": lambda: self._check_request(signal)} if accepts_cancel_check else {}
                 if max_tokens is not None and "max_tokens" in inspect.signature(rich).parameters:
                     options["max_tokens"] = max_tokens
-                await self._start_request(signal, prepared)
+                await self._start_request(signal, prepared, request['messages'] if request is not None else prepared.messages,
+                    boundary='provider_payload' if request is not None else 'model_adapter')
                 source = rich(runtime_messages, configuration, request_tools, **options)
                 async for event in source:
                     signal.raise_if_cancelled()
@@ -510,7 +527,7 @@ class MeidoProvider:
             try:
                 options = ({'max_tokens': prepared.max_tokens} if prepared.max_tokens is not None
                            and 'max_tokens' in inspect.signature(structured).parameters else {})
-                await self._start_request(signal, prepared)
+                await self._start_request(signal, prepared, prepared.structured)
                 source = structured(runtime_messages, prepared.configuration, prepared.tools, **options)
                 async for event in source:
                     await asyncio.to_thread(self._check_request, signal)
@@ -539,11 +556,11 @@ class MeidoProvider:
                 yield ProviderErrorEvent(str(error))
         return stream()
 
-    def _structured_messages(self, system: str, messages: Sequence[object], *, tool_prompt='', request_context='') -> list[dict[str, object]]:
+    def _structured_messages(self, system: str, messages: Sequence[object], *, tool_prompt='', request_context='', boundary=None) -> list[dict[str, object]]:
         prompt = self._structured_system_prompt(system, include_context=False, tool_prompt=tool_prompt, request_context=request_context)
         result: list[dict[str, object]] = [{"role": "system", "content": prompt}]
         provider_ids: dict[str, str] = {}
-        boundary = self._context_boundary(messages)
+        boundary = self._context_boundary(messages) if boundary is None else boundary
         for index, message in enumerate(messages):
             if index == boundary:
                 result.append({'role': 'user', 'content': self._context_frame(include_memory=not system, request_context=request_context)})
@@ -604,10 +621,10 @@ class MeidoProvider:
             self.current_input is not None and self.current_input.source_message_ids and
             message.source_message_ids == self.current_input.source_message_ids), len(messages))
 
-    def _rich_messages(self, system: str, messages: Sequence[object], *, tool_prompt='', request_context='') -> list[RichMessage]:
+    def _rich_messages(self, system: str, messages: Sequence[object], *, tool_prompt='', request_context='', boundary=None) -> list[RichMessage]:
         result = FramedMessages([RichSystemMessage((RichTextBlock(self._structured_system_prompt(system, include_context=False, tool_prompt=tool_prompt)),))])
         provider_ids: dict[str, str] = {}
-        boundary = self._context_boundary(messages)
+        boundary = self._context_boundary(messages) if boundary is None else boundary
         for index, message in enumerate(messages):
             if index == boundary:
                 result.context_frame_index = len(result)
@@ -616,6 +633,8 @@ class MeidoProvider:
                 blocks: list[object] = [RichTextBlock(message.content)]
                 for attachment in message.attachments:
                     if attachment.image is not None:
+                        if label := image_label(attachment.image):
+                            blocks.append(RichTextBlock(label))
                         blocks.append(RichImageBlock(
                             attachment.image.media_type,
                             attachment.image.data_base64,
@@ -763,7 +782,7 @@ class MeidoProvider:
         options = {'memory_context': self._combined_memory_context(tool_prompt=tool_prompt, request_context=request_context)} if accepts_memory else {}
         if prepared.max_tokens is not None and 'max_tokens' in inspect.signature(stream_reply).parameters:
             options['max_tokens'] = prepared.max_tokens
-        await self._start_request(signal, prepared)
+        await self._start_request(signal, prepared, ())
         source: object = stream_reply(role, history, prepared.configuration, **options)
         content = ""
         async for delta in cast(AsyncIterator[str], source):
@@ -776,7 +795,7 @@ class MeidoProvider:
     async def _stream_multimodal(self, messages: Sequence[object], signal: CancellationToken, prepared) -> AsyncIterator[ProviderEvent]:
         prompt = self.role_system_prompt(tool_prompt=prepared.tool_prompt, request_context=prepared.context)
         wire_messages: list[dict[str, object]] = [{"role": "system", "content": prompt}]
-        for message in messages:
+        for message in prepared.runtime_messages:
             if isinstance(message, UserMessage):
                 wire_messages.append({"role": "user", "content": _user_content(message)})
             elif isinstance(message, AssistantMessage):
@@ -788,7 +807,7 @@ class MeidoProvider:
         try:
             options = ({'max_tokens': prepared.max_tokens} if prepared.max_tokens is not None
                        and 'max_tokens' in inspect.signature(self.adapter.stream_messages).parameters else {})
-            await self._start_request(signal, prepared)
+            await self._start_request(signal, prepared, wire_messages)
             source = self.adapter.stream_messages(wire_messages, prepared.configuration, **options)
             async for delta in source:
                 await asyncio.to_thread(self._check_request, signal)
@@ -818,6 +837,8 @@ def _user_content(message: UserMessage) -> str | list[dict[str, object]]:
     parts: list[dict[str, object]] = [{"type": "text", "text": message.content}]
     for attachment in message.attachments:
         if attachment.image is not None:
+            if label := image_label(attachment.image):
+                parts.append({'type': 'text', 'text': label})
             parts.append({
                 "type": "image_url",
                 "image_url": {
