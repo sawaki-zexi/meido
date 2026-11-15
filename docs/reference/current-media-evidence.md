@@ -1,5 +1,11 @@
 # 当前图片输入依据
 
+状态：当前（#375 实现分支，尚未合入主线）。
+
+事实来源：[图片视图与请求记录](../../backend/app/agent_runtime/image_evidence.py)、[模型请求边界](../../backend/app/agent_runtime/meido_provider.py)、[自然聊天媒体准备](../../backend/app/channels/natural_media.py)、[自然回合](../../backend/app/channels/natural_turn.py)、[QQ 适配器](../../backend/app/channels/napcat.py)、[请求证据测试](../../tests/python/test_current_image_evidence.py)、[渠道接收与公开历史测试](../../tests/python/channels/test_current_media_turn.py)、[网页消息展示测试](../../web/src/features/channels/ChannelImages.test.tsx)。下述行为和字段为已从源码及测试提取的事实；真实模型语义质量仍未核验。
+
+最后核验：2026-11-15，提交 `b16ea44`。
+
 适用：#375，增量父规格 #374。此文描述本实现的审计边界，不表示真实模型质量已经验收。
 
 普通聊天和自然聊天从已授权来源准备图片。静态图保留内容 SHA-256；GIF、动画 WebP/APNG 使用首、中、末最多三帧 PNG 视图，记录原件 SHA-256、实际帧位置、总帧数和每个视图 SHA-256。超过三帧的动画明确标记覆盖不完整。旧的仅校验文件签名、不能解析动画信息的静态附件保留原输入兼容性，覆盖记为 unknown，不冒充完整读取。准备成功不等于发出请求，更不等于模型正确理解。
@@ -14,4 +20,4 @@
 
 QQ `face`、`mface` 通过既有消息文字展示类型、允许的短平台标识和“像素读取不支持、原生发送不支持”。未验证原生适配器能力前不推测图意、不请求隐藏 URL，也不伪造原生发送。每条消息最多展示 16 个原生段；异常 ID 显示无效，省略 URL、密钥和任意说明字段。引用原生段经过同样处理。
 
-固定样本集位于 `tests/fixtures/current-media-quality.json`，含 20 个确定性合成图片/GIF场景及期望语义标注。自动测试运行真实文件加载、采样、请求序列化和摘要比对；QQ/自然聊天测试走真实接收与运行存储，网页测试走现有消息组件。远端模型和 QQ 使用替身，语义标注尚未交由真实模型评分；这些结果不能报告为 OCR、图片理解或表情选择质量通过。
+[固定样本集](../../tests/fixtures/current-media-quality.json)含 20 个确定性合成图片/GIF场景及期望语义标注。自动测试运行真实文件加载、采样、请求序列化和摘要比对；QQ/自然聊天测试走真实接收与运行存储，网页测试走现有消息组件。远端模型和 QQ 使用替身，语义标注尚未交由真实模型评分；这些结果不能报告为 OCR、图片理解或表情选择质量通过。
