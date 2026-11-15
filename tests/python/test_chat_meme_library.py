@@ -151,7 +151,8 @@ def test_candidate_identity_stable_until_file_replaced(library,context):
     same,=library.candidates('alice')
     assert same.id == first.id
     first.path.write_bytes(picture(color='green'))
-    replacement,=library.candidates('alice')
+    assert library.candidates('alice') == ()  # The old meaning does not describe replacement bytes.
+    replacement,=library.candidates('alice', explicit=True)
     assert replacement.id != first.id
 
 

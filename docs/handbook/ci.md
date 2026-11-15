@@ -3,22 +3,25 @@
 状态：当前
 
 事实来源：[CI 工作流](../../.github/workflows/ci.yml)、[Pages 工作流](../../.github/workflows/pages.yml)。
-最后核验：2026-10-29。
+最后核验：2026-11-15。
 
 ## 检查
 
 面向 `main` 的 PR 和 `main` 的 push 均执行前端检查与后端烟测；新提交取消同一 PR 或分支的旧运行。
 不按改动路径跳过检查，纯文档修改也执行测试。
 
-分支保护要求以下四个检查，工作流直接运行并报告结果：
+当前工作流运行以下检查；实际合并门禁以远端分支保护为准：
 
 - `Frontend build`：TypeScript 检查、网页与桌宠构建、前端测试、以 `/meido/` 为基路径的独立落地页构建。
 - `Backend tests (core)`：角色保存/编辑/删除、模型配置、聊天流与持久化、工具调用的基本流程。
 - `Backend tests (channels)`：QQ 消息解析、发送与渠道回复提交的基本流程。
-- `Backend tests (drift)`：启用内置表情库维护与读取配置。
+- `Backend tests (drift)`：表情维护配置、素材管理、持久说明、原件收藏与发送、来源撤权及符号链接防护。
+- `Backend tests (chat-lifecycle)`：聊天、后台任务和运行资源生命周期。
+- `Backend tests (context-preparation)`：上下文、记忆、能力与工具暴露。
+- `Windows chat E2E`：独立 Windows 服务启动器和聊天端到端验收。
 
-后端只运行工作流中列出的 13 项烟测，三组并行，每组限时 5 分钟，不重试失败。
-保留三个名称是为了兼容现有分支保护，每组都执行真实测试。
+后端运行工作流中明确列出的相关回归，五组并行；channels 限时 10 分钟，其他组 5 分钟，不重试失败。
+素材组保留全部符号链接安全用例并在 Linux 执行。旧自然插画单阶段模型用例 `test_natural_qq_uses_enabled_role_illustrations_without_tools` 在基线 `b2e8106` 也失败，暂未加入该组；当前自然候选范围由 `test_material_message_scope.py` 覆盖，旧用例未删除或放宽断言。
 结果和耗时直接查看 Actions 日志。
 PR 的 Checks 页面显示检查结果，合并条件由 GitHub 分支保护执行。
 

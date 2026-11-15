@@ -10,6 +10,70 @@ const material = (overrides: Partial<RoleMaterial> = {}): RoleMaterial => ({ id:
 const library = (items = [material()], revision = 'rev1'): MaterialLibrary => ({ materials: items, categories: [...new Set(items.map(item => item.category))].map(name => ({ name, description: '', count: items.filter(item => item.category === name).length, enabled: true })), revision, storageLabel: '当前角色工作区 / workspace/memes' });
 const routes = (body = library()) => ({ 'GET /api/roles/r1/materials': () => ({ body }) });
 
+it.each(['role', 'conversation'] as const)('states the actual %s meaning scope before editing', async meaningScope => {
+  fakeBackend(routes(library([material({ meaningScope })])));
+  const user = userEvent.setup();
+  render(<RoleMaterialLibrary roleId="r1" roleName="爱丽丝" />);
+  await user.click(await screen.findByRole('button', { name: '预览开心.gif' }));
+  await user.click(screen.getByText('编辑说明'));
+  expect(screen.getByText(meaningScope === 'role'
+    ? '正在编辑当前角色共享的名称与说明，不会改动已有群专属说明。'
+    : '正在编辑原收藏会话的名称与说明，修改不会共享到其他会话。')).toBeVisible();
+});
+
+it('acknowledges a duplicate upload that fills the pending description', async () => {
+  fakeBackend({ ...routes(), 'POST /api/roles/r1/materials\\?.*': () => ({ body: {
+    material: material(), revision: 'rev2', deduplicated: true, descriptionOutcome: 'filled',
+  } }) });
+  const user = userEvent.setup();
+  render(<RoleMaterialLibrary roleId="r1" roleName="爱丽丝" />);
+  await screen.findByText('开心.gif');
+  await user.click(screen.getByRole('button', { name: '导入素材' }));
+  await user.upload(screen.getByLabelText('图片文件'), new File(['gif'], 'same.gif', { type: 'image/gif' }));
+  await user.type(screen.getByRole('textbox', { name: '描述（可选）' }), '补充说明');
+  await user.click(screen.getByRole('button', { name: '确认导入' }));
+  expect(await screen.findByText('已补充当前来源的说明，原图没有重复保存。')).toBeVisible();
+});
+
+it('edits a pending meaning and disables chatting using the last acknowledged revision', async () => {
+  let item = material({ description: '', semanticStatus: 'pending' });
+  const { calls } = fakeBackend({ ...routes(library([item])), 'PATCH /api/roles/r1/materials/m1': init => {
+    const { expectedRevision, ...changes } = JSON.parse(String(init?.body));
+    expect(expectedRevision).toBe(calls.filter(call => call.method === 'PATCH').length === 1 ? 'rev1' : 'rev2');
+    item = { ...item, ...changes, semanticStatus: 'ready', basis: { kind: 'owner_confirmed' } };
+    return { body: { material: item, revision: 'rev2' } };
+  } });
+  const user = userEvent.setup();
+  render(<RoleMaterialLibrary roleId="r1" roleName="爱丽丝" />);
+  expect(await screen.findByText('待补充说明，不自动推荐')).toBeVisible();
+  await user.click(screen.getByRole('button', { name: '预览开心.gif' }));
+  await user.click(screen.getByText('编辑说明'));
+  await user.clear(screen.getByRole('textbox', { name: '素材名称' }));
+  await user.type(screen.getByRole('textbox', { name: '素材名称' }), '编译失败');
+  await user.type(screen.getByRole('textbox', { name: '素材说明' }), '写不出代码');
+  await user.click(screen.getByRole('button', { name: '保存修改' }));
+  expect(await screen.findByRole('dialog', { name: '编译失败' })).toBeVisible();
+  await user.keyboard('{Escape}');
+  await user.click(screen.getByRole('checkbox', { name: '编译失败用于聊天' }));
+  expect(await screen.findByText('已停用')).toBeVisible();
+  expect(calls.filter(call => call.method === 'PATCH')).toHaveLength(2);
+});
+
+it('retains the edited draft on revision conflict and requires reading before retry', async () => {
+  const { calls } = fakeBackend({ ...routes(), 'PATCH /api/roles/r1/materials/m1': () => ({ status: 409, body: { detail: '素材库已经变化' } }) });
+  const user = userEvent.setup();
+  render(<RoleMaterialLibrary roleId="r1" roleName="爱丽丝" />);
+  await user.click(await screen.findByRole('button', { name: '预览开心.gif' }));
+  await user.click(screen.getByText('编辑说明'));
+  await user.clear(screen.getByRole('textbox', { name: '素材说明' }));
+  await user.type(screen.getByRole('textbox', { name: '素材说明' }), '后来纠正');
+  await user.click(screen.getByRole('button', { name: '保存修改' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('素材库已经变化');
+  expect(screen.getByRole('textbox', { name: '素材说明' })).toHaveValue('后来纠正');
+  expect(screen.getByRole('button', { name: '保存修改' })).toBeDisabled();
+  expect(calls.filter(call => call.method === 'PATCH')).toHaveLength(1);
+});
+
 it('shows owner-scoped storage, category/search, original GIF preview and returns focus after closing', async () => {
   const { calls } = fakeBackend(routes(library([material(), material({ id: 'm2', name: '晚安.png', category: '晚安', description: '休息一下', aliases: [], format: 'PNG', animated: false })])));
   const user = userEvent.setup();
@@ -28,7 +92,7 @@ it('shows owner-scoped storage, category/search, original GIF preview and return
   expect(within(dialog).getByRole('img', { name: '开心.gif 原图' })).toHaveAttribute('src', '/api/roles/r1/materials/m1/image');
   expect(within(dialog).getByText('GIF · 动图')).toBeVisible();
   expect(within(dialog).getByText('主人导入')).toBeVisible();
-  expect(within(dialog).getByText('挥手打招呼')).toBeVisible();
+  expect(within(dialog).getByText('挥手打招呼', { selector: 'dd' })).toBeVisible();
   await user.keyboard('{Escape}');
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   expect(opener).toHaveFocus();
