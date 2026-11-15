@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from dataclasses import replace
 from time import perf_counter
+from threading import Event
 
 import pytest
 
@@ -228,8 +229,8 @@ def test_many_matches_bound_result_and_prioritize_requested_originals(tmp_path):
     search, fetch = history_tools(sessions, channels, thread)
     found = execute(search, {'query': 'needle', 'limit': 50}, context)
     assert len(json.dumps(found, ensure_ascii=False)) <= 24000
-    assert 0 < found['count'] <= 50 and found['omitted_count'] > 0
-    assert found['next_offset'] == 50
+    assert 0 < found['count'] < 50 and found['has_more']
+    assert found['next_offset'] == found['count']
     fetched = execute(fetch, {'source_refs': [record['id'] for record in records[:50]], 'context': 10}, context)
     assert len(json.dumps(fetched, ensure_ascii=False)) <= 24000
     assert fetched['count'] <= 50 and fetched['matched_count'] == 50
@@ -238,6 +239,66 @@ def test_many_matches_bound_result_and_prioritize_requested_originals(tmp_path):
     missing = execute(fetch, {'ids': ['x' * 1990 + str(number) for number in range(50)]}, context)
     assert len(json.dumps(missing, ensure_ascii=False)) <= 24000
     assert missing['missing_count'] == 50 and missing['count'] == 0
+
+
+@pytest.mark.parametrize('lengths', [[1000] * 52, [9000, 9000, 100, 9000, 100, 9000]])
+def test_search_pages_keep_every_match_when_response_budget_trims_results(tmp_path, lengths):
+    sessions, channels, thread, context = group_history(tmp_path)
+    records = [hear(channels, thread, 'needle ' + '材' * length, str(number))
+        for number, length in enumerate(lengths)]
+    search, _ = history_tools(sessions, channels, thread)
+    seen, offset = [], 0
+    for _ in range(len(records) + 1):
+        # Exercise the actual tool worker and database without an event loop;
+        # the existing runtime tests cover its async dispatch and revocation.
+        result = search._execute({'query': 'needle', 'limit': 50, 'offset': offset}, context, Event())
+        assert len(result.content) <= 24000
+        page = json.loads(result.content)
+        assert page['matched_count'] == len(records)
+        assert page['count'] == len(page['messages']) > 0
+        seen.extend(item['id'] for item in page['messages'])
+        if not page['has_more']:
+            assert page['next_offset'] is None
+            break
+        assert page['next_offset'] == offset + page['count']
+        offset = page['next_offset']
+    assert seen == [record['id'] for record in reversed(records)]
+
+
+def test_search_shortens_escaped_preview_without_losing_its_source(tmp_path):
+    sessions, channels, thread, context = group_history(tmp_path)
+    original = hear(channels, thread, 'needle ' + '\x01' * 10000, 'escaped-search')
+    search, fetch = history_tools(sessions, channels, thread)
+    result = search._execute({'query': 'needle'}, context, Event())
+    assert len(result.content) <= 24000
+    page = json.loads(result.content)
+    assert page['count'] == page['matched_count'] == 1
+    assert page['has_more'] is False and page['next_offset'] is None
+    preview = page['messages'][0]
+    assert preview['id'] == preview['source_ref'] == original['id']
+    assert original['content'].startswith(preview['preview'])
+    assert preview['preview'] and preview['truncated'] is True
+    assert preview['source']['senderId'] == 'member'
+    raw = fetch._execute({'source_ref': original['id'], 'content_limit': 1000}, context, Event())
+    assert json.loads(raw.content)['messages'][0]['content'] == original['content'][:1000]
+
+
+def test_search_reports_oversized_source_and_continues_to_the_next_match(tmp_path):
+    sessions, channels, thread, context = group_history(tmp_path)
+    readable = hear(channels, thread, 'needle readable', 'readable')
+    oversized = channels.listening.hear(thread, 'needle oversized', 'oversized', {
+        'senderId': 'member', 'senderName': '名' * 30000, 'senderIsOwner': False})
+    search, _ = history_tools(sessions, channels, thread)
+    first = search._execute({'query': 'needle'}, context, Event())
+    assert len(first.content) <= 24000
+    page = json.loads(first.content)
+    assert page['count'] == 0 and page['matched_count'] == 2
+    assert page['omitted_source_refs'] == [oversized['id']]
+    assert page['has_more'] and page['next_offset'] == 1
+    last = search._execute({'query': 'needle', 'offset': page['next_offset']}, context, Event())
+    page = json.loads(last.content)
+    assert [item['id'] for item in page['messages']] == [readable['id']]
+    assert page['has_more'] is False and page['next_offset'] is None
 
 
 def test_natural_turn_searches_and_fetches_saved_hearing(natural, monkeypatch, record_property):
