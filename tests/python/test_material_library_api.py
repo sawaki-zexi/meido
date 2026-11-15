@@ -94,13 +94,16 @@ def test_legacy_disabled_chat_and_drift_images_share_one_gallery(api):
     assert all(client.get(x['imageUrl']).status_code == 200 for x in listing['materials'])
 
 
-def test_dedup_preserves_prior_description_category_and_revision(api):
+def test_dedup_preserves_prior_meaning_and_records_conflicting_proposal(api):
     client, _, _ = api
     first = put(client).json()
     second = put(client, category='不同类别', description='不要覆盖').json()
     assert second['deduplicated'] is True
-    assert second['material'] == first['material']
-    assert second['revision'] == first['revision']
+    assert second['material']['description'] == first['material']['description']
+    assert second['material']['category'] == first['material']['category']
+    assert second['material']['assetId'] == first['material']['assetId']
+    assert second['descriptionOutcome'] == 'proposal_retained'
+    assert second['revision'] != first['revision']
     assert len(current(client)['materials']) == 1
 
 

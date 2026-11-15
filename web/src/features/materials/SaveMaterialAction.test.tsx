@@ -36,3 +36,13 @@ it('keeps a rejected description for explicit correction and never retries autom
   expect(screen.getByRole('textbox')).toHaveValue('开心');
   expect(calls).toHaveLength(1);
 });
+
+it('reports that a conflicting duplicate description was retained only as a proposal', async () => {
+  fakeBackend({ 'POST /api/roles/r1/materials/from-message': () => ({ body: { deduplicated: true, descriptionOutcome: 'proposal_retained' } }) });
+  const user = userEvent.setup();
+  render(<SaveMaterialAction roleId="r1" messageId="message1" attachmentId="gif1" />);
+  await user.click(screen.getByRole('button', { name: '保存为表情' }));
+  await user.type(screen.getByRole('textbox'), '不同的说明');
+  await user.click(screen.getByRole('button', { name: '确认保存' }));
+  expect(await screen.findByRole('status')).toHaveTextContent('另存为建议，暂不用于聊天');
+});

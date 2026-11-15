@@ -148,6 +148,7 @@ jobs:
               tests/python/test_material_library_api.py
               tests/python/test_chat_meme_library.py
               tests/python/test_material_semantics.py
+              tests/python/test_material_duplicate_meaning.py
               tests/python/channels/test_material_message_scope.py
               tests/python/channels/test_meme_tools.py
               tests/python/channels/test_role_reactions.py

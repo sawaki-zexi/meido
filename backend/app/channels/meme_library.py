@@ -91,9 +91,14 @@ class MemeCandidate:
     basis_kind: str = field(default='legacy_description', kw_only=True)
     semantic_status: str = field(default='ready', kw_only=True)
     meaning_digest: str = field(default='', kw_only=True)
+    display_category: str = field(default='', kw_only=True)
+
+    @property
+    def category_label(self):
+        return self.display_category or self.category
 
     def public(self):
-        return {'id': self.id, 'category': self.category, 'description': self.description,
+        return {'id': self.id, 'category': self.category_label, 'description': self.description,
                 'aliases': list(self.aliases), 'assetId': self.asset_id,
                 'semanticRevision': self.semantic_revision, 'basis': self.basis_kind,
                 'semanticStatus': self.semantic_status}
@@ -162,13 +167,14 @@ class ChatMemeLibrary:
         result = []
         for category, entry, path, raw, media in self._items(role_id):
             digest = _hash(raw)
-            meaning = semantics.meaning_for(self.library, role_id, path, digest, entry)
             session_key = getattr(context, 'session_key', '')
+            meaning = semantics.effective(semantics.meaning_for(self.library, role_id, path, digest, entry),
+                session_key, self.source_validator, category=category, aliases=entry.get('aliases', []))
             if (not meaning['enabled'] or not semantics.source_allowed(meaning, session_key, self.source_validator)
                     or not explicit and meaning['semanticStatus'] != 'ready'):
                 continue
             desc = meaning['description']
-            aliases = entry.get('aliases', [])
+            aliases = meaning['aliases']
             aliases = tuple(value for value in aliases if isinstance(value, str)) if isinstance(aliases, list) else ()
             if not isinstance(desc, str):
                 desc = ''
@@ -178,10 +184,10 @@ class ChatMemeLibrary:
             candidate = MemeCandidate(identifier, role_id, category, desc[:2000], aliases[:32],
                 path, identity, self._root_identity(role_id), digest, media,
                 asset_id=meaning['assetId'], semantic_revision=meaning['revision'],
-                scope_session='' if any(source.get('scope') == 'role' for source in meaning['sources']) else session_key,
+                scope_session=session_key,
                 explicit=explicit, basis_kind=meaning['basis']['kind'], semantic_status=meaning['semanticStatus'],
-                meaning_digest=meaning_digest)
-            searchable = ' '.join((category, meaning['name'], desc, *aliases)).casefold()
+                meaning_digest=meaning_digest, display_category=meaning['displayCategory'])
+            searchable = ' '.join((candidate.category_label, meaning['name'], desc, *aliases)).casefold()
             score = sum(token in searchable for token in query.casefold().split())
             if not query.strip() or score:
                 result.append((score, path.name, candidate))
@@ -198,7 +204,9 @@ class ChatMemeLibrary:
             self._path(role_id, candidate.path)
             document, _ = self._manifest(role_id)
             entry = document['categories'].get(candidate.category)
-            meaning = semantics.meaning_for(self.library, role_id, candidate.path, candidate.sha256, entry or {})
+            meaning = semantics.effective(semantics.meaning_for(self.library, role_id, candidate.path,
+                candidate.sha256, entry or {}), candidate.scope_session, self.source_validator,
+                category=candidate.category, aliases=(entry or {}).get('aliases', []))
             return bool(isinstance(entry, dict) and entry.get('enabled') is True
                 and meaning['enabled'] and meaning['assetId'] == candidate.asset_id
                 and meaning['revision'] == candidate.semantic_revision
@@ -269,18 +277,23 @@ class ChatMemeLibrary:
         metadata = root.parent / '.meido-memes' / 'chat' / (digest + '.json')
         metadata_before = _read(metadata, semantics.MAX_RECORD_BYTES) if metadata.exists() else None
         source = source or {'kind': 'chat', 'scope': 'role', 'attachmentId': attachment['id']}
+        basis = meaning or {'kind': 'legacy_description' if description else 'unverified'}
+        author = {'kind': 'model' if basis['kind'] == 'model_observation' else 'owner',
+            'runId': context.run_id, 'callId': context.tool_call_id}
+        outcome = 'saved' if description else 'pending'
         relative = target.relative_to(root).as_posix()
         if existing or metadata_before is not None:
             prior = semantics.meaning_for(self.library, role_id, target, digest,
                 existing[1] if existing else document['categories'].get(category, {}))
-            if description and description != prior['description']:
-                source = {**source, 'description': description, 'basis': meaning or {'kind': 'legacy_description'},
-                    'author': {'runId': context.run_id, 'callId': context.tool_call_id}}
-            record = semantics.add_source(prior, source, relative)
+            record, outcome = semantics.collect(prior, source, relative, description,
+                name=attachment.get('name', target.name), basis=basis, author=author, category=category)
         else:
             record = semantics.new_meaning(role_id, digest, relative, description, name=attachment.get('name', target.name),
-                basis=meaning, source=source, author={'kind': 'model' if meaning and meaning['kind'] == 'model_observation' else 'owner',
-                    'runId': context.run_id, 'callId': context.tool_call_id})
+                basis=basis, source=source, author=author, category=category)
+        visible = semantics.effective(record, source.get('sessionKey', ''), self.source_validator,
+            category=actual_category)
+        response = {**semantics.public_meaning(visible), 'descriptionOutcome': outcome,
+            'description': visible['description'], 'category': visible['displayCategory']}
         metadata_raw = semantics.encode(record)
         desired = json.loads(json.dumps(document))
         if not existing and category not in desired['categories']:
@@ -298,8 +311,7 @@ class ChatMemeLibrary:
             if (_identity(Path(attachment['path'])) != source_identity
                     or (_identity(target) if target.exists() else None) != target_identity):
                 raise PermissionError('original meme source or duplicate was replaced')
-            return {'status':'recorded','deduplicated':True,'sha256':digest,'category':actual_category,'bytes':len(raw),
-                    **semantics.public_meaning(record)}
+            return {'status':'recorded','deduplicated':True,'sha256':digest,'bytes':len(raw), **response}
         publication = _OwnerPublication(self.library, role_id, context, files, kind='owner_chat_copy')
         claim = (self.library.storage.claim(role_id, publication.operation,
             sum(len(data) for data in files.values()) + 32*1024, len(files)+5, context)
@@ -350,7 +362,7 @@ class ChatMemeLibrary:
         finally:
             publication.close()
         return {'status':'recorded','deduplicated':existing is not None,'sha256':digest,
-                'category':actual_category,'bytes':len(raw), **semantics.public_meaning(record)}
+                'bytes':len(raw), **response}
 
     def reference(self, role_id, candidate, context, *, principal='owner'):
         # Host-only provenance, never a model argument or an authority grant.

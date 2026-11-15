@@ -30,10 +30,15 @@ export type MaterialLibrary = {
   storageLabel: string;
 };
 const path = (roleId: string) => `/api/roles/${encodeURIComponent(roleId)}/materials`;
+export type CollectionResult = {
+  material: RoleMaterial; deduplicated: boolean; revision: string;
+  descriptionOutcome?: 'pending' | 'saved' | 'unchanged' | 'filled' | 'proposal_retained';
+  effectiveSemanticStatus?: 'ready' | 'pending' | 'content_changed';
+};
 export const materials = {
   list: (roleId: string, signal?: AbortSignal) => api<MaterialLibrary>(path(roleId), { signal }),
   import: (roleId: string, file: File, category: string, description: string, expectedRevision: string) =>
-    api<{ material: RoleMaterial; deduplicated: boolean; revision: string }>(`${path(roleId)}?${new URLSearchParams({ category, description, expectedRevision })}`, {
+    api<CollectionResult>(`${path(roleId)}?${new URLSearchParams({ category, description, expectedRevision })}`, {
       method: 'POST', body: file, headers: { 'content-type': file.type || ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' }[file.name.split('.').pop()?.toLowerCase() ?? ''] ?? 'application/octet-stream'), 'x-material-filename': encodeURIComponent(file.name) },
     }),
   remove: (roleId: string, id: string, expectedRevision: string) =>
@@ -43,7 +48,7 @@ export const materials = {
       method: 'PATCH', body: JSON.stringify({ expectedRevision, ...changes }),
     }),
   saveMessage: (roleId: string, messageId: string, attachmentId: string, description: string) =>
-    api<{ material: RoleMaterial; revision: string; deduplicated: boolean }>(`${path(roleId)}/from-message`, {
+    api<CollectionResult>(`${path(roleId)}/from-message`, {
       method: 'POST', body: JSON.stringify({ messageId, attachmentId, description }),
     }),
 };

@@ -298,7 +298,8 @@ class OwnerMaterialLibrary:
             item = next((entry.public for entry in snapshot.entries if entry.digest == result['sha256']), None)
             if item is None:
                 raise MaterialConflict('collection changed before confirmation')
-            return {'material': item, 'deduplicated': result['deduplicated'], 'revision': snapshot.revision}
+            return {'material': item, 'deduplicated': result['deduplicated'], 'revision': snapshot.revision,
+                'descriptionOutcome': result['descriptionOutcome'], 'effectiveSemanticStatus': result['semanticStatus']}
 
     def _import_image(self, role_id, raw, filename, media_type, category, description, expected_revision, context):
         root = self._root(role_id)
@@ -319,19 +320,25 @@ class OwnerMaterialLibrary:
         if snapshot.revision != expected_revision:
             raise MaterialConflict('stale observation')
         digest = _hash(raw)
+        name = filename.replace('\\', '/').rsplit('/', 1)[-1].strip()[:160] or ('image.' + extension)
         existing = next((item for item in snapshot.entries if item.digest == digest), None)
         manifest = root / 'manifest.json'
         if existing:
             prior = semantics.meaning_for(self.library, role_id, existing.path, digest, snapshot.manifest['categories'][existing.public['category']])
-            updated = semantics.add_source(prior, {'kind': 'owner_import', 'scope': 'role'}, existing.path.relative_to(root).as_posix())
+            updated, outcome = semantics.collect(prior, {'kind': 'owner_import', 'scope': 'role'},
+                existing.path.relative_to(root).as_posix(), description, name=name,
+                basis={'kind': 'owner_confirmed' if description else 'unverified'}, author={'kind': 'owner'}, category=category)
+            status = semantics.effective(updated, '', self.chat.source_validator)['semanticStatus']
             if updated != prior:
                 self._publish_meaning(role_id, snapshot, existing, updated, context)
                 latest = self._snapshot(role_id)
-                return {'material': self._entry(latest, existing.public['id']).public, 'deduplicated': True, 'revision': latest.revision}
+                return {'material': self._entry(latest, existing.public['id']).public, 'deduplicated': True,
+                    'revision': latest.revision, 'descriptionOutcome': outcome, 'effectiveSemanticStatus': status}
             with self._locks(role_id, (manifest, existing.path), context):
                 self._current(role_id, snapshot)
                 self._original(role_id, existing)
-            return {'material': existing.public, 'deduplicated': True, 'revision': snapshot.revision}
+            return {'material': existing.public, 'deduplicated': True, 'revision': snapshot.revision,
+                'descriptionOutcome': outcome, 'effectiveSemanticStatus': status}
         target = self.chat._path(role_id, root / category / (digest + '.' + extension))
         reused_identity = None
         if target.exists():
@@ -346,12 +353,11 @@ class OwnerMaterialLibrary:
         desired = json.loads(json.dumps(snapshot.manifest))
         if category not in desired['categories']:
             desired['categories'][category] = {'desc': description, 'aliases': [], 'enabled': True}
-        name = filename.replace('\\', '/').rsplit('/', 1)[-1].strip()[:160] or ('image.' + extension)
         files = {} if reused_identity is not None else {target: raw}
         if not metadata.exists():
             files[metadata] = semantics.encode(semantics.new_meaning(role_id, digest, target.relative_to(root).as_posix(),
                 description, name=name, basis={'kind': 'owner_confirmed' if description else 'unverified'},
-                source={'kind': 'owner_import', 'scope': 'role'}, author={'kind': 'owner'}))
+                source={'kind': 'owner_import', 'scope': 'role'}, author={'kind': 'owner'}, category=category))
         if desired != snapshot.manifest or not manifest.exists():
             files[manifest] = _json(desired)
         publication = _OwnerPublication(self.library, role_id, context, files, kind='owner_chat_copy')

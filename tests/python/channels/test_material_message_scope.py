@@ -119,3 +119,45 @@ def test_pending_gif_collection_restarts_and_sends_only_by_explicit_owner_tool(m
         for segment in params['message'] if segment['type'] == 'image']
     assert len(images) == 1
     assert base64.b64decode(images[0]['data']['file'].removeprefix('base64://')) == raw
+
+
+def test_duplicate_group_source_never_reauthorizes_another_groups_meaning(meme_turn):
+    state = meme_turn
+    a, attachment, raw, saved = collect(state, 'A群秘密含义')
+    b = state.channels.ensure_channel_thread(state.role.id, 'qq', state.adapter.account_id, '200', 'group')
+    def save_b(identifier, description=''):
+        other = save_attachment(state.roles.workspace_path(state.role.id), identifier + '.gif', 'image/gif', raw)
+        _, message = state.channels.append_event(b, direction='inbound', content='收藏这张',
+            external_message_id=identifier, metadata={'senderId': '11', 'senderIsOwner': True,
+                'groupReplyRevision': state.channels.group_reply_policy(state.role.id, state.adapter.account_id, '200')[1],
+                'attachments': [other]})
+        response = TestClient(main.app).post(f'/api/roles/{state.role.id}/materials/from-message', json={
+            'messageId': message.id, 'attachmentId': other['id'], 'description': description})
+        assert response.status_code == 200, response.text
+        return response.json()
+    try:
+        save_b('b-blank')
+        library = main._chat_meme_library()
+        ctx_a = ToolContext(state.role.id, a.session_key, 'a', CancellationToken(), 'choose')
+        ctx_b = ToolContext(state.role.id, b.session_key, 'b', CancellationToken(), 'choose')
+        old_a, = library.candidates(state.role.id, context=ctx_a)
+        assert library.candidates(state.role.id, context=ctx_b) == ()
+        pending, = library.candidates(state.role.id, context=ctx_b, explicit=True)
+        assert library.reference(state.role.id, pending, ctx_b)[1] == raw
+        state.channels.set_group_replies(state.role.id, state.adapter.account_id, '100', False)
+        assert not library.valid(state.role.id, old_a)
+        assert library.candidates(state.role.id, context=ctx_b) == ()
+        assert save_b('b-new-attachment', 'B群补充说明')['descriptionOutcome'] == 'filled'
+        own, = library.candidates(state.role.id, context=ctx_b)
+        assert own.description == 'B群补充说明'
+        record = json.loads(next((state.root.parent / '.meido-memes/chat').glob('*.json')).read_text(encoding='utf-8'))
+        assert len(record['scopedMeanings']) == 1  # New message/attachment is still the same authority scope.
+        state.channels.set_group_replies(state.role.id, state.adapter.account_id, '200', False)
+        state.channels.set_group_replies(state.role.id, state.adapter.account_id, '200', True)
+        save_b('b-new-permission')
+        assert not library.valid(state.role.id, own)
+        assert library.candidates(state.role.id, context=ctx_b) == ()
+        fresh, = library.candidates(state.role.id, context=ctx_b, explicit=True)
+        assert fresh.description == '' and library.reference(state.role.id, fresh, ctx_b)[1] == raw
+    finally:
+        asyncio.run(main._proactive.close())

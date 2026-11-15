@@ -4,6 +4,7 @@ import { materials, type MaterialLibrary, type RoleMaterial } from '../../api/ma
 import { Dialog } from '../../ui/Dialog';
 import { Icon } from '../../ui/Icon';
 import './materials.css';
+import { collectionFeedback } from './collectionFeedback';
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const sourceLabels: Record<RoleMaterial['source'], string> = { owner_import: '主人导入', chat: '聊天保存', drift: 'Drift 整理', legacy: '已有素材' };
@@ -91,7 +92,7 @@ function MaterialLibraryContent({ roleId, roleName }: { roleId: string; roleName
       setFocusAfterMutation(importOpenRef.current);
       setImportOpen(false); setFile(null); setDescription(''); setImportCategory('');
       setLibrary(current => current ? { ...current, revision: result.revision, materials: [...current.materials.filter(item => item.id !== result.material.id), result.material] } : current);
-      setFeedback(result.deduplicated ? '这张图片已在素材库中，没有重复导入。' : '素材已导入当前角色的素材库。');
+      setFeedback(collectionFeedback(result, result.deduplicated ? '这张图片已在素材库中，没有重复导入。' : '素材已导入当前角色的素材库。'));
       await load();
     } catch (cause) {
       if (alive.current) { setActionError(errorMessage(cause, '无法导入素材')); setNeedsRead(requiresRead(cause)); }

@@ -10,6 +10,20 @@ const material = (overrides: Partial<RoleMaterial> = {}): RoleMaterial => ({ id:
 const library = (items = [material()], revision = 'rev1'): MaterialLibrary => ({ materials: items, categories: [...new Set(items.map(item => item.category))].map(name => ({ name, description: '', count: items.filter(item => item.category === name).length, enabled: true })), revision, storageLabel: '当前角色工作区 / workspace/memes' });
 const routes = (body = library()) => ({ 'GET /api/roles/r1/materials': () => ({ body }) });
 
+it('acknowledges a duplicate upload that fills the pending description', async () => {
+  fakeBackend({ ...routes(), 'POST /api/roles/r1/materials\\?.*': () => ({ body: {
+    material: material(), revision: 'rev2', deduplicated: true, descriptionOutcome: 'filled',
+  } }) });
+  const user = userEvent.setup();
+  render(<RoleMaterialLibrary roleId="r1" roleName="爱丽丝" />);
+  await screen.findByText('开心.gif');
+  await user.click(screen.getByRole('button', { name: '导入素材' }));
+  await user.upload(screen.getByLabelText('图片文件'), new File(['gif'], 'same.gif', { type: 'image/gif' }));
+  await user.type(screen.getByRole('textbox', { name: '描述（可选）' }), '补充说明');
+  await user.click(screen.getByRole('button', { name: '确认导入' }));
+  expect(await screen.findByText('已补充当前来源的说明，原图没有重复保存。')).toBeVisible();
+});
+
 it('edits a pending meaning and disables chatting using the last acknowledged revision', async () => {
   let item = material({ description: '', semanticStatus: 'pending' });
   const { calls } = fakeBackend({ ...routes(library([item])), 'PATCH /api/roles/r1/materials/m1': init => {

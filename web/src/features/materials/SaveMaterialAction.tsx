@@ -3,6 +3,7 @@ import { errorMessage } from '../../api/client';
 import { materials } from '../../api/materials';
 import { Dialog } from '../../ui/Dialog';
 import './materials.css';
+import { collectionFeedback } from './collectionFeedback';
 
 export function SaveMaterialAction({ roleId, messageId, attachmentId }: { roleId: string; messageId: string; attachmentId: string }) {
   const [open, setOpen] = useState(false);
@@ -21,7 +22,7 @@ export function SaveMaterialAction({ roleId, messageId, attachmentId }: { roleId
         submitting.current = true; setBusy(true); setError('');
         try {
           const result = await materials.saveMessage(roleId, messageId, attachmentId, description.trim());
-          setFeedback(result.deduplicated ? '已在素材库中，已保留这次来源。' : '已保存到素材库。');
+          setFeedback(collectionFeedback(result, result.deduplicated ? '已在素材库中，已保留这次来源。' : '已保存到素材库。'));
           setOpen(false); setDescription('');
         } catch (cause) {
           setError(errorMessage(cause, '保存尚未确认，请到素材库核对后再操作。'));
