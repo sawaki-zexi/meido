@@ -193,7 +193,7 @@ class ChatMemeLibrary:
                             continue
                         fact = self.image_fact(role_id, path, roots, index)
                         yield category, entry, path, fact
-                    except (OSError, ValueError, PermissionError, _FileFailure):
+                    except (OSError, ValueError, PermissionError, _FileFailure, Image.DecompressionBombError):
                         continue
 
     def image_fact(self, role_id, path, roots, index=None):

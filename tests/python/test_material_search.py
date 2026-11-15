@@ -1,6 +1,8 @@
 """Real originals and public queries; index work is measured separately from dispatch."""
 import json
+import struct
 import time
+import zlib
 import pytest
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +13,15 @@ from backend.app.material_library import OwnerMaterialLibrary
 from test_material_library_api import api, put, current
 from backend.app.channels.meme_index import shared_index
 from backend.app.channels import meme_semantics
+
+
+def oversized_png():
+    # A real PNG header that Pillow rejects before allocating/decompressing
+    # pixels. Keep its IHDR checksum valid, without creating a huge image.
+    raw = bytearray(picture())
+    raw[16:24] = struct.pack('>II', 20_000, 20_000)
+    raw[29:33] = struct.pack('>I', zlib.crc32(raw[12:29]))
+    return bytes(raw)
 
 
 def seed(chat, count=8):
@@ -60,6 +71,35 @@ def test_warm_queries_across_facades_never_read_or_decode_unchanged_originals(tm
     (root / 'coding' / '000.png').write_bytes(picture(color='purple'))
     assert other.candidates('alice', '编译')
     assert len(reads) == len(decodes) == 1
+
+
+@pytest.mark.parametrize('surface', ['candidates', 'management'])
+@pytest.mark.parametrize('warm', [False, True], ids=['initial', 'changed-after-warmup'])
+def test_oversized_entry_is_isolated_without_reusing_old_observation(api, surface, warm):
+    from PIL import Image
+    from backend.app.channels.meme_library import _image
+    client, _, chat = api
+    root = seed(chat, 2)
+    bad_path = root / 'coding' / '001.png'
+    previous = None
+    if warm:
+        previous = next(item for item in chat.candidates('alice', '编译') if item.path == bad_path)
+        assert len(client.get('/api/roles/alice/materials').json()['materials']) == 2
+    raw = oversized_png()
+    with pytest.raises(Image.DecompressionBombError):
+        _image(raw)
+    bad_path.write_bytes(raw)
+    for _ in range(2):
+        if surface == 'candidates':
+            candidate, = chat.candidates('alice', '编译')
+            assert candidate.path.name == '000.png'
+        else:
+            response = client.get('/api/roles/alice/materials', params={'query': '编译'})
+            assert response.status_code == 200, response.text
+            material, = response.json()['materials']
+            assert material['name'] == '000.png' and response.json()['total'] == 1
+    if previous is not None:
+        assert not chat.valid('alice', previous)
 
 
 def test_http_search_pages_and_cache_recovery_keep_owner_meaning(api, monkeypatch):
