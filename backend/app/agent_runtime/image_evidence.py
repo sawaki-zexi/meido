@@ -119,10 +119,16 @@ def prepare_images(messages, *, supported: bool):
 
 
 def submitted_receipt(wire_messages, sources, *, boundary='model_adapter'):
-    from ..ai.model_types import ModelImageBlock
+    from ..ai.model_types import ModelAssistantMessage, ModelImageBlock, ModelToolResultMessage, ModelUserMessage
 
     images = []
-    def visit(value):
+    def visit_blocks(blocks, *, tool_results=False):
+        if not isinstance(blocks, (tuple, list)):
+            return
+        for block in blocks:
+            visit_block(block, tool_results=tool_results)
+
+    def visit_block(value, *, tool_results):
         if isinstance(value, ModelImageBlock):
             images.append((value.media_type, value.data_base64))
         elif isinstance(value, dict):
@@ -138,20 +144,29 @@ def submitted_receipt(wire_messages, sources, *, boundary='model_adapter'):
                     images.append((source.get('media_type', ''), source.get('data', '')))
             elif value.get('type') == 'image' and 'mimeType' in value and 'data' in value:
                 images.append((value['mimeType'], value['data']))
+            elif value.get('type') == 'tool_result' and tool_results:
+                # Anthropic tool results have a defined visual-content list.
+                visit_blocks(value.get('content'))
+            elif 'type' in value:
+                return  # Text, thinking and tool-call arguments are not images.
             elif isinstance(value.get('inlineData'), dict):
                 images.append((value['inlineData'].get('mimeType', ''), value['inlineData'].get('data', '')))
             elif isinstance(value.get('image'), dict) and isinstance(value['image'].get('source'), dict):
                 source = value['image']
                 images.append(('image/' + source.get('format', ''), source['source'].get('bytes', '')))
-            else:
-                for item in value.values():
-                    visit(item)
-        elif isinstance(value, (tuple, list)):
-            for item in value:
-                visit(item)
-        elif hasattr(value, 'content'):
-            visit(value.content)
-    visit(wire_messages)
+            elif isinstance(value.get('toolResult'), dict) and tool_results:
+                # Bedrock permits images here, but its `json` values and
+                # toolUse.input are ordinary data, never content containers.
+                visit_blocks(value['toolResult'].get('content'))
+
+    # Traverse protocol content containers only. Recursing arbitrary dictionaries
+    # would turn tool arguments, result details or schema defaults into evidence.
+    for message in wire_messages:
+        if isinstance(message, (ModelUserMessage, ModelAssistantMessage, ModelToolResultMessage)):
+            visit_blocks(message.content)
+        elif isinstance(message, dict) and message.get('role') in {'user', 'assistant', 'model', 'tool', 'toolResult'}:
+            visit_blocks(message.get('content'), tool_results=True)
+            visit_blocks(message.get('parts'))  # Google contents[].parts
     remaining = list(sources)
     records = []
     for index, (media, encoded) in enumerate(images):

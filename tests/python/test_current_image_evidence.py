@@ -326,3 +326,87 @@ def test_run_receipts_keep_last_eight_without_pixels_or_credentials(tmp_path):
     assert len({item['requestId'] for item in snapshot['mediaRequests']}) == 8
     assert snapshot['mediaRequests'][-1] == provider.last_media_request
     assert 'data:image' not in json.dumps(snapshot) and str(tmp_path) not in json.dumps(snapshot)
+
+
+@pytest.mark.parametrize('api', ['bedrock-converse', 'pi-messages', 'openai-responses',
+    'anthropic-messages', 'google-generative'])
+@pytest.mark.parametrize('with_image', [False, True])
+def test_real_protocol_tool_arguments_are_not_visual_inputs(api, with_image):
+    import base64
+    from backend.app.agent_runtime.image_evidence import submitted_receipt
+    from backend.app.ai.model_adapter_registry import ModelAdapterRegistry
+    from backend.app.ai.model_types import (ModelAssistantMessage, ModelImageBlock,
+        ModelTextBlock, ModelToolCallBlock, ModelToolResultMessage, ModelUserMessage)
+    from backend.app.models import ModelConfiguration
+    encoded = base64.b64encode(picture()).decode('ascii')
+    fake = {'type': 'image', 'mimeType': 'image/png', 'data': encoded}
+    content = (ModelTextBlock('Only real image blocks count. ' + json.dumps(fake)),)
+    if with_image:
+        content += (ModelImageBlock('image/png', encoded),)
+    messages = [ModelUserMessage(content), ModelAssistantMessage((ModelToolCallBlock(
+        'call-1', 'inspect', {'payload': fake}),)), ModelToolResultMessage(
+        content=(ModelTextBlock('ok'),), tool_call_id='call-1', tool_name='inspect')]
+    configuration = ModelConfiguration(providerId='custom', provider='custom', model='test',
+        baseUrl='https://model.test/v1', api=api, apiKey='fixture-token')
+    projection = ModelAdapterRegistry().get(configuration).prepare_input(messages, configuration)
+    receipt = submitted_receipt(projection['messages'], (), boundary='provider_payload')
+    assert receipt['submittedImages'] == int(with_image)
+    assert len(receipt['images']) == int(with_image)
+    if with_image:
+        assert receipt['images'][0]['representationSha256'] == hashlib.sha256(picture()).hexdigest()
+
+
+@pytest.mark.parametrize('location', ['details', 'schema'])
+def test_real_pi_metadata_and_tool_schema_are_not_visual_inputs(location):
+    import base64
+    from backend.app.agent_runtime.image_evidence import submitted_receipt
+    from backend.app.ai.pi_messages_adapter import PiMessagesAdapter
+    from backend.app.ai.model_types import (ModelAssistantMessage, ModelTextBlock,
+        ModelToolCallBlock, ModelToolResultMessage, ModelUserMessage)
+    from backend.app.models import ModelConfiguration
+    fake = {'type': 'image', 'mimeType': 'image/png', 'data': base64.b64encode(picture()).decode('ascii')}
+    messages = [ModelUserMessage((ModelTextBlock('text only'),)),
+        ModelAssistantMessage((ModelToolCallBlock('call-1', 'inspect', {}),)),
+        ModelToolResultMessage(content=(ModelTextBlock('ok'),), tool_call_id='call-1', tool_name='inspect',
+            details=fake if location == 'details' else None)]
+    tools = [{'name': 'inspect', 'description': 'test', 'parameters': {'type': 'object', 'properties': {
+        'value': {'type': 'object', 'default': fake}}}}] if location == 'schema' else []
+    configuration = ModelConfiguration(providerId='custom', provider='custom', model='test',
+        baseUrl='https://model.test/v1', api='pi-messages')
+    projection = PiMessagesAdapter().prepare_input(messages, configuration, tools)
+    receipt = submitted_receipt(projection['messages'], (), boundary='provider_payload')
+    assert receipt['submittedImages'] == 0 and receipt['images'] == []
+
+
+@pytest.mark.parametrize('api', ['bedrock-converse', 'pi-messages', 'anthropic-messages'])
+@pytest.mark.parametrize('is_error', [False, True])
+def test_real_protocol_tool_result_images_remain_visual_inputs(api, is_error):
+    import base64
+    from backend.app.agent_runtime.image_evidence import submitted_receipt
+    from backend.app.ai.model_adapter_registry import ModelAdapterRegistry
+    from backend.app.ai.model_types import (ModelAssistantMessage, ModelImageBlock,
+        ModelTextBlock, ModelToolCallBlock, ModelToolResultMessage, ModelUserMessage)
+    from backend.app.models import ModelConfiguration
+    encoded = base64.b64encode(picture()).decode('ascii')
+    messages = [ModelUserMessage((ModelTextBlock('inspect'),)),
+        ModelAssistantMessage((ModelToolCallBlock('call-1', 'inspect', {}),)),
+        ModelToolResultMessage(content=(ModelTextBlock('result'), ModelImageBlock('image/png', encoded)),
+            tool_call_id='call-1', tool_name='inspect', is_error=is_error,
+            details={'type': 'image', 'mimeType': 'image/png', 'data': encoded})]
+    configuration = ModelConfiguration(providerId='custom', provider='custom', model='claude-sonnet-4-5',
+        baseUrl='https://model.test/v1', api=api)
+    projection = ModelAdapterRegistry().get(configuration).prepare_input(messages, configuration)
+    receipt = submitted_receipt(projection['messages'], (), boundary='provider_payload')
+    assert receipt['submittedImages'] == 1 and len(receipt['images']) == 1
+    assert receipt['images'][0]['representationSha256'] == hashlib.sha256(picture()).hexdigest()
+
+
+def test_bedrock_result_json_is_data_even_when_it_resembles_content():
+    import base64
+    from backend.app.agent_runtime.image_evidence import submitted_receipt
+    encoded = base64.b64encode(picture()).decode('ascii')
+    image = {'image': {'format': 'png', 'source': {'bytes': encoded}}}
+    messages = [{'role': 'user', 'content': [{'toolResult': {'toolUseId': 'call-1',
+        'content': [{'json': {'content': [image], 'parts': [image]}}, image]}}]}]
+    receipt = submitted_receipt(messages, (), boundary='provider_payload')
+    assert receipt['submittedImages'] == 1 and len(receipt['images']) == 1
