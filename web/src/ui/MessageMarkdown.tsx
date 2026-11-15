@@ -1,5 +1,5 @@
 import { memo } from "react";
-import Markdown, { type Components } from "react-markdown";
+import Markdown, { type Components, type Options } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkCjkFriendly from "remark-cjk-friendly";
 import remarkGfm from "remark-gfm";
@@ -29,6 +29,6 @@ const components: Components = {
 };
 
 /** Display message source without changing the stored transcript. */
-export const MessageMarkdown = memo(function MessageMarkdown({ content }: { content: string }) {
-  return <div className="message-markdown"><Markdown remarkPlugins={remarkPlugins} components={components}>{content}</Markdown></div>;
+export const MessageMarkdown = memo(function MessageMarkdown({ content, presentationPlugins = [] }: { content: string; presentationPlugins?: NonNullable<Options['remarkPlugins']> }) {
+  return <div className="message-markdown"><Markdown remarkPlugins={[...remarkPlugins, ...presentationPlugins]} components={components}>{content}</Markdown></div>;
 });
