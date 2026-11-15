@@ -30,6 +30,8 @@
 
 `POST /api/roles/{role_id}/materials/from-message` 接收实际 `messageId`、`attachmentId` 和可选 `description`，只从该角色真实消息和附件登记解析来源；渠道来源保留实际会话、账号及授权代际。`PATCH /api/roles/{role_id}/materials/{id}` 接收 `expectedRevision` 及 `name`、`description`、`enabled` 的非空修改集合。旧列表版本返回 409，不自动重试。
 
+管理列表与 PATCH 共用一个目标：存在角色级说明快照时，显示和编辑该快照，包括后加的角色级空说明；否则保留原主说明的会话范围。公开 `meaningScope` 为 `role` 或 `conversation`，编辑表单明确提示范围。名称、说明、依据、作者和历史来自同一目标，修订号继续使用全记录版本；“用于聊天”仍是原件的全局开关。修改角色级说明不会改动已有群专属说明，也不会因为编辑缺失的角色级范围而创建共享授权。
+
 所有修改复用现有 owner publication journal、文件锁、受管配额与恢复机制。修订后已有候选失效；模型的新建议不能覆盖主人确认。直接上传是主人明确添加角色级来源，公开管理中的改名、说明和开关不扩大来源范围。
 
 重复收藏和重复上传可在同一授权范围补全空说明，保留空说明历史，并在同一发布/CAS 下完成。不同于已有非空说明的输入另存为非生效建议。返回 `descriptionOutcome`：`filled` 表示已补全，`proposal_retained` 表示建议已保留但旧说明未改变，`unchanged` 表示没有改动当前说明；新收藏还可返回 `saved` 或 `pending`。管理界面分别提示补全、待补充和建议未生效，不将输入静默丢弃。工具只返回当前来源允许看到的有效说明与历史，不能借冲突响应读取其他范围的内容。

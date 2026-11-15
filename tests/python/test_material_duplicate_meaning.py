@@ -2,6 +2,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
+import pytest
 
 from test_material_library_api import api, current, put
 from test_chat_meme_library import upload, picture
@@ -143,3 +144,88 @@ def test_concurrent_pending_fills_use_the_observed_revision_and_preserve_origina
     assert current_item['description'] == winner['material']['description']
     assert current_item['assetId'] == item['assetId']
     assert client.get(current_item['imageUrl']).content == picture()
+
+
+def test_management_displays_and_edits_shared_meaning_without_changing_group_meaning(api):
+    client, service, chat = api
+    save(chat, upload(chat), 'thread:a', 'A群专属说明')
+    imported = put(client, description='角色共享说明').json()['material']
+    listing = current(client)
+    item, = listing['materials']
+    assert item['description'] == '角色共享说明'
+    assert imported == item and item['meaningScope'] == 'role'
+    before, = chat.candidates('alice')
+    edited = client.patch('/api/roles/alice/materials/' + item['id'], json={
+        'expectedRevision': listing['revision'], 'name': '修订后的共享名称', 'description': '修订后的共享说明'})
+    assert edited.status_code == 200, edited.text
+    changed = edited.json()['material']
+    assert changed['name'] == '修订后的共享名称' and changed['description'] == '修订后的共享说明'
+    assert changed['basis']['kind'] == 'owner_confirmed'
+    assert changed['history'][-1]['description'] == '角色共享说明'
+    assert current(client)['materials'] == [changed]
+    assert chat.candidates('alice')[0].description == changed['description']
+    assert chat.candidates('alice', '修订后的共享名称')[0].asset_id == changed['assetId']
+    assert chat.candidates('alice', context=context('thread:a'))[0].description == 'A群专属说明'
+    assert not chat.valid('alice', before)
+    assert client.patch('/api/roles/alice/materials/' + item['id'], json={
+        'expectedRevision': listing['revision'], 'description': '过时修改'}).status_code == 409
+
+
+def test_management_without_shared_meaning_keeps_original_scope_and_global_switch(api):
+    client, service, chat = api
+    save(chat, upload(chat), 'thread:a', '群内原说明')
+    listing = current(client)
+    item, = listing['materials']
+    assert item['meaningScope'] == 'conversation'
+    response = client.patch('/api/roles/alice/materials/' + item['id'], json={
+        'expectedRevision': listing['revision'], 'description': '仍属于原群的修订'})
+    assert response.status_code == 200, response.text
+    assert response.json()['material']['meaningScope'] == 'conversation'
+    assert chat.candidates('alice') == ()
+    assert chat.candidates('alice', context=context('thread:a'))[0].description == '仍属于原群的修订'
+    put(client, description='后来补充的角色说明')
+    listing = current(client)
+    response = client.patch('/api/roles/alice/materials/' + item['id'], json={
+        'expectedRevision': listing['revision'], 'enabled': False})
+    assert response.status_code == 200 and response.json()['material']['enabled'] is False
+    assert chat.candidates('alice') == () and chat.candidates('alice', context=context('thread:a')) == ()
+
+
+@pytest.mark.parametrize('shared_first', [False, True])
+def test_management_role_target_is_independent_of_collection_order(api, shared_first):
+    client, service, chat = api
+    if shared_first:
+        put(client, description='角色说明')
+    save(chat, upload(chat), 'thread:a', '群内说明')
+    if not shared_first:
+        put(client, description='角色说明')
+    listing = current(client)
+    item, = listing['materials']
+    assert item['description'] == '角色说明' and item['meaningScope'] == 'role'
+    response = client.patch('/api/roles/alice/materials/' + item['id'], json={
+        'expectedRevision': listing['revision'], 'description': '主人纠正的角色说明'})
+    assert response.status_code == 200, response.text
+    assert current(client)['materials'][0]['description'] == chat.candidates('alice')[0].description == '主人纠正的角色说明'
+    expected_group = '主人纠正的角色说明' if shared_first else '群内说明'
+    assert chat.candidates('alice', context=context('thread:a'))[0].description == expected_group
+
+
+def test_management_reconfirms_replacement_in_shared_scope_and_preserves_old_group_history(api):
+    client, service, chat = api
+    save(chat, upload(chat), 'thread:a', '旧群含义')
+    put(client, description='旧角色含义')
+    candidate, = chat.candidates('alice')
+    candidate.path.write_bytes(picture(color='blue'))
+    listing = current(client)
+    item, = listing['materials']
+    assert item['meaningScope'] == 'role' and item['semanticStatus'] == 'content_changed'
+    assert item['description'] == '' and item['history'][-1]['description'] == '旧角色含义'
+    response = client.patch('/api/roles/alice/materials/' + item['id'], json={
+        'expectedRevision': listing['revision'], 'description': '新原件的角色含义'})
+    assert response.status_code == 200, response.text
+    assert chat.candidates('alice')[0].description == response.json()['material']['description'] == '新原件的角色含义'
+    from backend.app.channels import meme_semantics
+    new = chat.candidates('alice')[0]
+    stored = json.loads(meme_semantics.metadata_path(chat.library, 'alice', new.sha256).read_text(encoding='utf-8'))
+    assert stored['description'] == '' and stored['semanticStatus'] == 'content_changed'
+    assert stored['history'][-1]['description'] == '旧群含义'

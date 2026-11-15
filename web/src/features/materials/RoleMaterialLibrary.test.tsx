@@ -10,6 +10,17 @@ const material = (overrides: Partial<RoleMaterial> = {}): RoleMaterial => ({ id:
 const library = (items = [material()], revision = 'rev1'): MaterialLibrary => ({ materials: items, categories: [...new Set(items.map(item => item.category))].map(name => ({ name, description: '', count: items.filter(item => item.category === name).length, enabled: true })), revision, storageLabel: '当前角色工作区 / workspace/memes' });
 const routes = (body = library()) => ({ 'GET /api/roles/r1/materials': () => ({ body }) });
 
+it.each(['role', 'conversation'] as const)('states the actual %s meaning scope before editing', async meaningScope => {
+  fakeBackend(routes(library([material({ meaningScope })])));
+  const user = userEvent.setup();
+  render(<RoleMaterialLibrary roleId="r1" roleName="爱丽丝" />);
+  await user.click(await screen.findByRole('button', { name: '预览开心.gif' }));
+  await user.click(screen.getByText('编辑说明'));
+  expect(screen.getByText(meaningScope === 'role'
+    ? '正在编辑当前角色共享的名称与说明，不会改动已有群专属说明。'
+    : '正在编辑原收藏会话的名称与说明，修改不会共享到其他会话。')).toBeVisible();
+});
+
 it('acknowledges a duplicate upload that fills the pending description', async () => {
   fakeBackend({ ...routes(), 'POST /api/roles/r1/materials\\?.*': () => ({ body: {
     material: material(), revision: 'rev2', deduplicated: true, descriptionOutcome: 'filled',

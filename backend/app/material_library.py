@@ -159,7 +159,7 @@ class OwnerMaterialLibrary:
         for category, category_data, path, raw, media in self.chat._items(role_id, enabled_only=False):
             identity = _identity(path)
             digest = _hash(raw)
-            metadata = semantics.meaning_for(self.library, role_id, path, digest, category_data)
+            metadata = semantics.management(semantics.meaning_for(self.library, role_id, path, digest, category_data))
             source = metadata.get('source', 'legacy')
             description = metadata['description']
             if not isinstance(description, str):
@@ -176,6 +176,7 @@ class OwnerMaterialLibrary:
             name = name.replace('\\', '/').rsplit('/', 1)[-1][:160]
             public = {'id': identifier, 'name': name, 'category': category,
                 'description': description[:2000], 'aliases': aliases, 'source': source,
+                'meaningScope': metadata['meaningScope'],
                 'enabled': category_data.get('enabled') is True and metadata['enabled'],
                 'categoryEnabled': category_data.get('enabled') is True, 'format': format,
                 'mediaType': media, 'size': len(raw), 'width': width, 'height': height,
@@ -407,7 +408,7 @@ class OwnerMaterialLibrary:
             entry = self._entry(snapshot, identifier)
             value = semantics.meaning_for(self.library, role_id, entry.path, entry.digest,
                 snapshot.manifest['categories'][entry.public['category']])
-            value = semantics.revise(value, changes, expected_revision=value['revision'],
+            value = semantics.revise_management(value, changes, expected_revision=value['revision'],
                 basis={'kind': 'owner_confirmed'}, author={'kind': 'owner'})
             relative = entry.path.relative_to(self.library.root(role_id)).as_posix()
             if relative not in value['paths']:

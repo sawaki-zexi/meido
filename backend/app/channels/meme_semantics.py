@@ -207,6 +207,38 @@ def effective(value, session_key, validator, *, category='', aliases=()):
     return result
 
 
+def _management_target(value):
+    """The existing editor manages shared meaning when it exists, otherwise its original scope."""
+    return next((block for block in (value, *value.get('scopedMeanings', []))
+        if any(source.get('scope') == 'role' for source in _meaning_sources(block))), value)
+
+
+def management(value):
+    selected = _management_target(value)
+    result = deepcopy(value)
+    result.update({key: deepcopy(selected[key]) for key in
+        ('name', 'description', 'basis', 'author', 'history', 'semanticStatus')})
+    result['meaningScope'] = 'role' if any(source.get('scope') == 'role'
+        for source in _meaning_sources(selected)) else 'conversation'
+    result['source'] = _meaning_sources(selected)[0]['kind']
+    return result
+
+
+def revise_management(value, changes, *, expected_revision, basis, author):
+    # Selection is deterministic under the same whole-library CAS used by the
+    # list. Never change the meaning target or grant a new scope on PATCH.
+    result = deepcopy(value)
+    target = _management_target(result)
+    revised = revise({**target, 'sha256': value['sha256'], 'enabled': value['enabled'],
+        'revision': value['revision']}, changes, expected_revision=expected_revision, basis=basis, author=author)
+    if target is result:
+        return revised
+    target.update({key: revised[key] for key in
+        ('name', 'description', 'basis', 'author', 'history', 'semanticStatus', 'revision')})
+    result.update(enabled=revised['enabled'], revision=revised['revision'])
+    return result
+
+
 def revise(value, changes, *, expected_revision, basis, author):
     if value['revision'] != expected_revision:
         raise PermissionError('conflict: material meaning changed; read it again')

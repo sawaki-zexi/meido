@@ -18,6 +18,7 @@ export type RoleMaterial = {
   imageUrl: string;
   assetId?: string;
   semanticRevision?: number;
+  meaningScope?: 'role' | 'conversation';
   semanticStatus?: 'ready' | 'pending' | 'content_changed';
   basis?: { kind: 'owner_confirmed' | 'model_observation' | 'legacy_description' | 'unverified' };
   sources?: { kind: string; scope: string }[];
