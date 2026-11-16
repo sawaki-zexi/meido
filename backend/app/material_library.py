@@ -70,11 +70,12 @@ class _Snapshot:
 
 
 class OwnerMaterialLibrary:
-    def __init__(self, chat_library, role_getter, *, message_source=None):
+    def __init__(self, chat_library, role_getter, *, message_source=None, scope_labels=None):
         self.chat = chat_library
         self.library = chat_library.library
         self.role_getter = role_getter
         self.message_source = message_source
+        self.scope_labels = scope_labels
         # Shared with short-lived router adapters, bounded and strictly advisory:
         # every image lookup rechecks role, root, path, original identity and hash.
         with self.library.app._gate:
@@ -158,9 +159,10 @@ class OwnerMaterialLibrary:
         document, _ = self.chat._manifest(role_id)
         entries = []
         records = semantics.catalog(self.library, role_id)
+        labels = self.scope_labels(role_id) if self.scope_labels else {}
         for category, category_data, path, image_fact in self.chat.indexed_items(role_id, enabled_only=False):
             identity, digest, media = image_fact.identity, image_fact.digest, image_fact.media
-            metadata = semantics.management(semantics.meaning_for(self.library, role_id, path, digest, category_data, records=records))
+            metadata = semantics.management(semantics.meaning_for(self.library, role_id, path, digest, category_data, records=records), self.chat.source_validator, labels)
             source = metadata.get('source', 'legacy')
             description = metadata['description']
             if not isinstance(description, str):
@@ -177,12 +179,14 @@ class OwnerMaterialLibrary:
             public = {'id': identifier, 'name': name, 'category': category,
                 'description': description[:2000], 'aliases': aliases, 'source': source,
                 'meaningScope': metadata['meaningScope'],
+                'meaningScopeId': metadata['meaningScopeId'], 'meaningScopes': metadata['meaningScopes'],
                 'enabled': category_data.get('enabled') is True and metadata['enabled'],
                 'categoryEnabled': category_data.get('enabled') is True, 'format': format,
                 'mediaType': media, 'size': image_fact.size, 'width': width, 'height': height,
                 'animated': animated,
                 'imageUrl': f'/api/roles/{quote(role_id, safe="")}/materials/{identifier}/image',
-                **semantics.public_meaning(metadata)}
+                **semantics.public_meaning(metadata), **semantics.details(metadata)}
+            public['aliases'] = list(dict.fromkeys([*public['aliases'], *aliases]))[:32]
             entries.append(_Entry(path, identity, digest, public))
         entries.sort(key=lambda item: (item.public['category'], item.public['name'], item.public['id']))
         categories = []
@@ -208,15 +212,19 @@ class OwnerMaterialLibrary:
                 self._observations.popitem(last=False)
         return _Snapshot(tuple(entries), tuple(categories), revision, before, document, grant, fact)
 
-    def list(self, role_id, query='', category='', offset=0, limit=24):
+    def list(self, role_id, query='', category='', offset=0, limit=24, source='', enabled=None):
         if len(query) > 2000 or len(category) > 80:
             raise MaterialParameters('invalid finite query')
         if type(offset) is not int or not 0 <= offset <= MAX_SCAN or type(limit) is not int or not 1 <= limit <= 100:
             raise MaterialParameters('invalid bounded material page')
         snapshot = self._snapshot(role_id)
         ranked = [(relevance(query, item.public['name'], item.public['category'], item.public['description'],
-            *item.public['aliases'])[0], item.public) for item in snapshot.entries
-            if not category or item.public['category'] == category]
+            *item.public['aliases'], *item.public['tags'], *item.public['emotions'], *item.public['uses'],
+            *(term for scope in item.public['meaningScopes'] for term in
+                [scope['name'], scope['description'], *scope['aliases'], *scope['tags'], *scope['emotions'], *scope['uses']]))[0], item.public) for item in snapshot.entries
+            if (not category or item.public['category'] == category)
+            and (not source or any(row['kind'] == source for row in item.public['sources']))
+            and (enabled is None or item.public['enabled'] is enabled)]
         ranked.sort(key=lambda item: -item[0])
         entries = [item for score, item in ranked if score]
         total = len(entries)
@@ -232,6 +240,10 @@ class OwnerMaterialLibrary:
         if item is None:
             raise MaterialGone(identifier)
         return item
+
+    def detail(self, role_id, identifier):
+        snapshot = self._snapshot(role_id)
+        return {'material': self._entry(snapshot, identifier).public, 'revision': snapshot.revision}
 
     def _current(self, role_id, snapshot):
         self._check_role(role_id)
@@ -414,16 +426,20 @@ class OwnerMaterialLibrary:
             entry = self._entry(snapshot, identifier)
             value = semantics.meaning_for(self.library, role_id, entry.path, entry.digest,
                 snapshot.manifest['categories'][entry.public['category']])
+            original_meaning = value
+            def check_scope():
+                semantics.revise_management(original_meaning, changes, expected_revision=original_meaning['revision'],
+                    basis={'kind': 'owner_confirmed'}, author={'kind': 'owner'}, validator=self.chat.source_validator)
             value = semantics.revise_management(value, changes, expected_revision=value['revision'],
-                basis={'kind': 'owner_confirmed'}, author={'kind': 'owner'})
+                basis={'kind': 'owner_confirmed'}, author={'kind': 'owner'}, validator=self.chat.source_validator)
             relative = entry.path.relative_to(self.library.root(role_id)).as_posix()
             if relative not in value['paths']:
                 value['paths'].append(relative)
-            self._publish_meaning(role_id, snapshot, entry, value, context)
+            self._publish_meaning(role_id, snapshot, entry, value, context, check_scope=check_scope)
             latest = self._snapshot(role_id)
             return {'material': self._entry(latest, identifier).public, 'revision': latest.revision}
 
-    def _publish_meaning(self, role_id, snapshot, entry, value, context):
+    def _publish_meaning(self, role_id, snapshot, entry, value, context, *, check_scope=lambda: None):
         root = self.library.root(role_id)
         target = semantics.metadata_path(self.library, role_id, entry.digest)
         files = {target: semantics.encode(value)}
@@ -437,6 +453,7 @@ class OwnerMaterialLibrary:
                     with self.library.app._gate:
                         self._current(role_id, snapshot)
                         self._original(role_id, entry)
+                        check_scope()
                         target.parent.mkdir(exist_ok=True)
                         _directory_identity(target.parent)
                         publication.publish(target)
@@ -545,6 +562,17 @@ def reconcile_removal(library, row):
         db.execute('UPDATE autonomy_meme_operations SET status=?,actual=? WHERE operation_id=?',
             (status, _json(actual).decode(), row['operation_id']))
     library.storage.reconciled(row['role_id'], row['operation_id'], status)
+
+
+def material_scope_labels(channels, role_id):
+    accounts = {item.account_id: item for item in channels.list_role_accounts(role_id)}
+    result = {}
+    for thread in channels.list_threads(role_id, limit=500):
+        account = accounts.get(thread.account_id)
+        if account is not None:
+            title = thread.title or ('群聊' if thread.chat_type == 'group' else '私聊')
+            result[thread.session_key] = f'{title[:120]} · {(account.display_name or account.channel.upper())[:80]}'
+    return result
 
 
 def message_attachment_source(roles, sessions, channels, role_id, message_id, attachment_id):

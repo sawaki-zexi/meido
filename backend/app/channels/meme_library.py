@@ -95,6 +95,7 @@ class MemeCandidate:
     display_category: str = field(default='', kw_only=True)
     reason: str = field(default='', kw_only=True)
     relevance_score: int = field(default=0, kw_only=True)
+    meaning_details: dict = field(default_factory=dict, kw_only=True)
 
     @property
     def category_label(self):
@@ -104,7 +105,7 @@ class MemeCandidate:
         return {'id': self.id, 'category': self.category_label, 'description': self.description,
                 'aliases': list(self.aliases), 'assetId': self.asset_id,
                 'semanticRevision': self.semantic_revision, 'basis': self.basis_kind,
-                'semanticStatus': self.semantic_status, 'reason': self.reason}
+                'semanticStatus': self.semantic_status, 'reason': self.reason, **self.meaning_details}
 
 
 class ChatMemeLibrary:
@@ -233,7 +234,9 @@ class ChatMemeLibrary:
             if not isinstance(desc, str):
                 desc = ''
             identity = fact.identity
-            score, reason = relevance(query, meaning['displayCategory'], meaning['name'], desc, *aliases)
+            score, reason = relevance(query, meaning['displayCategory'], meaning['name'], desc, *aliases,
+                meaning['generalDescription'], meaning['groupDescription'],
+                *meaning['tags'], *meaning['emotions'], *meaning['uses'])
             meaning_digest = _hash(semantics.encode(meaning))
             identifier = _hash(_json([role_id, str(path), identity, digest, meaning_digest]))[:32]
             candidate = MemeCandidate(identifier, role_id, category, desc[:2000], aliases[:32],
@@ -242,7 +245,14 @@ class ChatMemeLibrary:
                 scope_session=session_key,
                 explicit=explicit, basis_kind=meaning['basis']['kind'], semantic_status=meaning['semanticStatus'],
                 meaning_digest=meaning_digest, display_category=meaning['displayCategory'], reason=reason,
-                relevance_score=score)
+                relevance_score=score, meaning_details={
+                    'tags': [value[:80] for value in meaning['tags'][:4]],
+                    'emotions': [value[:80] for value in meaning['emotions'][:4]],
+                    'uses': [value[:160] for value in meaning['uses'][:4]],
+                    'avoid': [value[:160] for value in meaning['avoid'][:4]],
+                    'uncertainty': meaning['uncertainty'][:160],
+                    'generalBasis': meaning['generalBasis'], 'groupBasis': meaning['groupBasis'],
+                    'generalDescription': meaning['generalDescription'][:500], 'groupDescription': meaning['groupDescription'][:500]})
             if score:
                 used = usage.get(digest, {})
                 result.append((score, used.get('successes', 0), used.get('lastAttempt', ''), path.name, candidate))

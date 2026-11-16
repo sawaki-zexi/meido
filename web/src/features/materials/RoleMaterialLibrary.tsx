@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ApiError, errorMessage } from '../../api/client';
-import { materials, type MaterialLibrary, type RoleMaterial } from '../../api/materials';
+import { materials, type MaterialLibrary, type RoleMaterial, type MaterialChanges } from '../../api/materials';
 import { Dialog } from '../../ui/Dialog';
 import { Icon } from '../../ui/Icon';
 import './materials.css';
+import { MaterialMeaningEditor } from './MaterialMeaningEditor';
 import { collectionFeedback } from './collectionFeedback';
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -12,6 +13,9 @@ const basisLabels = { owner_confirmed: '主人确认', model_observation: '模�
 const supportedImage = (file: File) => ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type)
   || (!file.type && /\.(png|jpe?g|webp|gif)$/i.test(file.name));
 const requiresRead = (cause: unknown) => !(cause instanceof ApiError) || cause.status === 409 || cause.status >= 500;
+type ObservedMaterial = RoleMaterial & { observedRevision: string };
+type LibraryObservation = Omit<MaterialLibrary, 'materials'> & { materials: ObservedMaterial[] };
+const observe = (material: RoleMaterial, revision: string): ObservedMaterial => ({ ...material, observedRevision: revision });
 
 /** A role switch disposes all previous reads, drafts, dialogs and mutation feedback. */
 export function RoleMaterialLibrary(props: { roleId: string; roleName: string }) {
@@ -19,16 +23,18 @@ export function RoleMaterialLibrary(props: { roleId: string; roleName: string })
 }
 
 function MaterialLibraryContent({ roleId, roleName }: { roleId: string; roleName: string }) {
-  const [library, setLibrary] = useState<MaterialLibrary | null>(null);
+  const [library, setLibrary] = useState<LibraryObservation | null>(null);
   const [loading, setLoading] = useState(true);
   const [readError, setReadError] = useState('');
   const [feedback, setFeedback] = useState('');
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('');
+  const [source, setSource] = useState('');
+  const [enabled, setEnabled] = useState('');
   const [offset, setOffset] = useState(0);
-  const filtersRef = useRef({ query, category, offset });
-  filtersRef.current = { query, category, offset };
-  const [preview, setPreview] = useState<RoleMaterial | null>(null);
+  const filtersRef = useRef({ query, category, offset, source, enabled });
+  filtersRef.current = { query, category, offset, source, enabled };
+  const [preview, setPreview] = useState<ObservedMaterial | null>(null);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [file, setFile] = useState<File | null>(null);
@@ -38,8 +44,6 @@ function MaterialLibraryContent({ roleId, roleName }: { roleId: string; roleName
   const [actionError, setActionError] = useState('');
   const [needsRead, setNeedsRead] = useState(false);
   const [busy, setBusy] = useState<'import' | 'remove' | 'edit' | null>(null);
-  const [editName, setEditName] = useState('');
-  const [editDescription, setEditDescription] = useState('');
   const [focusAfterMutation, setFocusAfterMutation] = useState(false);
   const importOpenRef = useRef(importOpen);
   importOpenRef.current = importOpen;
@@ -53,7 +57,7 @@ function MaterialLibraryContent({ roleId, roleName }: { roleId: string; roleName
   const libraryRoot = useRef<HTMLElement>(null);
   const gallery = useRef<HTMLDivElement>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (removedId?: string) => {
     const version = ++readVersion.current;
     readController.current?.abort();
     const controller = new AbortController();
@@ -61,11 +65,24 @@ function MaterialLibraryContent({ roleId, roleName }: { roleId: string; roleName
     setLoading(true); setReadError('');
     try {
       const result = await materials.list(roleId, controller.signal, filtersRef.current);
+      const observation: LibraryObservation = { ...result, materials: result.materials.map(item => observe(item, result.revision)) };
+      const activePreview = previewRef.current?.id === removedId ? null : previewRef.current;
+      let refreshedPreview = activePreview ? observation.materials.find(item => item.id === activePreview.id) : null;
+      if (activePreview && !refreshedPreview) {
+        try {
+          const detail = await materials.get(roleId, activePreview.id, controller.signal);
+          // Detail and list can observe different revisions. A detail token
+          // authorizes only the material returned with it, never older cards.
+          refreshedPreview = observe(detail.material, detail.revision);
+        } catch (cause) { if (!(cause instanceof ApiError && cause.status === 404)) throw cause; }
+      }
       if (!alive.current || version !== readVersion.current) return;
-      setLibrary(result); setNeedsRead(false); setActionError(''); setRemoveOpen(false);
-      setPreview(current => current ? result.materials.find(item => item.id === current.id) ?? null : null);
+      setLibrary(observation); setNeedsRead(false); setActionError(''); setRemoveOpen(false);
+      setPreview(current => current?.id === activePreview?.id ? refreshedPreview ?? null : current);
+      return true;
     } catch (cause) {
       if (alive.current && version === readVersion.current) setReadError(errorMessage(cause, '无法读取素材库'));
+      return false;
     } finally {
       if (alive.current && version === readVersion.current) setLoading(false);
     }
@@ -74,7 +91,7 @@ function MaterialLibraryContent({ roleId, roleName }: { roleId: string; roleName
   useEffect(() => {
     alive.current = true; void load();
     return () => { alive.current = false; readVersion.current++; readController.current?.abort(); };
-  }, [load, query, category, offset]);
+  }, [load, query, category, offset, source, enabled]);
 
   useEffect(() => {
     if (focusAfterMutation && !busy && !loading && !importOpen && !preview) {
@@ -94,7 +111,7 @@ function MaterialLibraryContent({ roleId, roleName }: { roleId: string; roleName
       if (!alive.current) return;
       setFocusAfterMutation(importOpenRef.current);
       setImportOpen(false); setFile(null); setDescription(''); setImportCategory('');
-      setLibrary(current => current ? { ...current, revision: result.revision, materials: [...current.materials.filter(item => item.id !== result.material.id), result.material] } : current);
+      setLibrary(current => current ? { ...current, materials: [...current.materials.filter(item => item.id !== result.material.id), observe(result.material, result.revision)] } : current);
       setFeedback(collectionFeedback(result, result.deduplicated ? '这张图片已在素材库中，没有重复导入。' : '素材已导入当前角色的素材库。'));
       await load();
     } catch (cause) {
@@ -109,13 +126,13 @@ function MaterialLibraryContent({ roleId, roleName }: { roleId: string; roleName
     if (!preview || !library || busyRef.current || loading || needsRead) return;
     busyRef.current = true; setBusy('remove'); setActionError(''); setFeedback('');
     try {
-      const result = await materials.remove(roleId, preview.id, library.revision);
+      await materials.remove(roleId, preview.id, preview.observedRevision);
       if (!alive.current) return;
       setFocusAfterMutation(previewRef.current?.id === preview.id);
       setRemoveOpen(false); setPreview(current => current?.id === preview.id ? null : current);
-      setLibrary(current => current ? { ...current, revision: result.revision, materials: current.materials.filter(item => item.id !== preview.id) } : current);
+      setLibrary(current => current ? { ...current, materials: current.materials.filter(item => item.id !== preview.id) } : current);
       setFeedback('已移出素材库，原图保留在本地恢复区；聊天中的图片不受影响。');
-      await load();
+      await load(preview.id);
     } catch (cause) {
       if (alive.current) { setActionError(errorMessage(cause, '无法移出素材')); setNeedsRead(requiresRead(cause)); }
     } finally {
@@ -124,22 +141,27 @@ function MaterialLibraryContent({ roleId, roleName }: { roleId: string; roleName
     }
   };
 
-  const onEdit = async (item: RoleMaterial, changes: { name?: string; description?: string; enabled?: boolean }) => {
+  const onEdit = async (item: ObservedMaterial, changes: MaterialChanges) => {
     if (!library || busyRef.current || loading || needsRead) return;
     busyRef.current = true; setBusy('edit'); setActionError(''); setFeedback('');
     try {
-      const result = await materials.edit(roleId, item.id, library.revision, changes);
+      const result = await materials.edit(roleId, item.id, item.observedRevision, changes);
       if (!alive.current) return;
-      setLibrary(current => current ? { ...current, revision: result.revision, materials: current.materials.map(value => value.id === item.id ? result.material : value) } : current);
-      setPreview(current => current?.id === item.id ? result.material : current);
+      const updated = observe(result.material, result.revision);
+      setLibrary(current => current ? { ...current, materials: current.materials.map(value => value.id === item.id ? updated : value) } : current);
+      setPreview(current => current?.id === item.id ? updated : current);
       setFeedback('素材说明与聊天设置已保存。');
+      // Fetch the other cards before enabling another edit. Their observations
+      // cannot inherit this response's revision even after our own mutation.
+      if (!await load() && alive.current) setNeedsRead(true);
     } catch (cause) {
       if (alive.current) { setActionError(errorMessage(cause, '无法修改素材')); setNeedsRead(requiresRead(cause)); }
     } finally { busyRef.current = false; if (alive.current) setBusy(null); }
   };
 
-  const mutationError = <>{readError && (importOpen || removeOpen || preview) && <p className="material-error" role="alert">{readError}</p>}{actionError && <p className="material-error" role="alert">{actionError}</p>}{needsRead && <div className="material-recovery"><p>请先重新读取素材库，核对操作结果；不会自动重复提交。</p><button type="button" className="ghost" disabled={loading || Boolean(busy)} onClick={() => void load()}>重新读取素材库</button></div>}</>;
+  const mutationError = <>{readError && (importOpen || removeOpen || preview) && <p className="material-error" role="alert">{readError}</p>}{actionError && <p className="material-error" role="alert">{actionError}</p>}{needsRead && <div className="material-recovery"><p>请先重新读取素材库，核对操作结果；不会自动重复提交。编辑草稿会保留，可展开已保存内容进行比较。</p><button type="button" className="ghost" disabled={loading || Boolean(busy)} onClick={() => void load()}>重新读取素材库</button></div>}</>;
   const search = query.trim().toLocaleLowerCase();
+  const filtered = Boolean(search || category || source || enabled);
   const visible = library?.materials ?? [];
   const total = library?.total ?? visible.length;
   const categories = [...new Set([...(library?.categories.map(item => item.name) ?? []), ...(library?.materials.map(item => item.category) ?? [])])];
@@ -151,16 +173,18 @@ function MaterialLibraryContent({ roleId, roleName }: { roleId: string; roleName
     <div className="material-location"><Icon name="image" size={19} /><div><p>保存位置：<strong>角色工作目录 / workspace/memes</strong></p><p>只属于{roleName}；主人查看、导入和移出素材不需要开启 Drift 图片权限。</p></div></div>
     <div className="material-filters"><label><span>搜索素材</span><input type="search" aria-label="搜索素材" value={query} placeholder="名称、描述或别名" onChange={event => { setQuery(event.target.value); setOffset(0); }} /></label>
       <label><span>素材分类</span><select aria-label="素材分类" value={category} onChange={event => { setCategory(event.target.value); setOffset(0); }}><option value="">全部分类</option>{categories.map(name => <option key={name} value={name}>{name}</option>)}</select></label>
+      <label><span>素材来源</span><select aria-label="素材来源" value={source} onChange={event => { setSource(event.target.value); setOffset(0); }}><option value="">全部来源</option>{Object.entries(sourceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+      <label><span>聊天启停</span><select aria-label="聊天启停" value={enabled} onChange={event => { setEnabled(event.target.value); setOffset(0); }}><option value="">全部状态</option><option value="true">已启用</option><option value="false">已停用</option></select></label>
       <button type="button" className="ghost" disabled={loading || Boolean(busy)} aria-label="重新读取素材库" onClick={() => void load()}><Icon name="refresh" size={17} />刷新</button>
     </div>
     {(loading || feedback) && <p className="material-feedback" role="status">{loading ? '正在读取素材库…' : feedback}</p>}
     {readError && !importOpen && !removeOpen && !preview && <p role="alert" className="material-error">{readError}</p>}
     {!importOpen && !removeOpen && !preview && mutationError}
-    {library && <><p className="material-count">{search || category ? `找到 ${total} 项` : `${total} 项素材`}<span>点击图片查看原图</span></p>
+    {library && <><p className="material-count">{filtered ? `找到 ${total} 项` : `${total} 项素材`}<span>点击图片查看原图</span></p>
       {visible.length ? <div className="material-grid" ref={gallery} tabIndex={-1} aria-label="素材列表">{visible.map(item => <article className="material-card" key={item.id}>
-        <MaterialImage material={item} onPreview={() => { setPreview(item); setEditName(item.name); setEditDescription(item.description); setActionError(''); }} />
-        <div className="material-card-copy"><h3>{item.name}</h3><p>{item.description || '待补充说明，不自动推荐'}</p><div className="material-tags"><span>{item.category}</span><span>{sourceLabels[item.source] ?? '已有素材'}</span>{!item.enabled && <span>已停用</span>}{item.semanticStatus === 'content_changed' && <span>原图已更换，请重新确认说明</span>}</div><label className="material-chat-toggle"><input type="checkbox" aria-label={`${item.name}用于聊天`} checked={item.enabled} disabled={item.categoryEnabled === false || loading || Boolean(busy) || needsRead} onChange={event => void onEdit(item, { enabled: event.target.checked })} />用于聊天{item.categoryEnabled === false && <span>（分类已停用）</span>}</label></div>
-      </article>)}</div> : <div className="material-empty"><Icon name="image" size={34} /><h3>{search || category ? '没有匹配的素材' : '还没有素材'}</h3><p>{search || category ? '试试其他关键词或分类。' : '导入 PNG、JPEG、WebP 或 GIF，保留原始图片和 GIF 动画。'}</p>{(search || category) && <button type="button" className="ghost" onClick={() => { setQuery(''); setCategory(''); setOffset(0); }}>清除筛选</button>}</div>}
+        <MaterialImage material={item} onPreview={() => { setPreview(item); setActionError(''); }} />
+        <div className="material-card-copy"><h3>{item.name}</h3><p>{item.description || '待补充说明，不自动推荐'}</p><label className="material-chat-toggle"><input type="checkbox" aria-label={`${item.name}用于聊天`} checked={item.enabled} disabled={item.categoryEnabled === false || loading || Boolean(busy) || needsRead} onChange={event => void onEdit(item, { enabled: event.target.checked })} />用于聊天{item.categoryEnabled === false && <span>（分类已停用）</span>}</label></div>
+      </article>)}</div> : <div className="material-empty"><Icon name="image" size={34} /><h3>{filtered ? '没有匹配的素材' : '还没有素材'}</h3><p>{filtered ? '试试其他关键词或分类。' : '导入 PNG、JPEG、WebP 或 GIF，保留原始图片和 GIF 动画。'}</p>{filtered && <button type="button" className="ghost" onClick={() => { setQuery(''); setCategory(''); setSource(''); setEnabled(''); setOffset(0); }}>清除筛选</button>}</div>}
       {(offset > 0 || library.nextOffset != null) && <nav className="material-dialog-actions" aria-label="素材分页">
         <button type="button" className="ghost" disabled={loading || Boolean(busy) || offset === 0} onClick={() => setOffset(Math.max(0, offset - 24))}>上一页</button>
         <span>第 {Math.floor(offset / 24) + 1} 页</span>
@@ -187,13 +211,7 @@ function MaterialLibraryContent({ roleId, roleName }: { roleId: string; roleName
     {preview && <Dialog title={preview.name} modalFocus onClose={() => { setPreview(null); setRemoveOpen(false); }} returnFocus={() => gallery.current?.querySelector<HTMLButtonElement>(`[data-material-id="${CSS.escape(preview.id)}"]`) ?? (importButton.current?.disabled ? libraryRoot.current : importButton.current)}>
       <div className="material-preview">{!removeOpen && mutationError}{busy === 'remove' && <p role="status">正在移出素材；关闭此窗口不会撤销已经提交的操作。</p>}<MaterialImage key={preview.id} material={preview} original />
         <dl><dt>名称</dt><dd>{preview.name}</dd><dt>分类</dt><dd>{preview.category}</dd><dt>描述</dt><dd>{preview.description || '暂无描述'}</dd><dt>来源</dt><dd>{sourceLabels[preview.source] ?? '已有素材'}</dd><dt>依据</dt><dd>{preview.basis ? basisLabels[preview.basis.kind] : '已有说明'}</dd>{preview.sources && <><dt>范围</dt><dd>{[...new Set(preview.sources.map(source => source.scope))].join('、')} · {preview.sources.length} 个来源</dd></>}<dt>格式</dt><dd>{preview.format}{preview.animated ? ' · 动图' : ''} · {preview.width} × {preview.height} · {formatSize(preview.size)}</dd>{preview.aliases.length > 0 && <><dt>别名</dt><dd>{preview.aliases.join('、')}</dd></>}</dl>
-        <details className="material-edit"><summary>编辑说明</summary><form onSubmit={event => { event.preventDefault(); void onEdit(preview, { name: editName.trim(), description: editDescription.trim() }); }}>
-          <p className="field-hint">{preview.meaningScope === 'conversation' ? '正在编辑原收藏会话的名称与说明，修改不会共享到其他会话。' : '正在编辑当前角色共享的名称与说明，不会改动已有群专属说明。'}</p>
-          <label className="field"><span>名称</span><input aria-label="素材名称" value={editName} maxLength={160} disabled={Boolean(busy)} onChange={event => setEditName(event.target.value)} /></label>
-          <label className="field"><span>说明</span><textarea aria-label="素材说明" rows={3} value={editDescription} maxLength={2000} disabled={Boolean(busy)} onChange={event => setEditDescription(event.target.value)} /></label>
-          <button className="primary" type="submit" disabled={!editName.trim() || Boolean(busy) || loading || needsRead}>保存修改</button>
-          {preview.history && preview.history.length > 0 && <details><summary>过去的说明</summary><ul>{preview.history.map((entry, index) => <li key={`${entry.revision}-${index}`}>{entry.description || '未填写说明'}</li>)}</ul></details>}
-        </form></details>
+        <MaterialMeaningEditor key={`meaning-${preview.id}`} material={preview} disabled={Boolean(busy) || loading || needsRead} onSave={changes => onEdit(preview, changes)} />
         <button type="button" className="danger" disabled={Boolean(busy) || loading || needsRead} onClick={() => { setActionError(''); setRemoveOpen(true); }}><Icon name="trash" size={17} />移出素材库</button>
       </div>
     </Dialog>}

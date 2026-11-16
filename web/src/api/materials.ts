@@ -1,6 +1,9 @@
 import { api } from './client';
 
-export type RoleMaterial = {
+export type MeaningDetails = { aliases?: string[]; tags?: string[]; emotions?: string[]; uses?: string[]; avoid?: string[]; uncertainty?: string; uncertaintyAffectsUse?: boolean };
+export type MeaningScope = MeaningDetails & { id: string; scope: 'role' | 'conversation'; label: string; available: boolean; name: string; description: string; history?: { revision: number; description: string }[] };
+export type MaterialChanges = MeaningDetails & { name?: string; description?: string; enabled?: boolean; meaningScopeId?: string };
+export type RoleMaterial = MeaningDetails & {
   id: string;
   name: string;
   category: string;
@@ -19,6 +22,8 @@ export type RoleMaterial = {
   assetId?: string;
   semanticRevision?: number;
   meaningScope?: 'role' | 'conversation';
+  meaningScopeId?: string;
+  meaningScopes?: MeaningScope[];
   semanticStatus?: 'ready' | 'pending' | 'content_changed';
   basis?: { kind: 'owner_confirmed' | 'model_observation' | 'legacy_description' | 'unverified' };
   sources?: { kind: string; scope: string }[];
@@ -40,11 +45,13 @@ export type CollectionResult = {
   effectiveSemanticStatus?: 'ready' | 'pending' | 'content_changed';
 };
 export const materials = {
-  list: (roleId: string, signal?: AbortSignal, options: { query?: string; category?: string; offset?: number } = {}) => {
+  list: (roleId: string, signal?: AbortSignal, options: { query?: string; category?: string; offset?: number; source?: string; enabled?: string } = {}) => {
     const params = new URLSearchParams();
     if (options.query) params.set('query', options.query);
     if (options.category) params.set('category', options.category);
     if (options.offset) params.set('offset', String(options.offset));
+    if (options.source) params.set('source', options.source);
+    if (options.enabled) params.set('enabled', options.enabled);
     return api<MaterialLibrary>(path(roleId) + (params.size ? `?${params}` : ''), { signal });
   },
   import: (roleId: string, file: File, category: string, description: string, expectedRevision: string) =>
@@ -53,7 +60,8 @@ export const materials = {
     }),
   remove: (roleId: string, id: string, expectedRevision: string) =>
     api<{ removed: true; recoverable: true; revision: string }>(`${path(roleId)}/${encodeURIComponent(id)}?${new URLSearchParams({ expectedRevision })}`, { method: 'DELETE' }),
-  edit: (roleId: string, id: string, expectedRevision: string, changes: { name?: string; description?: string; enabled?: boolean }) =>
+  get: (roleId: string, id: string, signal?: AbortSignal) => api<{ material: RoleMaterial; revision: string }>(`${path(roleId)}/${encodeURIComponent(id)}`, { signal }),
+  edit: (roleId: string, id: string, expectedRevision: string, changes: MaterialChanges) =>
     api<{ material: RoleMaterial; revision: string }>(`${path(roleId)}/${encodeURIComponent(id)}`, {
       method: 'PATCH', body: JSON.stringify({ expectedRevision, ...changes }),
     }),

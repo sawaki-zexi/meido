@@ -18,6 +18,19 @@ from .meme_index import shared_index
 MAX_RECORD_BYTES = 512 * 1024
 MAX_SOURCES = 128
 MAX_REVISIONS = 128
+LIST_FIELDS = ('aliases', 'tags', 'emotions', 'uses', 'avoid')
+DETAIL_FIELDS = (*LIST_FIELDS, 'uncertainty', 'uncertaintyAffectsUse')
+MEANING_FIELDS = ('name', 'description', 'history', 'basis', 'author', 'semanticStatus', *DETAIL_FIELDS)
+
+
+class MeaningScopeUnavailable(PermissionError):
+    pass
+
+
+def details(value):
+    return {**{key: deepcopy(value.get(key, [])) for key in LIST_FIELDS},
+        'uncertainty': value.get('uncertainty', ''),
+        'uncertaintyAffectsUse': value.get('uncertaintyAffectsUse', False)}
 
 
 def metadata_path(library, role_id, digest):
@@ -52,10 +65,12 @@ def _changed(previous, digest, relative):
     value['history'] = [*value['history'], historical(previous)]
     value.update(sha256=digest, description='', basis={'kind': 'unverified'},
         semanticStatus='content_changed', revision=previous['revision'] + 1)
+    value.update(details({}))
     for meaning in value.get('scopedMeanings', []):
         meaning['history'].append(historical({**meaning, 'sha256': previous['sha256']}))
         meaning.update(description='', basis={'kind': 'unverified'}, semanticStatus='content_changed',
             revision=value['revision'])
+        meaning.update(details({}))
     if relative not in value['paths']:
         value['paths'].append(relative)
     return value
@@ -130,7 +145,7 @@ def meaning_for(library, role_id, path, digest, category, *, records=None):
 
 def historical(value):
     return {key: deepcopy(value.get(key)) for key in
-        ('revision', 'sha256', 'description', 'name', 'enabled', 'basis', 'author')}
+        ('revision', 'sha256', 'description', 'name', 'enabled', 'basis', 'author', *DETAIL_FIELDS)}
 
 
 def new_meaning(role_id, digest, relative, description, *, name='', basis=None, source=None, author=None, category=''):
@@ -212,14 +227,23 @@ def effective(value, session_key, validator, *, category='', aliases=()):
         if source_allowed({'sources': [source]}, session_key, validator)]
     blocks = [value, *value.get('scopedMeanings', [])]
     allowed = [block for block in blocks if source_allowed({'sources': _meaning_sources(block)}, session_key, validator)]
-    # Specific ready meaning wins; a permitted shared explanation can still be
-    # used when a local collection did not provide any different explanation.
+    # Keep the primary description compatible, and supply shared/group parts
+    # explicitly to every consumer. Neither part grants original-image access.
     allowed.sort(key=lambda block: (block['semanticStatus'] != 'ready', block['basis']['kind'] != 'owner_confirmed',
         any(source.get('scope') == 'role' for source in _meaning_sources(block))))
     selected = allowed[0] if allowed else None
+    contributing = [block for block in allowed if block['semanticStatus'] == 'ready'] or ([selected] if selected else [])
+    shared = next((block for block in contributing if any(source.get('scope') == 'role'
+        for source in _meaning_sources(block))), None)
+    group = next((block for block in contributing if not any(source.get('scope') == 'role'
+        for source in _meaning_sources(block))), None)
     result = {key: deepcopy(item) for key, item in value.items()
-        if key not in {'scopedMeanings', 'meaningSources', 'history', 'basis', 'author', 'description', 'name'}}
+        if key not in {'scopedMeanings', 'meaningSources', *MEANING_FIELDS}}
     result['sources'] = accessible
+    result.update(details({}), generalDescription=shared['description'] if shared else '',
+        groupDescription=group['description'] if group else '',
+        generalBasis=shared['basis']['kind'] if shared else 'unverified',
+        groupBasis=group['basis']['kind'] if group else 'unverified')
     if selected is None:
         result.update(name='已收藏图片', description='', history=[], basis={'kind': 'unverified'},
             author={'kind': 'unverified'}, semanticStatus='pending', displayCategory='收藏', aliases=[])
@@ -227,7 +251,15 @@ def effective(value, session_key, validator, *, category='', aliases=()):
         result.update({key: deepcopy(selected[key]) for key in
             ('name', 'description', 'history', 'basis', 'author', 'semanticStatus')})
         result['displayCategory'] = selected.get('meaningCategory') or (category if selected is value else '收藏')
-        result['aliases'] = list(aliases) if selected is value else []
+        for key in LIST_FIELDS:
+            result[key] = list(dict.fromkeys(item for block in contributing for item in block.get(key, [])))[:32]
+        if selected is value:
+            result['aliases'] = list(dict.fromkeys([*result['aliases'], *aliases]))[:32]
+        result['uncertainty'] = '；'.join(block.get('uncertainty', '') for block in contributing
+            if block.get('uncertainty'))[:1000]
+        result['uncertaintyAffectsUse'] = any(block.get('uncertaintyAffectsUse', False) for block in contributing)
+        if result['uncertaintyAffectsUse']:
+            result['semanticStatus'] = 'pending'
     # Never carry the original scope's category text in a redacted projection.
     result.pop('meaningCategory', None)
     return result
@@ -239,28 +271,80 @@ def _management_target(value):
         if any(source.get('scope') == 'role' for source in _meaning_sources(block))), value)
 
 
-def management(value):
+def scope_id(source):
+    return 'role' if source.get('scope') == 'role' else hashlib.sha256(_scope_key(source).encode()).hexdigest()[:32]
+
+
+def management_scopes(value, validator, labels=None):
+    sources = {'role': {'kind': 'owner_annotation', 'scope': 'role'}}
+    for source in value['sources']:
+        sources.setdefault(scope_id(source), source)
+    blocks = [value, *value.get('scopedMeanings', [])]
+    result = []
+    for identifier, source in sources.items():
+        block = next((block for block in blocks if any(scope_id(item) == identifier
+            for item in _meaning_sources(block))), None)
+        role = identifier == 'role'
+        label = '角色通用说明' if role else (labels or {}).get(source.get('sessionKey'), f'收藏会话 {len(result)}')
+        result.append({'id': identifier, 'scope': 'role' if role else 'conversation', 'label': label,
+            'available': role or source_allowed({'sources': [source]}, source.get('sessionKey', ''), validator),
+            'name': block.get('name', value['name']) if block else value['name'],
+            'description': block['description'] if block else '', **details(block or {}),
+            'basis': deepcopy(block['basis']) if block else {'kind': 'unverified'},
+            'history': deepcopy(block.get('history', [])) if block else []})
+    return result
+
+
+def management(value, validator=None, labels=None):
     selected = _management_target(value)
     result = deepcopy(value)
     result.update({key: deepcopy(selected[key]) for key in
         ('name', 'description', 'basis', 'author', 'history', 'semanticStatus')})
+    result.update(details(selected))
     result['meaningScope'] = 'role' if any(source.get('scope') == 'role'
         for source in _meaning_sources(selected)) else 'conversation'
     result['source'] = _meaning_sources(selected)[0]['kind']
+    if result['source'] == 'owner_annotation':
+        result['source'] = value['sources'][0]['kind']
+    if result['uncertaintyAffectsUse']:
+        result['semanticStatus'] = 'pending'
+    result['meaningScopeId'] = scope_id(_meaning_sources(selected)[0])
+    result['meaningScopes'] = management_scopes(value, validator, labels)
     return result
 
 
-def revise_management(value, changes, *, expected_revision, basis, author):
-    # Selection is deterministic under the same whole-library CAS used by the
-    # list. Never change the meaning target or grant a new scope on PATCH.
+def revise_management(value, changes, *, expected_revision, basis, author, validator=None):
+    # The default target is deterministic under the listing's whole-library CAS.
+    # Explicit promotion creates meaning only, never an original-image source.
     result = deepcopy(value)
+    changes = dict(changes)
+    identifier = changes.pop('meaningScopeId', None)
     target = _management_target(result)
+    # Old clients omit scope selection; their original group target still needs
+    # the same live authority check. The original's global switch is independent.
+    if identifier is None and any(key != 'enabled' for key in changes):
+        identifier = scope_id(_meaning_sources(target)[0])
+    if identifier is not None:
+        scopes = {item['id']: item for item in management_scopes(result, validator)}
+        if identifier not in scopes or not scopes[identifier]['available']:
+            raise MeaningScopeUnavailable('该收藏会话的授权已失效，不能修改或恢复旧群说明')
+        target = next((block for block in (result, *result.get('scopedMeanings', []))
+            if any(scope_id(source) == identifier for source in _meaning_sources(block))), None)
+        if target is None:
+            if len(result.get('scopedMeanings', [])) >= MAX_SOURCES:
+                raise ValueError('material meaning scopes are full; existing data was retained')
+            source = {'kind': 'owner_annotation', 'scope': 'role'} if identifier == 'role' else next(
+                source for source in result['sources'] if scope_id(source) == identifier)
+            target = {'name': result['name'], 'description': '', 'basis': {'kind': 'unverified'},
+                'author': author, 'history': [], 'semanticStatus': 'pending', 'meaningSources': [deepcopy(source)]}
+            result.setdefault('scopedMeanings', []).append(target)
     revised = revise({**target, 'sha256': value['sha256'], 'enabled': value['enabled'],
         'revision': value['revision']}, changes, expected_revision=expected_revision, basis=basis, author=author)
     if target is result:
         return revised
     target.update({key: revised[key] for key in
         ('name', 'description', 'basis', 'author', 'history', 'semanticStatus', 'revision')})
+    target.update(details(revised))
     result.update(enabled=revised['enabled'], revision=revised['revision'])
     return result
 
@@ -268,13 +352,15 @@ def revise_management(value, changes, *, expected_revision, basis, author):
 def revise(value, changes, *, expected_revision, basis, author):
     if value['revision'] != expected_revision:
         raise PermissionError('conflict: material meaning changed; read it again')
-    if 'description' in changes and basis['kind'] == 'model_observation' and value['basis']['kind'] == 'owner_confirmed':
+    if changes and basis['kind'] == 'model_observation' and value['basis']['kind'] == 'owner_confirmed':
         raise PermissionError('主人确认的说明不能由模型观察覆盖，请主人在素材库中修订')
     result = deepcopy(value)
     if len(result['history']) >= MAX_REVISIONS:
         raise ValueError('material revision history is full; prior corrections were retained')
     result['history'].append(historical(value))
     result.update(changes, revision=value['revision'] + 1, author=author)
+    if any(key in changes for key in DETAIL_FIELDS):
+        result['basis'] = basis
     if 'description' in changes:
         result['basis'] = basis if changes['description'] else {'kind': 'unverified'}
         result['semanticStatus'] = 'ready' if changes['description'] and basis['kind'] != 'unverified' else 'pending'

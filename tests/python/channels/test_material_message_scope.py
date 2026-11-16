@@ -161,3 +161,40 @@ def test_duplicate_group_source_never_reauthorizes_another_groups_meaning(meme_t
         assert fresh.description == '' and library.reference(state.role.id, fresh, ctx_b)[1] == raw
     finally:
         asyncio.run(main._proactive.close())
+
+
+def test_group_editor_promotion_never_restores_real_pairing_generation(meme_turn):
+    state = meme_turn
+    thread, attachment, raw, saved = collect(state, '群内编译失败梗')
+    client = TestClient(main.app)
+    endpoint = f'/api/roles/{state.role.id}/materials'
+    library = main._chat_meme_library()
+    context = ToolContext(state.role.id, thread.session_key, 'edit-scope', CancellationToken(), 'choose')
+    try:
+        item = saved['material']
+        group = next(scope for scope in item['meaningScopes'] if scope['scope'] == 'conversation')
+        promoted = client.patch(endpoint + '/' + item['id'], json={'expectedRevision': saved['revision'],
+            'meaningScopeId': 'role', 'description': '通用尴尬', 'uses': ['尴尬']})
+        assert promoted.status_code == 200, promoted.text
+        selected, = library.candidates(state.role.id, '尴尬', context=context)
+        assert selected.public()['groupDescription'] == '群内编译失败梗'
+        assert library.candidates(state.role.id) == ()
+        state.channels.unbind_identity(state.channels.list_identities()[0]['identityId'])
+        code = state.channels.create_pairing_code(state.role.id, 'qq')
+        assert state.channels.consume_pairing_code(code, role_id=state.role.id, channel='qq', scope='platform',
+            platform_user_id='11', account_id=state.adapter.account_id, chat_id='11')
+        assert not library.valid(state.role.id, selected)
+        latest = client.get(endpoint).json()
+        for selection in ({}, {'meaningScopeId': group['id']}):
+            response = client.patch(endpoint + '/' + item['id'], json={'expectedRevision': latest['revision'],
+                'description': '重新编辑', **selection})
+            # The default target is now shared; it may be corrected without
+            # authorizing the original. An explicit stale group cannot be edited.
+            if selection:
+                assert response.status_code == 403, response.text
+            else:
+                assert response.status_code == 200, response.text
+                latest = client.get(endpoint).json()
+            assert library.candidates(state.role.id, context=context) == ()
+    finally:
+        asyncio.run(main._proactive.close())

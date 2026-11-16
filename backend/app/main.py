@@ -189,7 +189,7 @@ from .herdr_control.tools import build_agent_tools, HERDR_AGENT_TOOL_NAMES
 from .proactive_runtime import ProactiveApplication
 from .proactive_runtime.api import autonomy_router
 from .material_api import material_router
-from .material_library import OwnerMaterialLibrary, message_attachment_source
+from .material_library import OwnerMaterialLibrary, message_attachment_source, material_scope_labels
 from .chat_attachments import public_attachment, read_request_bytes, resolve_attachment, save_attachment
 
 logging.getLogger("uvicorn.access").addFilter(OAuthCallbackAccessLogFilter())
@@ -1214,6 +1214,7 @@ app.include_router(desktop_pet_router(_desktop_pet_application))
 app.include_router(coding_router(lambda: _coding_application(), lambda: store))
 app.include_router(autonomy_router(lambda: _proactive_application(), workspace_getter=lambda role_id: store.root / role_id / "workspace"))
 app.include_router(material_router(lambda: OwnerMaterialLibrary(_chat_meme_library(), store.get,
+    scope_labels=lambda role_id: material_scope_labels(multichannel_store, role_id),
     message_source=lambda role_id, message_id, attachment_id: message_attachment_source(
         store, session_store, multichannel_store, role_id, message_id, attachment_id))))
 app.add_middleware(
